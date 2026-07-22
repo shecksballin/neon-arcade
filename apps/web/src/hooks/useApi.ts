@@ -10,7 +10,7 @@ import {
   giftApi, 
   reportApi 
 } from '../lib/api';
-import type { GameMode } from '../types';
+import type { GameMode } from '@neon/types';
 
 // ==========================================
 // AUTH & PROFILE

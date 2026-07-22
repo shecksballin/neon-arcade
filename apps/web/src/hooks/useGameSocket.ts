@@ -10,7 +10,7 @@ import type {
   NotificationPayload,
   DuelRequestPayload,
   MessagePayload
-} from '../types';
+} from '@neon/types';
 
 const SOCKET_URL = import.meta.env.VITE_WS_URL ?? 'http://localhost:3000';
 

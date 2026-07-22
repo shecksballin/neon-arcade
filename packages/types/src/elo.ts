@@ -1,4 +1,4 @@
-import type { RankTier, RankInfo } from '../types'
+import type { RankTier, RankInfo } from './types'
 
 // ─────────────────────────────────────────────────
 // RANK THRESHOLDS
