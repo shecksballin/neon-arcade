@@ -1,0 +1,6 @@
+{
+  "name": "NEON NOIR",
+  "description": "A vaporwave-inspired gaming platform with immersive neon aesthetics and retro-futuristic vibes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
