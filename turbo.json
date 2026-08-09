@@ -1,5 +1,31 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalPassThroughEnv": [
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_SITE_URL",
+    "OPENROUTER_SITE_NAME",
+    "QUIZ_MODEL",
+    "GEMINI_API_KEY",
+    "DATABASE_URL",
+    "REDIS_URL",
+    "JWT_SECRET",
+    "TOTP_ENC_KEY",
+    "PRIVY_APP_ID",
+    "PRIVY_APP_SECRET",
+    "SOLANA_RPC_URL",
+    "HOUSE_WALLET_ADDRESS",
+    "HOUSE_WALLET_PRIVATE_KEY",
+    "COLD_WALLET_ADDRESS",
+    "HOUSE_FEE_PERCENT",
+    "MIN_BET_SOL",
+    "MAX_BET_SOL",
+    "BLOB_READ_WRITE_TOKEN",
+    "PORT",
+    "CLIENT_ORIGIN",
+    "VITE_PRIVY_APP_ID",
+    "VITE_API_URL",
+    "VITE_WS_URL"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

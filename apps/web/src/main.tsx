@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App.tsx';
 import { NeonBucksProvider } from './NeonBucksStore.tsx';
+import { AppPrivyProvider } from './providers/AppPrivyProvider.tsx';
+import { AppErrorBoundary } from './components/AppErrorBoundary.tsx';
 import './index.css';
 
 const queryClient = new QueryClient({
@@ -29,10 +31,16 @@ console.warn = (...args) => {
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <NeonBucksProvider>
-        <App />
-      </NeonBucksProvider>
-    </QueryClientProvider>
+    {/* Outermost so even a provider crash shows the error screen, not white */}
+    <AppErrorBoundary>
+      {/* Privy wraps everything so any component can call usePrivy()/useWallets() */}
+      <AppPrivyProvider>
+        <QueryClientProvider client={queryClient}>
+          <NeonBucksProvider>
+            <App />
+          </NeonBucksProvider>
+        </QueryClientProvider>
+      </AppPrivyProvider>
+    </AppErrorBoundary>
   </StrictMode>,
 );

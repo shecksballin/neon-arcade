@@ -7,6 +7,7 @@ import ComputerGame from './ComputerGame';
 import OnlineGame from './OnlineGame';
 import LocalGame from './LocalGame';
 import { useComputerMove } from './useComputerMove';
+import { DEFAULT_SKILL_LEVEL } from './difficulty';
 
 interface ChessGameProps {
   onExit: () => void;
@@ -246,6 +247,9 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
   const [gameData, setGameData] = useState<any>(null);
   const [gameMode, setGameMode] = useState<'multiplayer' | 'computer' | 'local' | null>(null);
   const [wagerAmount, setWagerAmount] = useState<number>(0);
+  // Practice-mode engine strength (Stockfish skill level), shared by the
+  // lobby selector and the in-game selector.
+  const [skillLevel, setSkillLevel] = useState<number>(DEFAULT_SKILL_LEVEL);
 
   const [externalMove, setExternalMove] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'waiting' | 'disconnected'>('disconnected');
@@ -314,9 +318,8 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
     socket.emit('findGame', fullPlayer);
   };
 
-  const handlePlayComputer = (player: { difficulty: number }) => {
-    const fullPlayer = { 
-      ...player, 
+  const handlePlayComputer = () => {
+    const fullPlayer = {
       name: profile?.name || 'Player',
       avatarUrl: profile?.avatarUrl || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix'
     };
@@ -368,11 +371,13 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
           />
         )}
         <div className="w-full relative z-0">
-          <GameLobby 
-            onFindGame={handleFindGame} 
-            onPlayComputer={handlePlayComputer} 
-            onPlayLocal={handlePlayLocal} 
-            onExit={onExit} 
+          <GameLobby
+            onFindGame={handleFindGame}
+            onPlayComputer={handlePlayComputer}
+            onPlayLocal={handlePlayLocal}
+            onExit={onExit}
+            difficulty={skillLevel}
+            onDifficultyChange={setSkillLevel}
           />
         </div>
       </div>
@@ -388,7 +393,7 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
         onExit={handleExitApp}
         gameMode={gameMode}
         onPlayOnline={gameMode === 'multiplayer' ? () => {} : handleFindGame}
-        onPlayComputer={gameMode === 'computer' ? () => {} : () => handlePlayComputer({ difficulty: 3 })}
+        onPlayComputer={gameMode === 'computer' ? () => {} : handlePlayComputer}
         onPlayLocal={gameMode === 'local' ? () => {} : handlePlayLocal}
         profile={profile}
       />
@@ -422,7 +427,7 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
                  onExit={handleExitApp}
                  gameMode={gameMode} 
                  onPlayOnline={gameMode === 'multiplayer' ? () => {} : handleFindGame}
-                 onPlayComputer={gameMode === 'computer' ? () => {} : () => handlePlayComputer({ difficulty: 3 })}
+                 onPlayComputer={gameMode === 'computer' ? () => {} : handlePlayComputer}
                  onPlayLocal={gameMode === 'local' ? () => {} : handlePlayLocal}
                  profile={profile}
                />
@@ -437,6 +442,8 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
               <ComputerGame
                 onRequestComputerMove={(fen: string, diff: number) => getBestMove(fen, { skillLevel: diff })}
                 playerColor="white"
+                difficulty={skillLevel}
+                onDifficultyChange={setSkillLevel}
                 onReturnToLobby={handleReturnToLobby}
                 profile={profile}
                 wagerAmount={wagerAmount}

@@ -5,6 +5,7 @@ import { useChessGame } from './useChessGame';
 import { GameOverOverlay } from './GameOverOverlay';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
 import { MoveHistoryPanel } from './MoveHistoryPanel';
+import { DifficultySelector } from './DifficultySelector';
 import { useNeonBucks } from '../../NeonBucksStore';
 import './chess.css';
 
@@ -117,13 +118,13 @@ function CapturedRow({ pieces, label, advantage, color }: any) {
 export default function ComputerGame({
   onRequestComputerMove,
   playerColor      = 'white',
-  initialDifficulty = 10,
+  difficulty       = 9,
+  onDifficultyChange,
   onGameEnd,
   profile,
   onReturnToLobby,
   wagerAmount = 0
 }: any) {
-  const [difficulty,   setDifficulty]  = useState(initialDifficulty);
   const [isThinking,   setIsThinking]  = useState(false);
   const computerColor = playerColor === 'white' ? 'black' : 'white';
   const { win } = useNeonBucks();
@@ -316,11 +317,22 @@ export default function ComputerGame({
       </div>
 
       <div style={styles.sidebar as any}>
-        <MoveHistoryPanel 
-          history={history} 
-          onUndo={handleUndo} 
-          onNewGame={handleRematch}
-        />
+        <div style={styles.difficultyCard as any}>
+          <DifficultySelector
+            value={difficulty}
+            onChange={(skill: number) => onDifficultyChange?.(skill)}
+            title="Engine Difficulty"
+            compact
+            disabled={isThinking}
+          />
+        </div>
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <MoveHistoryPanel
+            history={history}
+            onUndo={handleUndo}
+            onNewGame={handleRematch}
+          />
+        </div>
       </div>
     </div>
   );
@@ -337,6 +349,16 @@ const styles = {
     width:         300,
     height:        600,
     flexShrink:    0,
+    display:       'flex',
+    flexDirection: 'column',
+    gap:           12,
+  },
+  difficultyCard: {
+    background:   '#041010',
+    border:       '1px solid rgba(0,255,209,0.2)',
+    borderRadius: 8,
+    padding:      '12px 10px',
+    flexShrink:   0,
   },
   sidebarHeader: {
     display:       'flex',
@@ -362,22 +384,6 @@ const styles = {
     textTransform: 'uppercase',
     color:         'var(--color-on-surface-variant)',
     marginBottom:  -4,
-  },
-  diffBtn: {
-    padding:      '4px 10px',
-    background:   'transparent',
-    border:       '1px solid rgba(58,74,68,0.6)',
-    borderRadius: 4,
-    color:        'var(--color-on-surface-variant)',
-    fontFamily:   'var(--font-body)',
-    fontSize:     12,
-    cursor:       'pointer',
-    transition:   'all 0.15s ease',
-  },
-  diffBtnActive: {
-    borderColor: '#00FFD1',
-    color:       '#00FFD1',
-    boxShadow:   '0 0 6px rgba(0,255,209,0.3)',
   },
   playingAs: {
     margin:    '4px 0 0',

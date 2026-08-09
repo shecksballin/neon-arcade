@@ -6,6 +6,42 @@
   --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
 }
 
+/* ── Privy modal theming (see pivyWalletDesign.txt) ──
+   Privy reads these custom properties for pixel-level control beyond the
+   appearance config. Set on <body> so they cascade into Privy's portal.
+   These reinforce the neon palette (accent #00FFD1 on the #081616 bg) and,
+   crucially, set the border radius, which the appearance config can't. */
+body {
+  --privy-color-background: #081616;
+  --privy-color-background-2: #0b1e1e;
+  --privy-color-foreground: #d7e5e5;
+  --privy-color-foreground-2: #83958d;
+  --privy-color-accent: #00ffd1;
+  --privy-color-accent-light: #00ffd1;
+  --privy-color-accent-dark: #00382c;
+  --privy-color-border-default: rgba(0, 255, 209, 0.25);
+  --privy-border-radius-sm: 8px;
+  --privy-border-radius-md: 12px;
+  --privy-border-radius-lg: 18px;
+  --privy-border-radius-full: 9999px;
+}
+
+/* Neon frame on the Privy modal card. Privy renders the modal in a portal
+   on <body> and only sets `height` inline on #privy-modal-content, so an
+   id selector + !important cleanly wins. Kept UNLAYERED (not in @layer) so
+   it competes with Privy's own runtime-injected, unlayered CSS-in-JS —
+   anything inside @layer would lose to it regardless of specificity.
+   border = the #00FFD1 stroke; box-shadow = layered outward glow + a soft
+   inner bleed, matching .neon-viewport-glow / .glass-panel elsewhere. */
+#privy-modal-content {
+  border: 2px solid #00ffd1 !important;
+  box-shadow:
+    0 0 18px  rgba(0, 255, 209, 0.45),
+    0 0 45px  rgba(0, 255, 209, 0.30),
+    0 0 100px rgba(0, 255, 209, 0.15),
+    inset 0 0 22px rgba(0, 255, 209, 0.12) !important;
+}
+
 @layer base {
   ::-webkit-scrollbar {
     display: none;
@@ -20,7 +56,23 @@
   .neon-text-glow {
     text-shadow: 0 0 15px rgba(0, 255, 209, 0.7);
   }
-  
+
+  /* Full-viewport neon frame. A fixed overlay whose inset box-shadow
+     concentrates the #00FFD1 glow at the screen edges and fades toward
+     the centre. pointer-events: none lets every click pass through. */
+  .neon-viewport-glow {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    border-radius: 14px;
+    box-shadow:
+      inset 0 0 1px   rgba(0, 255, 209, 0.9),
+      inset 0 0 12px  rgba(0, 255, 209, 0.45),
+      inset 0 0 45px  rgba(0, 255, 209, 0.22),
+      inset 0 0 110px rgba(0, 255, 209, 0.08);
+  }
+
   .glass-panel {
     background: rgba(8, 22, 22, 0.85);
     backdrop-filter: blur(12px);
@@ -239,6 +291,7 @@
     font-weight: bold;
     font-size: 12px;
     letter-spacing: 1px;
+    cursor: pointer;
     transition: all 0.2s;
   }
 
@@ -254,5 +307,62 @@
     font-size: 12px;
     letter-spacing: 1px;
     box-shadow: 0 0 20px rgba(0, 255, 209, 0.4);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.1);
+    box-shadow: 0 0 30px rgba(0, 255, 209, 0.6);
+  }
+
+  /* ── ErrorScreen (status-code error pages) ── */
+
+  /* CRT scanline overlay drifting slowly downward */
+  .error-scanlines {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(0, 255, 209, 0.05) 0px,
+      rgba(0, 255, 209, 0.05) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    animation: scanline-drift 6s linear infinite;
+  }
+
+  @keyframes scanline-drift {
+    to { background-position: 0 6px; }
+  }
+
+  /* Giant status code: chromatic-aberration shadows + occasional jitter */
+  .error-code {
+    text-shadow:
+      3px 0 rgba(255, 0, 128, 0.5),
+      -3px 0 rgba(0, 255, 209, 0.55),
+      0 0 30px rgba(0, 255, 209, 0.35);
+    animation: error-glitch 2.6s steps(1) infinite;
+  }
+
+  @keyframes error-glitch {
+    0%, 84%, 100% { transform: none; }
+    85% { transform: translate(-3px, 1px) skewX(-3deg); }
+    88% { transform: translate(3px, -2px); }
+    91% { transform: translate(-1px, 2px) skewX(2deg); }
+    94% { transform: none; }
+  }
+
+  /* Whole-screen CRT brightness flicker */
+  .error-flicker {
+    animation: crt-flicker 5s linear infinite;
+  }
+
+  @keyframes crt-flicker {
+    0%, 91%, 95%, 100% { opacity: 1; }
+    92% { opacity: 0.85; }
+    93% { opacity: 1; }
+    97% { opacity: 0.92; }
   }
 }

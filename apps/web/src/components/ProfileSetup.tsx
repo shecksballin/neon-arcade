@@ -4,7 +4,9 @@ import { User, Camera, Check, ArrowRight } from 'lucide-react';
 import { AVATAR_LIST } from '../lib/avatars';
 
 interface ProfileSetupProps {
-  onComplete: (profile: { name: string; avatarUrl: string }) => void;
+  // `guest: true` means the user skipped avatar/username selection —
+  // App.tsx uses it to skip the wallet login popup (practice only).
+  onComplete: (profile: { name: string; avatarUrl: string }, opts?: { guest?: boolean }) => void;
 }
 
 const AVATARS = AVATAR_LIST;
@@ -12,10 +14,13 @@ const AVATARS = AVATAR_LIST;
 export const ProfileSetup: React.FC<ProfileSetupProps> = ({ onComplete }) => {
   const [name, setName] = useState('');
   const [selectedAvatar, setSelectedAvatar] = useState(AVATARS[0]);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // Profile is client-side for now (localStorage via App.tsx). It syncs
+  // to the backend `users` table once accounts land — wallet sign-in
+  // happens right after this screen, so the identity to attach it to
+  // doesn't exist yet.
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
       setError('Please enter a username');
@@ -26,27 +31,8 @@ export const ProfileSetup: React.FC<ProfileSetupProps> = ({ onComplete }) => {
       return;
     }
 
-    setLoading(true);
     setError(null);
-
-    try {
-      const response = await fetch('/api/profile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), avatarUrl: selectedAvatar }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to save profile');
-      }
-
-      const data = await response.json();
-      onComplete({ name: data.name, avatarUrl: data.avatarUrl });
-    } catch (err) {
-      setError('Connection error. Please try again.');
-    } finally {
-      setLoading(false);
-    }
+    onComplete({ name: name.trim(), avatarUrl: selectedAvatar });
   };
 
   return (
@@ -118,34 +104,18 @@ export const ProfileSetup: React.FC<ProfileSetupProps> = ({ onComplete }) => {
           <div className="flex flex-col gap-3">
             <button
               type="submit"
-              disabled={loading}
-              className={`w-full group relative overflow-hidden bg-[#00FFD1] hover:bg-[#00E5BC] text-black font-black py-5 rounded-2xl transition-all duration-300 flex items-center justify-center gap-3 uppercase italic tracking-tighter text-lg disabled:opacity-50 disabled:cursor-not-allowed`}
+              className={`w-full group relative overflow-hidden bg-[#00FFD1] hover:bg-[#00E5BC] text-black font-black py-5 rounded-2xl transition-all duration-300 flex items-center justify-center gap-3 uppercase italic tracking-tighter text-lg`}
             >
-              <span className="relative z-10">{loading ? 'Processing...' : 'Ready to Play'}</span>
+              <span className="relative z-10">Ready to Play</span>
               <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
             </button>
             <button
               type="button"
-              disabled={loading}
-              onClick={async () => {
-                setLoading(true);
+              onClick={() => {
                 setError(null);
                 const guestName = `Guest_${Math.floor(Math.random() * 10000)}`;
                 const guestAvatar = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-                try {
-                  const response = await fetch('/api/profile', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: guestName, avatarUrl: guestAvatar }),
-                  });
-                  if (!response.ok) throw new Error('Failed to save profile');
-                  const data = await response.json();
-                  onComplete({ name: data.name, avatarUrl: data.avatarUrl });
-                } catch (err) {
-                  setError('Connection error. Please try again.');
-                } finally {
-                  setLoading(false);
-                }
+                onComplete({ name: guestName, avatarUrl: guestAvatar }, { guest: true });
               }}
               className="w-full text-white/40 hover:text-white/80 font-mono text-xs uppercase tracking-widest py-3 transition-colors"
             >

@@ -1,0 +1,205 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Neon Clumsy</title>
+<style>
+  :root {
+    --mint: #00FFD1;
+    --ink: #0d0824;
+    --panel: rgba(13, 8, 36, 0.82);
+    --pink: #ff5fa2;
+    --violet: #8a5cff;
+    --yellow: #ffd84d;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; overflow: hidden; background: var(--ink); }
+  body { font-family: ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", "Segoe UI", system-ui, sans-serif;
+         color: #fff; user-select: none; -webkit-user-select: none; }
+  canvas#c { display: block; }
+
+  .screen { position: fixed; inset: 0; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; z-index: 10; }
+  .hidden { display: none !important; }
+
+  /* ---------- menu ---------- */
+  #menu { background: radial-gradient(120% 90% at 50% 10%, #241448 0%, #0d0824 65%);
+          gap: 14px; text-align: center; padding: 20px; }
+  .logo { font-size: clamp(44px, 9vw, 96px); font-weight: 900; letter-spacing: 0.04em;
+          color: #fff;
+          text-shadow: 0 0 12px var(--mint), 0 0 42px rgba(0,255,209,.65), 0 4px 0 #0a5c4d;
+          transform: rotate(-2deg); }
+  .logo .alt { color: var(--mint); text-shadow: 0 0 14px #fff, 0 0 42px var(--mint), 0 4px 0 #7a1650; }
+  .subtitle { font-size: clamp(14px, 2.4vw, 22px); font-weight: 800; letter-spacing: 0.34em;
+              color: var(--pink); text-shadow: 0 0 14px rgba(255,95,162,.8); margin-bottom: 8px; }
+  #nick { width: min(320px, 78vw); padding: 13px 18px; border-radius: 999px; border: 2px solid var(--violet);
+          background: rgba(20, 12, 50, 0.9); color: #fff; font-size: 17px; font-weight: 700;
+          text-align: center; outline: none; font-family: inherit; }
+  #nick:focus { border-color: var(--mint); box-shadow: 0 0 18px rgba(0,255,209,.35); }
+  .btn { cursor: pointer; border: none; border-radius: 999px; font-family: inherit; font-weight: 900;
+         letter-spacing: 0.08em; color: #06251e;
+         background: linear-gradient(180deg, #7dffe8, var(--mint) 55%, #00c9a5);
+         box-shadow: 0 6px 0 #00806a, 0 10px 26px rgba(0,255,209,.4);
+         transition: transform .08s ease, box-shadow .08s ease; }
+  .btn:hover { transform: translateY(-2px) scale(1.03); }
+  .btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #00806a; }
+  .btn.big { padding: 16px 66px; font-size: 26px; }
+  .btn.mid { padding: 12px 34px; font-size: 17px; }
+  .btn.ghost { background: transparent; color: var(--mint); border: 2px solid var(--mint);
+               box-shadow: none; }
+  #controlsCard { margin-top: 10px; background: var(--panel); border: 2px solid rgba(138,92,255,.5);
+                  border-radius: 18px; padding: 14px 22px; font-size: 14px; }
+  #controlsCard h3 { color: var(--yellow); letter-spacing: .2em; font-size: 13px; margin-bottom: 8px; }
+  #controlsCard table { border-collapse: collapse; }
+  #controlsCard td { padding: 2.5px 10px; text-align: left; }
+  #controlsCard td:first-child { color: var(--mint); font-weight: 800; white-space: nowrap; }
+  .version { position: fixed; bottom: 10px; left: 14px; font-size: 12px; color: rgba(255,255,255,.45); }
+
+  /* ---------- loading ---------- */
+  #loading { background: #0d0824; z-index: 40; gap: 18px; }
+  #loadBarWrap { width: min(340px, 70vw); height: 14px; border-radius: 999px;
+                 border: 2px solid var(--violet); overflow: hidden; }
+  #loadBar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--pink), var(--mint));
+             transition: width .2s ease; }
+  #loadText { letter-spacing: .3em; font-weight: 800; color: var(--mint); font-size: 14px; }
+
+  /* ---------- HUD ---------- */
+  #hud { pointer-events: none; z-index: 5; }
+  .chip { position: fixed; background: var(--panel); border: 2px solid rgba(0,255,209,.55);
+          border-radius: 14px; padding: 8px 16px; font-weight: 900; letter-spacing: .06em; }
+  #playersLeft { top: 14px; left: 50%; transform: translateX(-50%); font-size: 19px; color: var(--mint); }
+  #layerMeter { top: 14px; left: 14px; font-size: 15px; color: var(--yellow); border-color: rgba(255,216,77,.55); }
+  #timer { top: 14px; right: 14px; font-size: 15px; color: #fff; border-color: rgba(255,95,162,.55); }
+  #hudHint { bottom: 12px; left: 14px; font-size: 12px; color: rgba(255,255,255,.55);
+             background: none; border: none; letter-spacing: .05em; }
+  #feed { position: fixed; top: 64px; right: 14px; display: flex; flex-direction: column; gap: 6px;
+          align-items: flex-end; }
+  .feedMsg { background: var(--panel); border-left: 3px solid var(--pink); padding: 6px 12px;
+             border-radius: 8px; font-size: 13px; font-weight: 700; color: #ffd7e8;
+             animation: feedIn .25s ease; }
+  @keyframes feedIn { from { transform: translateX(30px); opacity: 0; } }
+
+  /* ---------- countdown ---------- */
+  #countdown { pointer-events: none; z-index: 20; background: none; }
+  #countNum { font-size: clamp(90px, 22vw, 220px); font-weight: 900; color: var(--mint);
+              text-shadow: 0 0 30px var(--mint), 0 8px 0 #0a5c4d; transform: rotate(-3deg); }
+
+  /* ---------- overlays ---------- */
+  #lockOverlay { z-index: 15; background: rgba(13,8,36,.55); cursor: pointer; }
+  #lockOverlay div { background: var(--panel); border: 2px solid var(--mint); border-radius: 16px;
+                     padding: 18px 34px; font-weight: 900; letter-spacing: .1em; color: var(--mint); }
+  #pause { z-index: 25; background: rgba(13,8,36,.8); gap: 18px; }
+  .bigWord { font-size: clamp(40px, 8vw, 80px); font-weight: 900; letter-spacing: .1em;
+             color: #fff; text-shadow: 0 0 22px var(--violet); }
+  #end { z-index: 26; background: rgba(13,8,36,.82); gap: 12px; text-align: center; }
+  #endTitle { font-size: clamp(48px, 10vw, 110px); font-weight: 900; transform: rotate(-2deg);
+              color: var(--yellow); text-shadow: 0 0 26px rgba(255,216,77,.9), 0 6px 0 #7a5a00; }
+  #endTitle.lose { color: var(--pink); text-shadow: 0 0 26px rgba(255,95,162,.9), 0 6px 0 #6e1140; }
+  #endSub { font-size: clamp(18px, 3.5vw, 30px); font-weight: 900; letter-spacing: .18em; color: #fff; }
+  #endStats { display: flex; gap: 12px; margin: 10px 0 6px; flex-wrap: wrap; justify-content: center; }
+  .stat { background: var(--panel); border: 2px solid rgba(138,92,255,.55); border-radius: 14px;
+          padding: 10px 18px; min-width: 120px; }
+  .stat .v { font-size: 26px; font-weight: 900; color: var(--mint); }
+  .stat .k { font-size: 10.5px; letter-spacing: .18em; color: rgba(255,255,255,.6); font-weight: 800; }
+  #endBtns { display: flex; gap: 14px; margin-top: 4px; }
+  #spectateBar { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 6;
+                 font-size: 14px; color: var(--mint); }
+  #spectateBar small { display: block; text-align: center; color: rgba(255,255,255,.55); font-size: 11px; }
+
+  #muteBtn { position: fixed; bottom: 12px; right: 14px; z-index: 30; background: var(--panel);
+             border: 2px solid rgba(255,255,255,.3); color: #fff; border-radius: 12px; padding: 7px 12px;
+             font-family: inherit; font-weight: 800; font-size: 12px; cursor: pointer; letter-spacing: .1em; }
+
+  #dev { position: fixed; top: 60px; left: 14px; z-index: 50; color: #0f0; font: 12px/1.5 monospace;
+         background: rgba(0,0,0,.55); padding: 6px 10px; border-radius: 8px; display: none; }
+
+  /* ---------- touch controls ---------- */
+  #touchUI { position: fixed; inset: 0; z-index: 8; pointer-events: none; display: none; }
+  #stickBase { position: absolute; left: 34px; bottom: 44px; width: 128px; height: 128px;
+               border-radius: 50%; border: 2px solid rgba(0,255,209,.5); background: rgba(13,8,36,.4);
+               pointer-events: auto; touch-action: none; }
+  #stickKnob { position: absolute; left: 39px; top: 39px; width: 50px; height: 50px; border-radius: 50%;
+               background: rgba(0,255,209,.75); box-shadow: 0 0 16px rgba(0,255,209,.7); }
+  .tbtn { position: absolute; width: 76px; height: 76px; border-radius: 50%; pointer-events: auto;
+          touch-action: none; border: 2px solid rgba(255,255,255,.4); background: rgba(13,8,36,.55);
+          color: #fff; font-family: inherit; font-weight: 900; font-size: 13px; letter-spacing: .05em; }
+  .tbtn:active { background: rgba(0,255,209,.5); color: #06251e; }
+  #btnJump { right: 40px; bottom: 120px; border-color: rgba(0,255,209,.7); }
+  #btnDive { right: 128px; bottom: 44px; border-color: rgba(255,95,162,.7); }
+  #btnSprint { right: 40px; bottom: 210px; border-color: rgba(255,216,77,.7); }
+  #btnSprint.on { background: rgba(255,216,77,.6); color: #3a2c00; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./assets/vendor/three.module.js",
+    "three/addons/": "./assets/vendor/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="loading" class="screen">
+  <div class="logo" id="loadLogo"></div>
+  <div id="loadBarWrap"><div id="loadBar"></div></div>
+  <div id="loadText"></div>
+</div>
+
+<div id="menu" class="screen hidden">
+  <div class="logo" id="menuLogo"></div>
+  <div class="subtitle" id="menuSub"></div>
+  <input id="nick" maxlength="14" autocomplete="off">
+  <button id="playBtn" class="btn big"></button>
+  <div id="controlsCard"><h3 id="controlsTitle"></h3><table id="controlsRows"></table></div>
+  <div class="version" id="versionLine"></div>
+</div>
+
+<div id="hud" class="hidden">
+  <div id="playersLeft" class="chip"></div>
+  <div id="layerMeter" class="chip"></div>
+  <div id="timer" class="chip"></div>
+  <div id="hudHint" class="chip"></div>
+  <div id="feed"></div>
+</div>
+
+<div id="spectateBar" class="chip hidden"></div>
+
+<div id="countdown" class="screen hidden"><div id="countNum"></div></div>
+
+<div id="lockOverlay" class="screen hidden"><div id="lockText"></div></div>
+
+<div id="pause" class="screen hidden">
+  <div class="bigWord" id="pauseWord"></div>
+  <button id="resumeBtn" class="btn mid"></button>
+</div>
+
+<div id="end" class="screen hidden">
+  <div id="endTitle"></div>
+  <div id="endSub"></div>
+  <div id="endStats">
+    <div class="stat"><div class="v" id="stTiles">0</div><div class="k" id="stTilesK"></div></div>
+    <div class="stat"><div class="v" id="stBumps">0</div><div class="k" id="stBumpsK"></div></div>
+    <div class="stat"><div class="v" id="stTime">0</div><div class="k" id="stTimeK"></div></div>
+  </div>
+  <div id="endBtns">
+    <button id="spectateBtn" class="btn mid ghost"></button>
+    <button id="againBtn" class="btn mid"></button>
+  </div>
+</div>
+
+<div id="touchUI">
+  <div id="stickBase"><div id="stickKnob"></div></div>
+  <button id="btnSprint" class="tbtn"></button>
+  <button id="btnJump" class="tbtn"></button>
+  <button id="btnDive" class="tbtn"></button>
+</div>
+
+<button id="muteBtn"></button>
+<div id="dev"></div>
+
+<script type="module" src="./assets/game.js"></script>
+</body>
+</html>

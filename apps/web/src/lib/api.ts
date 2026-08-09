@@ -5,7 +5,31 @@
  * All hooks import from this — never fetch() directly in a hook.
  */
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3000'
+// Default matches the Hono server's port (apps/server config/env.ts)
+const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3002'
+
+// Shown when a request never reaches the server (down, restarting, no
+// internet, CORS). Player-facing wording — the technical detail goes to
+// the console. Exported so screens can recognise this exact failure and
+// quietly retry it.
+export const NETWORK_ERROR_MESSAGE =
+  'Connection trouble — check your internet and try again in a moment'
+
+/**
+ * Every failed request throws this. `status` is the HTTP status code of
+ * the response, or 0 when the request never reached the server at all
+ * (network down, CORS, server restarting). Screens branch on it —
+ * ErrorScreen turns it into a full status-code error page.
+ */
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
 
 // ─────────────────────────────────────────────────
 // BASE FETCHER
@@ -16,21 +40,38 @@ async function api<T>(
 ): Promise<T> {
   const token = localStorage.getItem('token')
 
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...options.headers,
-    },
-  })
+  let res: Response
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...options.headers,
+      },
+    })
+  } catch (err) {
+    // Network-level failure (server down, port wrong, CORS) surfaces as
+    // an opaque "Failed to fetch" — keep the technical detail for devs,
+    // hand players something calmer.
+    console.error(`[api] network failure for ${path} (${BASE_URL}):`, err)
+    throw new ApiError(0, NETWORK_ERROR_MESSAGE)
+  }
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: 'Request failed' }))
-    throw new Error(err.error ?? 'Request failed')
+    throw new ApiError(res.status, err.error ?? 'Request failed')
   }
 
-  return res.json()
+  try {
+    return await res.json()
+  } catch (err) {
+    // 2xx with a non-JSON body — wrong VITE_API_URL (SPA fallback page),
+    // proxy or captive-portal HTML. To the player that's the same as not
+    // reaching the server; the real cause goes to the console.
+    console.error(`[api] non-JSON response for ${path} (${BASE_URL}):`, err)
+    throw new ApiError(0, NETWORK_ERROR_MESSAGE)
+  }
 }
 
 // ─────────────────────────────────────────────────
@@ -54,6 +95,7 @@ export const authApi = {
       eloFfa:    number
     }>('/api/auth/me'),
 }
+
 
 // ─────────────────────────────────────────────────
 // MATCH
@@ -206,10 +248,37 @@ export const profileApi = {
   leaderboard: (mode: '1v1' | 'ffa' | 'server') =>
     api<{ players: any[] }>(`/api/leaderboard?mode=${mode}`),
 
-  updateUsername: (username: string) =>
-    api<{ success: boolean }>('/api/profile/username', {
-      method: 'PATCH',
-      body: JSON.stringify({ username }),
+  // NOTE: no updateUsername — usernames are unique, claimed once at
+  // registration, and immutable thereafter.
+
+  /** Account status for the sign-in gate: has this wallet finished setup? */
+  me: () =>
+    api<{
+      wallet:      string
+      username:    string | null
+      hasPin:      boolean
+      totpEnabled: boolean
+      elo:         number
+      eloFfa:      number
+    }>('/api/profile/me'),
+
+  /** Claim a unique username + 4-digit PIN; returns the TOTP QR to scan. */
+  register: (username: string, pin: string) =>
+    api<{
+      username:   string
+      otpauthUri: string
+      qrDataUrl:  string
+      secret:     string
+    }>('/api/profile/register', {
+      method: 'POST',
+      body: JSON.stringify({ username, pin }),
+    }),
+
+  /** Prove a 6-digit code from the authenticator app to finish enrollment. */
+  verifyTotp: (code: string) =>
+    api<{ enabled: boolean; username: string }>('/api/profile/totp/verify', {
+      method: 'POST',
+      body: JSON.stringify({ code }),
     }),
 }
 

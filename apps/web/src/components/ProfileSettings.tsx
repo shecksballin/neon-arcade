@@ -14,36 +14,17 @@ const AVATARS = AVATAR_LIST;
 export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ currentProfile, onUpdate, onClose }) => {
   const [name, setName] = useState(currentProfile.name);
   const [selectedAvatar, setSelectedAvatar] = useState(currentProfile.avatarUrl);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'profile' | 'stats'>('profile');
 
-  const handleUpdate = async () => {
+  // Profile is client-side for now (localStorage via App.tsx). Syncs to
+  // the backend `users` table once accounts land.
+  const handleUpdate = () => {
     if (!name.trim()) return setError('Username is required');
-    setLoading(true);
-    try {
-      const resp = await fetch('/api/profile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), avatarUrl: selectedAvatar })
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data && data.name) {
-          onUpdate({ name: data.name, avatarUrl: data.avatarUrl });
-          onClose();
-        } else {
-          throw new Error('Malformed response');
-        }
-      } else {
-        const errData = await resp.json().catch(() => ({}));
-        throw new Error(errData.error || 'Update failed');
-      }
-    } catch (e: any) {
-      setError(e.message || 'Failed to update profile');
-    } finally {
-      setLoading(false);
-    }
+    if (name.length > 20) return setError('Username must be under 20 characters');
+    setError(null);
+    onUpdate({ name: name.trim(), avatarUrl: selectedAvatar });
+    onClose();
   };
 
   return (
@@ -130,28 +111,32 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ currentProfile
               </div>
             </div>
 
-            {/* Name Section */}
+            {/* Name Section — read-only: usernames are unique and live in
+                the account registry, so they can't be edited locally. */}
             <div className="space-y-4">
-              <label className="text-[10px] font-mono uppercase tracking-[3px] text-[#00FFD1]/60 px-1">Callsign Update</label>
+              <label className="text-[10px] font-mono uppercase tracking-[3px] text-[#00FFD1]/60 px-1">Callsign</label>
               <div className="relative">
-                <input 
+                <input
                   type="text"
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 px-6 text-white text-xl font-black italic focus:outline-none focus:border-[#00FFD1]/50 focus:bg-white/[0.08] transition-all"
+                  disabled
+                  title="Usernames are managed by your account and can't be changed here"
+                  className="w-full bg-white/5 border border-white/10 rounded-2xl py-4 px-6 text-white/60 text-xl font-black italic focus:outline-none transition-all cursor-not-allowed"
                 />
               </div>
+              <p className="text-[9px] font-mono uppercase tracking-widest text-white/25 px-1">
+                Registered account username — locked
+              </p>
             </div>
 
             {error && <p className="text-red-400 text-xs font-mono italic text-center">* {error}</p>}
 
             <div className="pt-4">
-              <button 
+              <button
                 onClick={handleUpdate}
-                disabled={loading}
-                className="w-full bg-[#00FFD1] hover:bg-[#00E5BC] text-black font-black py-5 rounded-2xl transition-all duration-300 flex items-center justify-center gap-3 uppercase italic tracking-tighter text-lg disabled:opacity-50"
+                className="w-full bg-[#00FFD1] hover:bg-[#00E5BC] text-black font-black py-5 rounded-2xl transition-all duration-300 flex items-center justify-center gap-3 uppercase italic tracking-tighter text-lg"
               >
-                {loading ? 'Reconfiguring...' : 'Apply Changes'}
+                Apply Changes
                 <Check className="w-5 h-5" />
               </button>
             </div>

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import GolfLobby from './GolfLobby';
+import NeonGolfClash from './NeonGolfClash';
 import { ChevronLeft } from 'lucide-react';
 
 interface GolfGameProps {
@@ -19,28 +20,10 @@ const GolfGame = ({ onExit, profile, onGameStatusChange }: GolfGameProps) => {
     setGameState('playing');
   };
 
+  // Only mounted once the player picks a mode, so the game document is loaded
+  // strictly on demand (see NeonGolfClash's iframe loader).
   if (gameState === 'playing') {
-    return (
-      <div className="relative w-full h-full bg-[#081616] flex items-center justify-center text-white">
-        {/* Coming soon placeholder */}
-        <div className="absolute top-24 left-6 z-30 pointer-events-none">
-          <button
-            onClick={() => setGameState('lobby')}
-            className="p-3 bg-black/50 border border-[#00FFD1]/30 hover:border-[#00FFD1] hover:bg-[#00FFD1]/20 rounded-full text-white backdrop-blur-md transition-all cursor-pointer pointer-events-auto"
-          >
-            <ChevronLeft className="w-6 h-6" />
-          </button>
-        </div>
-        <div className="text-center">
-          <h2 className="text-4xl font-black text-[#00FFD1] tracking-widest uppercase italic mb-4">
-            Game Under Construction
-          </h2>
-          <p className="text-white/60 font-mono text-sm tracking-wider">
-            Neon Golf Clash gameplay will be available soon.
-          </p>
-        </div>
-      </div>
-    );
+    return <NeonGolfClash onExit={() => setGameState('lobby')} />;
   }
 
   return (

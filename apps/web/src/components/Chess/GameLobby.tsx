@@ -2,12 +2,16 @@ import React, { useRef } from "react";
 import { ChevronLeft, Globe, Cpu, CircleDollarSign, Users } from 'lucide-react';
 import { LibraryBlob } from "../glass/LibraryBlob";
 import { ParticleCard, GlobalSpotlight } from "../glass/MagicGameTile";
+import { DifficultySelector } from "./DifficultySelector";
 
 interface GameLobbyProps {
   onFindGame: () => void;
-  onPlayComputer: (player: { difficulty: number }) => void;
+  onPlayComputer: () => void;
   onPlayLocal: () => void;
   onExit: () => void;
+  /** Selected practice-mode engine skill level (0–20). */
+  difficulty: number;
+  onDifficultyChange: (skillLevel: number) => void;
 }
 
 const GameLobby = ({
@@ -15,6 +19,8 @@ const GameLobby = ({
   onPlayComputer,
   onPlayLocal,
   onExit,
+  difficulty,
+  onDifficultyChange,
 }: GameLobbyProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -23,9 +29,7 @@ const GameLobby = ({
   };
 
   const handleStartComputer = () => {
-    onPlayComputer({
-      difficulty: 1, // Default difficulty since selector is removed
-    });
+    onPlayComputer();
   };
 
   return (
@@ -96,6 +100,16 @@ const GameLobby = ({
             </ParticleCard>
           </div>
         </div>
+
+        {/* Practice difficulty — applies to the Practice (Computer) match */}
+        <div className="w-full max-w-xl mx-auto px-6 py-5 rounded-2xl border border-[#00FFD1]/25 bg-[#041010]/80">
+          <DifficultySelector
+            value={difficulty}
+            onChange={onDifficultyChange}
+            title="Practice Difficulty"
+          />
+        </div>
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-12">
             <ParticleCard className="magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-default border-[#00FFD1]/40">
               <div className="material-symbols-outlined text-[#00FFD1] text-2xl">

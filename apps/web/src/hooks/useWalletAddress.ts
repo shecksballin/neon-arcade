@@ -1,0 +1,48 @@
+/**
+ * useWalletAddress
+ * ================
+ * Returns the user's Solana wallet address (embedded or external),
+ * or null if not ready / not logged in.
+ *
+ * Both embedded (Privy-created) and external (Phantom etc.) wallets
+ * show up in the same useWallets() array — the backend treats them
+ * identically. When a user somehow has both, we prefer the embedded
+ * one so their in-game identity stays stable.
+ */
+
+import { usePrivy } from '@privy-io/react-auth'
+import { useWallets } from '@privy-io/react-auth/solana'
+import type { ConnectedStandardSolanaWallet } from '@privy-io/react-auth/solana'
+
+/**
+ * True for the Privy embedded wallet (vs an external one). v3 wallets
+ * don't carry the old `walletClientType` field — the embedded wallet is
+ * identified by the `privy:` feature on its standard-wallet instance.
+ */
+export function isEmbeddedWallet(w: ConnectedStandardSolanaWallet): boolean {
+  return 'privy:' in w.standardWallet.features
+}
+
+/** The wallet the app treats as "the" wallet: embedded first, else the first connected one. */
+export function pickPrimaryWallet(
+  wallets: ConnectedStandardSolanaWallet[]
+): ConnectedStandardSolanaWallet | null {
+  return wallets.find(isEmbeddedWallet) ?? wallets[0] ?? null
+}
+
+export function useWalletAddress(): {
+  address: string | null
+  ready: boolean
+  authenticated: boolean
+} {
+  const { ready, authenticated } = usePrivy()
+  const { wallets } = useWallets()
+
+  const wallet = pickPrimaryWallet(wallets)
+
+  return {
+    address: wallet?.address ?? null,
+    ready,
+    authenticated,
+  }
+}

@@ -15,6 +15,7 @@ import {
   Wallet,
   Swords,
   CircleDot,
+  Crosshair,
   Orbit,
   Rocket,
   Brain,
@@ -30,7 +31,7 @@ import {
 import { Howler } from "howler";
 
 import { useNeonBucks } from "./NeonBucksStore";
-import { ProfileSetup } from "./components/ProfileSetup";
+import { AccountSetup } from "./components/AccountSetup";
 import { ProfileSettings } from "./components/ProfileSettings";
 import NeonConnectGame from "./components/NeonConnect/NeonConnectGame";
 import ChessGame from "./components/Chess/ChessGame";
@@ -41,6 +42,7 @@ import TriviaGame from "./components/Trivia/TriviaCore";
 import GolfGame from "./components/Golf/GolfGame";
 import ClumsyGame from "./components/Clumsy/ClumsyGame";
 import KillerGame from "./components/Killer/KillerGame";
+import PugShooterGame from "./components/PugShooter/PugShooterGame";
 import { io } from "socket.io-client";
 
 import { SidebarMenu } from "./components/SidebarMenu";
@@ -52,10 +54,18 @@ import { GlassPanel } from "./components/glass/GlassPanel";
 import { LibraryBlob } from "./components/glass/LibraryBlob";
 import { MagicBentoGameTile, GlobalSpotlight } from "./components/glass/MagicGameTile";
 import { SplashCursor } from "./components/SplashCursor";
+import { NeonViewportGlow } from "./components/NeonViewportGlow";
 import { SafeErrorBoundary } from "./components/SafeErrorBoundary";
 import ActiveUsers from "./components/ActiveUsers";
 import { useActiveUsers } from "./hooks/useActiveUsers";
 import TrueFocus from "./components/TrueFocus";
+
+import { usePrivy, useLogin } from "@privy-io/react-auth";
+import { useWallets } from "@privy-io/react-auth/solana";
+import { useBackendAuth, AUTH_TOKEN_KEY } from "./hooks/useBackendAuth";
+import { WalletPanel } from "./components/WalletPanel";
+import { profileApi, ApiError } from "./lib/api";
+import { AVATAR_LIST } from "./lib/avatars";
 
 type View =
   | "landing"
@@ -69,19 +79,61 @@ type View =
   | "golf"
   | "clumsy"
   | "killer"
-  | "profile_setup";
+  | "pugshooter"
+  | "account_setup";
 
 interface Profile {
   name: string;
   avatarUrl: string;
 }
 
+// What the backend says about the signed-in wallet's account. `null`
+// until fetched (or when signed out).
+interface BackendAccount {
+  username: string | null;
+  totpEnabled: boolean;
+}
+
+// v2: profiles are backed by the server's unique-username registry.
+// The legacy key held self-chosen local names — nullified on boot (the
+// username registry restarted from zero when accounts landed).
+const PROFILE_STORAGE_KEY = "neon_arcade_profile_v2";
+const LEGACY_PROFILE_KEY = "neon_arcade_profile";
+
 export default function App() {
   const { activeUsers, connected } = useActiveUsers();
+
+  // Privy session + the bridge that turns it into our backend JWT
+  const { ready: privyReady, authenticated, logout } = usePrivy();
+  const { wallets } = useWallets();
+
+  // The Create Account panel opens the moment Privy sign-on completes —
+  // not after the wallet appears and the backend signature exchange
+  // lands. AccountSetup itself shows the wallet/signature progress and
+  // self-dismisses for accounts that are already complete, so following
+  // up unconditionally is safe.
+  const { login } = useLogin({
+    onComplete: () => {
+      setGameInSession(false);
+      setView("account_setup");
+    },
+  });
+  const { clearSession } = useBackendAuth();
+  // "Already auto-followed-up once this session" — restored sessions get
+  // one automatic push into Create Account; after that the gates
+  // (Connect / Play Now / tiles) take over.
+  const autoFollowUpDone = React.useRef(false);
+
   const { win, balance } = useNeonBucks();
   const [view, setView] = React.useState<View>("landing");
   const [profile, setProfile] = React.useState<Profile | null>(null);
+  // Backend account status — drives the sign-in gate on Connect /
+  // Play Now / game tiles. Where the user was headed when the gate
+  // interrupted them lives in pendingDest until setup finishes.
+  const [account, setAccount] = React.useState<BackendAccount | null>(null);
+  const pendingDest = React.useRef<View | null>(null);
   const [showSettings, setShowSettings] = React.useState(false);
+  const [showWallet, setShowWallet] = React.useState(false);
   const [gameInSession, setGameInSession] = React.useState(false);
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [masterVolume, setMasterVolume] = React.useState<number>(() => {
@@ -120,7 +172,11 @@ export default function App() {
   };
 
   React.useEffect(() => {
-    const saved = localStorage.getItem("neon_arcade_profile");
+    // Nullify pre-account usernames: the registry restarted from zero,
+    // so locally stored legacy profiles no longer name anyone.
+    localStorage.removeItem(LEGACY_PROFILE_KEY);
+
+    const saved = localStorage.getItem(PROFILE_STORAGE_KEY);
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -152,19 +208,121 @@ export default function App() {
     setMenuOpen(false);
   }, [view, gameInSession]);
 
+  // Fetch the backend account for the signed-in wallet and route into
+  // AccountSetup when it's missing/unfinished. Returns the fresh status
+  // so callers can branch without waiting for state.
+  const refreshAccount = React.useCallback(async (): Promise<BackendAccount | null> => {
+    try {
+      const me = await profileApi.me();
+      const next = { username: me.username, totpEnabled: me.totpEnabled };
+      setAccount(next);
+      return next;
+    } catch (err) {
+      console.error("Account lookup failed:", err);
+      // A stale token (expired, or the signing secret rotated) can't be
+      // used again — drop it so the Create Account panel's connect phase
+      // re-runs the signature exchange instead of looping on 401s.
+      if (err instanceof ApiError && err.status === 401) {
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+      }
+      return null;
+    }
+  }, []);
+
+  // Follow-up rule: ANY signed-in session without a finished account
+  // lands in Create Account — fresh logins via useLogin's onComplete
+  // above, and restored/redirect sessions here. The panel drives the
+  // wallet wait + signature exchange itself and self-dismisses when the
+  // account turns out to be complete, so this never strands anyone.
+  React.useEffect(() => {
+    if (!authenticated) {
+      autoFollowUpDone.current = false;
+      setAccount(null);
+      return;
+    }
+    if (!privyReady || autoFollowUpDone.current) return;
+
+    const followUp = () => {
+      autoFollowUpDone.current = true;
+      setGameInSession(false);
+      setView("account_setup");
+    };
+
+    const token = localStorage.getItem(AUTH_TOKEN_KEY);
+    if (token) {
+      // Session JWT already stored — one quick status check (no
+      // signature involved) decides whether to push into setup, so
+      // finished accounts reload without any panel flash.
+      if (account) return;
+      autoFollowUpDone.current = true;
+      refreshAccount().then((acct) => {
+        const complete = !!(acct?.username && acct.totpEnabled);
+        const tokenDropped = !localStorage.getItem(AUTH_TOKEN_KEY);
+        // Incomplete account, or the token turned out stale (a fresh
+        // signature is needed anyway) → Create Account owns the rest.
+        if (!complete && (acct || tokenDropped)) followUp();
+      });
+      return;
+    }
+
+    // Signed in but no session JWT yet (first visit after login, or a
+    // cleared token): don't pop a bare signature dialog over the landing
+    // page — open Create Account and let its connect phase ask for the
+    // signature with context. Waits for the embedded wallet, which can
+    // lag `authenticated` by a beat.
+    if (wallets.length === 0) return;
+    followUp();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [privyReady, authenticated, wallets, account, refreshAccount]);
+
+  // Fresh device with a finished account: rebuild the local display
+  // profile from the backend username (avatar defaults; editable in
+  // settings, where the name itself is locked to the registry).
+  React.useEffect(() => {
+    if (!profile && account?.username && account.totpEnabled) {
+      const rebuilt = { name: account.username, avatarUrl: AVATAR_LIST[0] };
+      setProfile(rebuilt);
+      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(rebuilt));
+    }
+  }, [account, profile]);
+
+  // Whether this wallet finished the whole flow: signed in, unique
+  // username claimed, PIN set, authenticator proven.
+  const hasAccount = !!(account?.username && account.totpEnabled);
+
+  // THE GATE. Connect, Play Now and every game tile route through here:
+  //   signed out            → Privy wallet popup (setup follows sign-in)
+  //   signed in, no account → username + PIN + authenticator screen
+  //   account complete      → straight to the destination
+  const requireAccount = React.useCallback(
+    (dest: View) => {
+      setGameInSession(false);
+      if (!privyReady) return;
+      if (!authenticated) {
+        pendingDest.current = dest;
+        login();
+        return;
+      }
+      if (!hasAccount) {
+        pendingDest.current = dest;
+        setView("account_setup");
+        return;
+      }
+      setView(dest);
+    },
+    [privyReady, authenticated, hasAccount, login]
+  );
+
   const handleVolumeChange = (vol: number) => {
     setMasterVolume(vol);
     localStorage.setItem("masterVolume", vol.toString());
     Howler.volume(vol);
   };
 
+  // Play Now is a gated entry point: wallet popup first for signed-out
+  // users, then username/PIN/authenticator, then the arcade.
   const handlePlayNow = () => {
-    setGameInSession(false);
-    if (profile) {
-      setView("arcade");
-    } else {
-      setView("profile_setup");
-    }
+    requireAccount("arcade");
   };
 
   const navigateToLanding = () => {
@@ -172,15 +330,36 @@ export default function App() {
     setView("landing");
   };
 
-  const handleProfileComplete = (newProfile: Profile) => {
+  // AccountSetup finished: username registered, PIN saved, authenticator
+  // proven. Persist the display profile and continue to wherever the
+  // gate interrupted (arcade by default). Returning users keep their
+  // locally chosen avatar — only the name is registry-owned.
+  const handleAccountComplete = (incoming: Profile) => {
+    const newProfile = {
+      name: incoming.name,
+      avatarUrl: profile?.avatarUrl ?? incoming.avatarUrl,
+    };
+    setAccount({ username: newProfile.name, totpEnabled: true });
     setProfile(newProfile);
-    localStorage.setItem("neon_arcade_profile", JSON.stringify(newProfile));
-    setView("arcade");
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(newProfile));
+    const dest = pendingDest.current ?? "arcade";
+    pendingDest.current = null;
+    setGameInSession(false);
+    setView(dest === "account_setup" ? "arcade" : dest);
+  };
+
+  const handleDisconnectWallet = async () => {
+    setShowWallet(false);
+    clearSession(); // our backend JWT dies with the Privy session
+    await logout();
   };
 
   const handleProfileUpdate = (newProfile: Profile) => {
-    setProfile(newProfile);
-    localStorage.setItem("neon_arcade_profile", JSON.stringify(newProfile));
+    // The display name is locked to the registered unique username —
+    // only the avatar is editable client-side.
+    const next = { ...newProfile, name: account?.username ?? newProfile.name };
+    setProfile(next);
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(next));
   };
 
   const viewToGameTitle: Record<string, string> = {
@@ -193,11 +372,13 @@ export default function App() {
     golf: "Neon Golf Clash",
     clumsy: "Neon Clumsy",
     killer: "Neon Killer",
+    pugshooter: "Neon Pug Shooter",
   };
 
   return (
     <div className="font-sans selection:bg-cyan-500/30 selection:text-cyan-200 h-screen overflow-hidden bg-[#081616] text-[#d7e5e5]">
       <LiquidFilter />
+      <NeonViewportGlow />
       {(view === "landing" ||
         view === "arcade" ||
         view === "neonconnect" ||
@@ -208,6 +389,7 @@ export default function App() {
         view === "golf" ||
         view === "clumsy" ||
         view === "killer" ||
+        view === "pugshooter" ||
         view === "volley") && (
         <SidebarMenu 
           gameTitle={viewToGameTitle[view] || "Neon Arcade"} 
@@ -218,7 +400,7 @@ export default function App() {
       )}
 
       {/* Standalone Menu Button aligned vertically with the nav bar at top-6 */}
-      {view !== "cells" && view !== "asteroids" && view !== "profile_setup" && !gameInSession && (
+      {view !== "cells" && view !== "asteroids" && view !== "account_setup" && !gameInSession && (
         <button
           onClick={() => setMenuOpen(true)}
           className="fixed top-6 left-6 z-[60] p-2.5 border border-[#00FFD1]/40 rounded-full backdrop-blur-md hover:scale-105 active:scale-95 transition-all flex items-center justify-center cursor-pointer group select-none pointer-events-auto"
@@ -415,15 +597,34 @@ export default function App() {
                   </AnimatePresence>
                 </div>
 
-                {/* Action Button */}
-                <button className="flex items-center gap-2 bg-gradient-to-r from-[#00FFD1] to-[#00e0b7] text-[#00382c] px-4 md:px-5 py-2 md:py-2.5 rounded-full font-bold text-[10px] md:text-sm transition-all shadow-[0_0_40px_rgba(0,255,209,0.5)] hover:scale-105 active:scale-95 ml-1 md:ml-2 relative z-20">
-                  <Wallet className="w-3 h-3 md:w-4 md:h-4 fill-current" />
-                  <span className="whitespace-nowrap">Connect wallet</span>
-                </button>
+                {/* Logged out → "Connect" opens the Privy login modal.
+                    Logged in → "Wallet" opens the embedded-wallet panel
+                    (address + SOL balance + export/disconnect). */}
+                {authenticated ? (
+                  <button
+                    onClick={() => setShowWallet(true)}
+                    title="Open your wallet"
+                    className="flex items-center gap-2 bg-gradient-to-r from-[#00FFD1] to-[#00e0b7] text-[#00382c] px-4 md:px-5 py-2 md:py-2.5 rounded-full font-bold text-[10px] md:text-sm transition-all shadow-[0_0_40px_rgba(0,255,209,0.5)] hover:scale-105 active:scale-95 ml-1 md:ml-2 relative z-20 cursor-pointer"
+                  >
+                    <Wallet className="w-3 h-3 md:w-4 md:h-4 fill-current" />
+                    <span className="whitespace-nowrap">Wallet</span>
+                  </button>
+                ) : (
+                  <button
+                    // Gated: Privy popup now, username + PIN + authenticator
+                    // right after sign-in (stays on the current page).
+                    onClick={() => requireAccount(view)}
+                    title="Log in"
+                    className="flex items-center gap-2 bg-gradient-to-r from-[#00FFD1] to-[#00e0b7] text-[#00382c] px-4 md:px-5 py-2 md:py-2.5 rounded-full font-bold text-[10px] md:text-sm transition-all shadow-[0_0_40px_rgba(0,255,209,0.5)] hover:scale-105 active:scale-95 ml-1 md:ml-2 relative z-20 cursor-pointer"
+                  >
+                    <Wallet className="w-3 h-3 md:w-4 md:h-4 fill-current" />
+                    <span className="whitespace-nowrap">Connect</span>
+                  </button>
+                )}
               </div>
             </nav>
             <AnimatePresence>
-              {view !== "landing" && view !== "profile_setup" && !gameInSession && (
+              {view !== "landing" && view !== "account_setup" && !gameInSession && (
                 <motion.div
                   initial={{ opacity: 0, y: -10 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -448,6 +649,16 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      <AnimatePresence>
+        {showWallet && authenticated && (
+          <WalletPanel
+            profile={profile}
+            onClose={() => setShowWallet(false)}
+            onDisconnect={handleDisconnectWallet}
+          />
+        )}
+      </AnimatePresence>
+
       <AnimatePresence mode="wait">
         {view === "landing" ? (
           <motion.div
@@ -463,15 +674,15 @@ export default function App() {
               activeUsers={connected ? activeUsers : 0}
             />
           </motion.div>
-        ) : view === "profile_setup" ? (
+        ) : view === "account_setup" ? (
           <motion.div
-            key="profile_setup"
+            key="account_setup"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="h-full"
           >
-            <ProfileSetup onComplete={handleProfileComplete} />
+            <AccountSetup onComplete={handleAccountComplete} />
           </motion.div>
         ) : view === "arcade" ? (
           <motion.div
@@ -481,44 +692,21 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="h-full"
           >
+            {/* Every tile routes through requireAccount: signed-out users
+                get the Privy popup (then username + PIN + authenticator)
+                before any game opens. */}
             <ArcadeView
               onBack={navigateToLanding}
-              onSelectNeonConnect={() => {
-                setView("neonconnect");
-                setGameInSession(false);
-              }}
-              onSelectChess={() => {
-                setView("chess");
-                setGameInSession(false);
-              }}
-              onSelectVolley={() => {
-                setView("volley");
-                setGameInSession(false);
-              }}
-              onSelectCells={() => {
-                setView("cells");
-                setGameInSession(false);
-              }}
-              onSelectAsteroids={() => {
-                setView("asteroids");
-                setGameInSession(false);
-              }}
-              onSelectTrivia={() => {
-                setView("trivia");
-                setGameInSession(false);
-              }}
-              onSelectGolf={() => {
-                setView("golf");
-                setGameInSession(false);
-              }}
-              onSelectClumsy={() => {
-                setView("clumsy");
-                setGameInSession(false);
-              }}
-              onSelectKiller={() => {
-                setView("killer");
-                setGameInSession(false);
-              }}
+              onSelectNeonConnect={() => requireAccount("neonconnect")}
+              onSelectChess={() => requireAccount("chess")}
+              onSelectVolley={() => requireAccount("volley")}
+              onSelectCells={() => requireAccount("cells")}
+              onSelectAsteroids={() => requireAccount("asteroids")}
+              onSelectTrivia={() => requireAccount("trivia")}
+              onSelectGolf={() => requireAccount("golf")}
+              onSelectClumsy={() => requireAccount("clumsy")}
+              onSelectKiller={() => requireAccount("killer")}
+              onSelectPugShooter={() => requireAccount("pugshooter")}
               masterVolume={masterVolume}
               onVolumeChange={handleVolumeChange}
               showVolumeConfig={showVolumeConfig}
@@ -655,6 +843,23 @@ export default function App() {
               onGameStatusChange={setGameInSession}
             />
           </motion.div>
+        ) : view === "pugshooter" ? (
+          <motion.div
+            key="pugshooter"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="h-full"
+          >
+            <PugShooterGame
+              onExit={() => {
+                setView("arcade");
+                setGameInSession(false);
+              }}
+              profile={profile}
+              onGameStatusChange={setGameInSession}
+            />
+          </motion.div>
         ) : (
           <motion.div
             key="asteroids"
@@ -676,7 +881,7 @@ export default function App() {
       </AnimatePresence>
 
       {/* Footer (Shared) */}
-      {view !== "asteroids" && view !== "cells" && view !== "volley" && view !== "chess" && view !== "golf" && view !== "clumsy" && view !== "killer" && (
+      {view !== "asteroids" && view !== "cells" && view !== "volley" && view !== "chess" && view !== "golf" && view !== "clumsy" && view !== "killer" && view !== "pugshooter" && (
         <footer className="fixed bottom-0 left-0 right-0 z-50 flex justify-center gap-8 py-6 w-full bg-transparent font-mono text-[10px] tracking-[0.3em] text-[#00FFD1]/40 pointer-events-none">
           <span className="uppercase">© 2026 NeonArcade Gaming</span>
           <div className="hidden md:flex gap-8 pointer-events-auto">
@@ -835,6 +1040,7 @@ function ArcadeView({
   onSelectGolf,
   onSelectClumsy,
   onSelectKiller,
+  onSelectPugShooter,
   masterVolume,
   onVolumeChange,
   showVolumeConfig,
@@ -850,6 +1056,7 @@ function ArcadeView({
   onSelectGolf: () => void;
   onSelectClumsy: () => void;
   onSelectKiller: () => void;
+  onSelectPugShooter: () => void;
   masterVolume: number;
   onVolumeChange: (vol: number) => void;
   showVolumeConfig: boolean;
@@ -947,6 +1154,13 @@ function ArcadeView({
               onClick={onSelectKiller}
               icon={<Skull className="w-12 h-12 text-[#00FFD1]" />}
               title="Neon Killer"
+            />
+          </div>
+          <div className="lg:col-start-1">
+            <MagicBentoGameTile
+              onClick={onSelectPugShooter}
+              icon={<Crosshair className="w-12 h-12 text-[#00FFD1]" />}
+              title="Neon Pug Shooter"
             />
           </div>
         </div>

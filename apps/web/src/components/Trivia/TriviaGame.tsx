@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Trophy, Timer, ChevronLeft, Maximize2, Zap, Brain, Target, Info } from 'lucide-react';
-import { TRIVIA_QUESTIONS, Question } from './TriviaQuestions';
+import { Question } from './TriviaQuestions';
 import { Socket } from 'socket.io-client';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
 import { useNeonBucks } from '../../NeonBucksStore';
@@ -21,7 +21,10 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
   const [gameState, setGameState] = useState<'waiting' | 'countdown' | 'playing' | 'ended'>('waiting');
   const [countdown, setCountdown] = useState(3);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [questions, setQuestions] = useState<Question[]>(practiceQuestions && practiceQuestions.length > 0 ? practiceQuestions : TRIVIA_QUESTIONS);
+  // Start from the passed practice set. Never fall back to the full
+  // TRIVIA_QUESTIONS bank here — that mixed every topic together. Multiplayer
+  // fills this in via the `triviaGameStart` socket event.
+  const [questions, setQuestions] = useState<Question[]>(practiceQuestions && practiceQuestions.length > 0 ? practiceQuestions : []);
   const [currentTopic, setCurrentTopic] = useState<string>(topicName || "General");
   const [score, setScore] = useState(0);
   const [timeLeft, setTimeLeft] = useState(15);
@@ -154,11 +157,11 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
 
       socket.on('triviaUpdate', (data: any) => {
           if (data.scores) {
-              const myScore = data.scores[profile.name] || 0;
+              const myScore = data.scores[profile?.name ?? ''] || 0;
               setScore(myScore);
               // For 1v1, track opponent specifically
               if (config.mode === '1v1') {
-                  const oppName = Object.keys(data.scores).find(name => name !== profile.name);
+                  const oppName = Object.keys(data.scores).find(name => name !== profile?.name);
                   if (oppName) setOpponentScore(data.scores[oppName]);
               }
               setPlayers(data.players);
@@ -226,10 +229,10 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
             <div className="flex flex-col gap-4">
               <div className="flex items-center gap-4 bg-black/40 backdrop-blur-md px-6 py-3 rounded-2xl border border-[#00FFD1]/20">
                 <div className="w-10 h-10 rounded-full border border-[#00FFD1]/50 bg-[#00FFD1]/10 overflow-hidden">
-                  <img src={profile.avatarUrl} alt="Me" className="w-full h-full object-cover" />
+                  <img src={profile?.avatarUrl ?? '/NeonArcadeLogo.png'} alt="Me" className="w-full h-full object-cover" />
                 </div>
                 <div>
-                    <p className="text-white font-black text-sm uppercase italic tracking-wider leading-none mb-1">{profile.name}</p>
+                    <p className="text-white font-black text-sm uppercase italic tracking-wider leading-none mb-1">{profile?.name ?? 'Player'}</p>
                     <p className="text-[#00FFD1] text-xs font-mono font-bold leading-none">{score} PTS</p>
                 </div>
               </div>
@@ -269,7 +272,7 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
                     <div className="space-y-2">
                         {players.slice(0, 5).map((p, i) => (
                             <div key={p.name} className="flex justify-between items-center text-[10px]">
-                                <span className={`font-bold transition-colors ${p.name === profile.name ? 'text-[#00FFD1]' : 'text-white/60'}`}>{i + 1}. {p.name}</span>
+                                <span className={`font-bold transition-colors ${p.name === profile?.name ? 'text-[#00FFD1]' : 'text-white/60'}`}>{i + 1}. {p.name}</span>
                                 <span className="font-mono text-white/40">{p.score}</span>
                             </div>
                         ))}

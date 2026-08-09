@@ -23,6 +23,14 @@ import { WagerMenu } from "../NeonBucks/WagerMenu";
 import { ResultsScreen } from "../NeonBucks/ResultsScreen";
 import { useNeonBucks } from "../../NeonBucksStore";
 import { ParticleCard, GlobalSpotlight } from "../glass/MagicGameTile";
+import { DifficultySelector } from "../common/DifficultySelector";
+import {
+  CONNECT_DIFFICULTIES,
+  CONNECT_DEFAULT_DIFFICULTY,
+  connectAiConfig,
+  connectDifficultyCaption,
+} from "./connectDifficulty";
+import { chooseConnectAiMove } from "./connectAi";
 
 function ConnectHistoryPanel({
   history,
@@ -355,6 +363,9 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
   const [myTurn, setMyTurn] = useState<boolean>(true);
   const [myPlayerId, setMyPlayerId] = useState<number>(HUMAN);
   const [wagerAmount, setWagerAmount] = useState<number>(0);
+  // Computer-opponent strength (see connectDifficulty.ts). Persists across
+  // resetGame so a chosen difficulty carries into the next practice game.
+  const [aiDifficulty, setAiDifficulty] = useState<number>(CONNECT_DEFAULT_DIFFICULTY);
   const { win, balance } = useNeonBucks();
 
   const boardRef = useRef(board);
@@ -645,44 +656,12 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
     ) {
       // AI "Thinking" state
       const aiTimer = setTimeout(() => {
-        const currentBoard = boardRef.current;
-        const validMoves: number[] = [];
-
-        // Priority 1: Can AI win this turn?
-        for (let col = 0; col < COLS; col++) {
-          const r = getAvailableRow(col, currentBoard);
-          if (r !== -1) {
-            const tempBoard = [...currentBoard];
-            tempBoard[r * COLS + col] = OPPONENT;
-            if (checkWin(tempBoard, OPPONENT)) {
-              handleColumnClick(col);
-              return;
-            }
-            validMoves.push(col);
-          }
-        }
-
-        // Priority 2: Must block human winning next turn?
-        for (let col = 0; col < COLS; col++) {
-          const r = getAvailableRow(col, currentBoard);
-          if (r !== -1) {
-            const tempBoard = [...currentBoard];
-            tempBoard[r * COLS + col] = HUMAN;
-            if (checkWin(tempBoard, HUMAN)) {
-              handleColumnClick(col);
-              return;
-            }
-          }
-        }
-
-        // Priority 3: Middle is better
-        if (validMoves.includes(3)) {
-          handleColumnClick(3);
-        } else if (validMoves.length > 0) {
-          const randomCol =
-            validMoves[Math.floor(Math.random() * validMoves.length)];
-          handleColumnClick(randomCol);
-        }
+        const move = chooseConnectAiMove(
+          boardRef.current,
+          connectAiConfig(aiDifficulty),
+          { COLS, HUMAN, OPPONENT, getAvailableRow, checkWin },
+        );
+        if (move !== null) handleColumnClick(move);
       }, 800); // AI Thinking Delay
 
       return () => clearTimeout(aiTimer);
@@ -692,6 +671,7 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
     mode,
     gameStatus,
     canPlay,
+    aiDifficulty,
     getAvailableRow,
     checkWin,
     handleColumnClick,
@@ -859,6 +839,18 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
               </div>
             </ParticleCard>
           </div>
+
+          {/* Practice difficulty — applies to the Practice (Computer) match */}
+          <div className="w-full max-w-xl mx-auto px-6 py-5 rounded-2xl border border-[#00FFD1]/25 bg-[#041010]/80">
+            <DifficultySelector
+              tiers={CONNECT_DIFFICULTIES}
+              value={aiDifficulty}
+              onChange={setAiDifficulty}
+              title="Practice Difficulty"
+              caption={connectDifficultyCaption(aiDifficulty)}
+            />
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-12">
             <ParticleCard className="magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-default border-[#00FFD1]/40">
               <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
@@ -1046,12 +1038,27 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
         </div>
 
         {/* Right Side Panel */}
-        <div style={{ width: 300, height: 652, flexShrink: 0 }} className="mt-[40px]">
-          <ConnectHistoryPanel 
-            history={moveHistory} 
-            onUndo={(mode === 'local' || mode === 'local_coop') ? handleUndo : undefined} 
-            onNewGame={resetGame}
-          />
+        <div style={{ width: 300, height: 652, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 12 }} className="mt-[40px]">
+          {mode === 'local' && (
+            <div style={{ background: '#041010', border: '1px solid rgba(0,255,209,0.2)', borderRadius: 8, padding: '12px 10px', flexShrink: 0 }}>
+              <DifficultySelector
+                tiers={CONNECT_DIFFICULTIES}
+                value={aiDifficulty}
+                onChange={setAiDifficulty}
+                title="AI Difficulty"
+                caption={connectDifficultyCaption(aiDifficulty)}
+                compact
+                disabled={currentPlayer === OPPONENT && gameStatus === 'playing'}
+              />
+            </div>
+          )}
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <ConnectHistoryPanel
+              history={moveHistory}
+              onUndo={(mode === 'local' || mode === 'local_coop') ? handleUndo : undefined}
+              onNewGame={resetGame}
+            />
+          </div>
         </div>
       </div></div>
     </div>

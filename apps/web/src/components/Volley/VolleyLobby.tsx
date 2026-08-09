@@ -5,7 +5,12 @@ import { ChevronLeft,
   Settings as SettingsIcon,
   Maximize2, CircleDollarSign } from 'lucide-react';
 import { motion, AnimatePresence } from "motion/react";
-import VolleyDifficultySelector from "./VolleyDifficultySelector";
+import { DifficultySelector } from "../common/DifficultySelector";
+import {
+  VOLLEY_DIFFICULTIES,
+  VOLLEY_DEFAULT_DIFFICULTY,
+  volleyDifficultyCaption,
+} from "./volleyDifficulty";
 import { LibraryBlob } from "../glass/LibraryBlob";
 import { ParticleCard, GlobalSpotlight } from "../glass/MagicGameTile";
 
@@ -30,8 +35,7 @@ const VolleyLobby = ({
   settings,
   onSettingsChange,
 }: VolleyLobbyProps) => {
-  const [showDifficulty, setShowDifficulty] = useState(false);
-  const [selectedDifficulty, setSelectedDifficulty] = useState(3);
+  const [selectedDifficulty, setSelectedDifficulty] = useState(VOLLEY_DEFAULT_DIFFICULTY);
   const [matchMode, setMatchMode] = useState<"classic" | "bestof3" | "sudden">(
     "classic",
   );
@@ -67,7 +71,6 @@ const VolleyLobby = ({
       difficulty: selectedDifficulty,
       matchMode,
     });
-    setShowDifficulty(false);
   };
 
   return (
@@ -91,112 +94,111 @@ const VolleyLobby = ({
           </h1>
         </div>
 
-        {!showDifficulty && (
-          <div className="space-y-6">
-            <div className="flex flex-col items-center gap-3">
-              <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
-                Select Regulation
-              </p>
-              <div className="flex gap-2 p-1 bg-[#111E1E]/80 border border-[#00FFD1]/20 rounded-lg backdrop-blur-md">
-                {(["classic", "bestof3", "sudden"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    onClick={() => setMatchMode(mode)}
-                    className={`px-4 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      matchMode === mode
-                        ? "bg-[#00FFD1] text-[#081616] shadow-[0_0_15px_rgba(0,255,209,0.5)]"
-                        : "text-[#B1C5FF]/50 hover:text-[#B1C5FF]"
-                    }`}
-                  >
-                    {mode === "classic"
-                      ? "11 Points"
-                      : mode === "bestof3"
-                        ? "Best of 3"
-                        : "Sudden Death"}
-                  </button>
-                ))}
-              </div>
+        <div className="space-y-6">
+          <div className="flex flex-col items-center gap-3">
+            <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
+              Select Regulation
+            </p>
+            <div className="flex gap-2 p-1 bg-[#111E1E]/80 border border-[#00FFD1]/20 rounded-lg backdrop-blur-md">
+              {(["classic", "bestof3", "sudden"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => setMatchMode(mode)}
+                  className={`px-4 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
+                    matchMode === mode
+                      ? "bg-[#00FFD1] text-[#081616] shadow-[0_0_15px_rgba(0,255,209,0.5)]"
+                      : "text-[#B1C5FF]/50 hover:text-[#B1C5FF]"
+                  }`}
+                >
+                  {mode === "classic"
+                    ? "11 Points"
+                    : mode === "bestof3"
+                      ? "Best of 3"
+                      : "Sudden Death"}
+                </button>
+              ))}
             </div>
           </div>
-        )}
-
-                <div className="w-full">
-          {!showDifficulty ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full text-left">
-              <ParticleCard
-                onClick={handleStartMultiplayer}
-                className="magic-bento-card magic-bento-card--border-glow px-8 py-6 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl hover:shadow-[0_0_50px_rgba(0,255,209,0.3)] hover:scale-[1.02] active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
-              >
-                <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>
-                <CircleDollarSign className="w-8 h-8 group-hover:rotate-12 transition-transform" />
-                <div className="text-center">
-                  <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">Wager Match</span>
-                  <span className="block text-[8px] opacity-60 font-bold tracking-widest mt-1">
-                    GLOBAL WAGER ARENA
-                  </span>
-                </div>
-              </ParticleCard>
-              <ParticleCard
-                onClick={() => setShowDifficulty(true)}
-                className="magic-bento-card magic-bento-card--border-glow px-8 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
-              >
-                <Cpu className="w-8 h-8 text-zinc-400 group-hover:rotate-12 transition-transform" />
-                <div className="text-center">
-                  <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">
-                    Practice
-                  </span>
-                  <span className="block text-[8px] text-white/40 font-bold tracking-widest mt-1">
-                    COMPUTER ENGINE
-                  </span>
-                </div>
-              </ParticleCard>
-            </div>
-          ) : (
-            <VolleyDifficultySelector
-              selectedDifficulty={selectedDifficulty}
-              onSelect={setSelectedDifficulty}
-              onConfirm={handleStartComputer}
-              onCancel={() => setShowDifficulty(false)}
-            />
-          )}
         </div>
-{!showDifficulty && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-12">
-            <ParticleCard 
-              onClick={() => setMatchMode('classic')}
-              className={`magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-pointer ${matchMode === 'classic' ? 'border-[#00FFD1] shadow-[0_0_15px_rgba(0,255,209,0.5)]' : 'border-[#00FFD1]/40'}`}
+
+        <div className="w-full">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full text-left">
+            <ParticleCard
+              onClick={handleStartMultiplayer}
+              className="magic-bento-card magic-bento-card--border-glow px-8 py-6 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl hover:shadow-[0_0_50px_rgba(0,255,209,0.3)] hover:scale-[1.02] active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
             >
-              <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
-                videogame_asset
+              <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>
+              <CircleDollarSign className="w-8 h-8 group-hover:rotate-12 transition-transform" />
+              <div className="text-center">
+                <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">Wager Match</span>
+                <span className="block text-[8px] opacity-60 font-bold tracking-widest mt-1">
+                  GLOBAL WAGER ARENA
+                </span>
               </div>
-              <p className="text-[10px] font-mono tracking-widest uppercase text-[#B1C5FF]/70">
-                Practice
-              </p>
             </ParticleCard>
-            <ParticleCard 
-              onClick={() => setMatchMode('bestof3')}
-              className={`magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-pointer ${matchMode === 'bestof3' ? 'border-[#00FFD1] shadow-[0_0_15px_rgba(0,255,209,0.5)]' : 'border-[#00FFD1]/40'}`}
+            <ParticleCard
+              onClick={handleStartComputer}
+              className="magic-bento-card magic-bento-card--border-glow px-8 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
             >
-              <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
-                smart_toy
+              <Cpu className="w-8 h-8 text-zinc-400 group-hover:rotate-12 transition-transform" />
+              <div className="text-center">
+                <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">
+                  Practice
+                </span>
+                <span className="block text-[8px] text-white/40 font-bold tracking-widest mt-1">
+                  COMPUTER ENGINE
+                </span>
               </div>
-              <p className="text-[10px] font-mono tracking-widest uppercase text-[#B1C5FF]/70">
-                Online
-              </p>
-            </ParticleCard>
-            <ParticleCard 
-              onClick={() => setMatchMode('sudden')}
-              className={`magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-pointer ${matchMode === 'sudden' ? 'border-[#00FFD1] shadow-[0_0_15px_rgba(0,255,209,0.5)]' : 'border-[#00FFD1]/40'}`}
-            >
-              <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
-                trending_up
-              </div>
-              <p className="text-[10px] font-mono tracking-widest uppercase text-[#B1C5FF]/70">
-                Wager
-              </p>
             </ParticleCard>
           </div>
-        )}
+        </div>
+
+        {/* Practice difficulty — applies to the Practice (Computer) match */}
+        <div className="w-full max-w-xl mx-auto px-6 py-5 rounded-2xl border border-[#00FFD1]/25 bg-[#041010]/80">
+          <DifficultySelector
+            tiers={VOLLEY_DIFFICULTIES}
+            value={selectedDifficulty}
+            onChange={setSelectedDifficulty}
+            title="Practice Difficulty"
+            caption={volleyDifficultyCaption(selectedDifficulty)}
+          />
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-12">
+          <ParticleCard
+            onClick={() => setMatchMode('classic')}
+            className={`magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-pointer ${matchMode === 'classic' ? 'border-[#00FFD1] shadow-[0_0_15px_rgba(0,255,209,0.5)]' : 'border-[#00FFD1]/40'}`}
+          >
+            <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
+              videogame_asset
+            </div>
+            <p className="text-[10px] font-mono tracking-widest uppercase text-[#B1C5FF]/70">
+              Practice
+            </p>
+          </ParticleCard>
+          <ParticleCard
+            onClick={() => setMatchMode('bestof3')}
+            className={`magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-pointer ${matchMode === 'bestof3' ? 'border-[#00FFD1] shadow-[0_0_15px_rgba(0,255,209,0.5)]' : 'border-[#00FFD1]/40'}`}
+          >
+            <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
+              smart_toy
+            </div>
+            <p className="text-[10px] font-mono tracking-widest uppercase text-[#B1C5FF]/70">
+              Online
+            </p>
+          </ParticleCard>
+          <ParticleCard
+            onClick={() => setMatchMode('sudden')}
+            className={`magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-pointer ${matchMode === 'sudden' ? 'border-[#00FFD1] shadow-[0_0_15px_rgba(0,255,209,0.5)]' : 'border-[#00FFD1]/40'}`}
+          >
+            <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
+              trending_up
+            </div>
+            <p className="text-[10px] font-mono tracking-widest uppercase text-[#B1C5FF]/70">
+              Wager
+            </p>
+          </ParticleCard>
+        </div>
       </div>
     </div>
   );

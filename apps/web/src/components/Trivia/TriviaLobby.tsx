@@ -25,6 +25,9 @@ import { ChevronLeft,
 import { motion, AnimatePresence } from "motion/react";
 import { LibraryBlob } from "../glass/LibraryBlob";
 import { ParticleCard, GlobalSpotlight } from "../glass/MagicGameTile";
+import { generateQuestions as fetchQuizQuestions } from "./neonQuizApi";
+
+const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3002';
 
 interface TriviaLobbyProps {
   onFindGame: (config: { mode: "1v1" | "ffa" }) => void;
@@ -77,7 +80,7 @@ const TriviaLobby = ({
 
   const fetchTopics = (refresh = false) => {
     setLoading(true);
-    fetch(`/api/trivia/topics${refresh ? "?refresh=true" : ""}`)
+    fetch(`${API_URL}/api/trivia/topics${refresh ? "?refresh=true" : ""}`)
       .then((res) => {
         if (!res.ok) throw new Error(`Server returned ${res.status}`);
         return res.json();
@@ -150,29 +153,30 @@ const TriviaLobby = ({
   const handleSelectTopic = async (topic: any) => {
     setLoading(true);
     try {
-      const res = await fetch(
-        `/api/trivia/generate?topic=${encodeURIComponent(topic.name)}`,
-      );
-      if (!res.ok)
-        throw new Error(`Generation failed with status ${res.status}`);
-      const data = await res.json();
-      onPlayPractice(topic.name, data);
+      // withAnswers: true — solo practice scores locally, so we need the
+      // correct index. The AI generates questions ON this exact topic.
+      const data = await fetchQuizQuestions(topic.name, 10, 'mixed', true);
+      if (!data.questions?.length) throw new Error('No questions returned');
+      onPlayPractice(topic.name, data.questions);
     } catch (err) {
       console.error("Trivia generation error:", err);
-      // Fallback to static questions
-      import("./TriviaQuestions").then(({ TRIVIA_QUESTIONS }) => {
-        const normalizedTopic = topic.name.trim().toLowerCase();
-        const categorizedQuestions = TRIVIA_QUESTIONS.filter(
-          (q) => q.category.trim().toLowerCase() === normalizedTopic,
+      // Offline fallback: only ever use questions that actually match this
+      // topic. Never scramble in questions from other categories — that was
+      // the "jumbled topics" bug.
+      const { TRIVIA_QUESTIONS } = await import("./TriviaQuestions");
+      const normalizedTopic = topic.name.trim().toLowerCase();
+      const onTopic = TRIVIA_QUESTIONS.filter(
+        (q) => q.category.trim().toLowerCase() === normalizedTopic,
+      );
+      if (onTopic.length > 0) {
+        onPlayPractice(topic.name, onTopic);
+      } else {
+        // No on-topic offline questions — tell the user instead of showing
+        // unrelated ones.
+        alert(
+          `Couldn't generate questions for "${topic.name}". Check that the server is running and OPENROUTER_API_KEY is set, then try again.`,
         );
-        let pool =
-          categorizedQuestions.length > 0
-            ? categorizedQuestions
-            : [...TRIVIA_QUESTIONS]
-                .sort(() => Math.random() - 0.5)
-                .slice(0, 10);
-        onPlayPractice(topic.name, pool);
-      });
+      }
     } finally {
       setLoading(false);
     }

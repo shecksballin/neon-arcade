@@ -1,0 +1,40 @@
+1. Logo (the snake image)
+Set it in the Dashboard under your app's UI components → Branding → Logo (use a .png, ~180×90, 2:1 aspect ratio). Or override just the modal logo in code:
+jsx<PrivyProvider
+  appId="your-privy-app-id"
+  config={{
+    appearance: {
+      logo: 'NeonArcadeLogo.png', // '' shows no logo
+    },
+  }}
+>
+  {children}
+</PrivyProvider>
+2. Dark theme + brand colors
+The theme sets the core background/foreground. You can pass 'light', 'dark', or a custom hex color:
+jsxconfig={{
+  appearance: {
+    theme: //'#081616' for a custom background
+  },
+}}
+If you use a custom hex, Privy recommends a color above 80% or below 20% luminance so text stays readable, since it auto-generates the rest of the palette from that one color.
+3. The header text ("Log in or sign up")
+That's the default, but you can override it:
+jsxconfig={{
+  appearance: {
+    landingHeader: 'Welcome to Neon Arcade', // ~35 chars max
+    loginMessage: 'Sign in to start playing', // optional subtext, ~100 chars max
+  },
+}}
+4. Fine-tuning exact colors (accent, borders, etc.)
+For pixel-level control beyond the theme, Privy exposes CSS variables you set on your app's body. Useful ones for matching that yellow/gold accent:
+cssbody {
+  --privy-color-background: #081616;
+  --privy-color-accent: #00FFD1;        /* buttons, links */
+  --privy-color-accent-dark: #081616;
+  --privy-border-radius-md: 12px;
+}
+There's a full list of variables (backgrounds, foregrounds, accent light/dark, success/error) in the docs.
+The one thing I'd flag: the "Terms" and "Privacy Policy" links and the app name shown in the modal come from your Dashboard settings (Branding + legal/policy fields), not the appearance config — so set those in the dashboard rather than looking for a code prop.
+Privy also publishes a Figma community file with sample modal UIs if you want to design your look before implementing it.
+Want me to help you assemble a complete PrivyProvider config block tailored to your specific brand colors and login methods? If you tell me your hex colors and which login options you want, I can write the whole thing out.
