@@ -1,17 +1,17 @@
-import React, { useState, useEffect } from 'react';
-import { io } from 'socket.io-client';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import VolleyLobby from './VolleyLobby';
 import PingPongGame from './PingPongGame';
 import { WagerMenu } from '../NeonBucks/WagerMenu';
+// Shared authed game socket — connects lazily when matchmaking starts, never
+// at module import.
+import { connectGameSocket, getSocket } from '../../hooks/useGameSocket';
 
 interface VolleyGameProps {
   onExit: () => void;
   profile: { name: string; avatarUrl: string } | null;
   onGameStatusChange?: (inSession: boolean) => void;
 }
-
-const socket = io();
 
 const VolleyGame = ({ onExit, profile, onGameStatusChange }: VolleyGameProps) => {
   const [gameState, setGameState] = useState<'lobby' | 'waiting' | 'playing' | 'practice_wager'>('lobby');
@@ -21,40 +21,79 @@ const VolleyGame = ({ onExit, profile, onGameStatusChange }: VolleyGameProps) =>
   const [settings, setSettings] = useState({ ghostMode: false, minimalistMode: false });
   const [wagerAmount, setWagerAmount] = useState<number>(0);
 
+  // Singleton — stable across renders, NOT connected until connectGameSocket().
+  const socket = getSocket();
+
   useEffect(() => {
     onGameStatusChange?.(gameState !== 'lobby');
   }, [gameState, onGameStatusChange]);
 
   useEffect(() => {
-    socket.on('waiting', () => setGameState('waiting'));
-    
-    socket.on('volleyGameStart', (data: any) => {
+    // Named handlers + handler-specific socket.off — the socket is shared
+    // with the other games, so blanket .off('event') would strip theirs.
+    const onWaiting = () => setGameState('waiting');
+    const onVolleyGameStart = (data: any) => {
       setGameData(data);
       setGameMode('multiplayer');
       setGameState('playing');
-    });
-
-    socket.on('opponentDisconnected', () => {
+    };
+    const onOpponentDisconnected = () => {
       if (gameState === 'playing') {
         alert('Opponent disconnected');
         setGameState('lobby');
       }
-    });
+    };
+    const onConnectError = (err: Error) => {
+      // Auth rejection while queueing would leave us stuck on the radar
+      // screen forever — bail back to the lobby.
+      if (err.message === 'unauthorized' || err.message === 'auth_unavailable') {
+        console.warn('[volley] socket auth failed:', err.message);
+        setGameState((s) => (s === 'waiting' ? 'lobby' : s));
+      }
+    };
+    const onGameAuthError = (data: any) => {
+      // Server refused matchmaking (e.g. account setup unfinished).
+      console.warn('[volley] cannot play online:', data?.message ?? data?.code);
+      setGameState((s) => (s === 'waiting' ? 'lobby' : s));
+    };
+
+    socket.on('waiting', onWaiting);
+    socket.on('volleyGameStart', onVolleyGameStart);
+    socket.on('opponentDisconnected', onOpponentDisconnected);
+    socket.on('connect_error', onConnectError);
+    socket.on('gameAuthError', onGameAuthError);
 
     return () => {
-      socket.off('waiting');
-      socket.off('volleyGameStart');
-      socket.off('opponentDisconnected');
+      socket.off('waiting', onWaiting);
+      socket.off('volleyGameStart', onVolleyGameStart);
+      socket.off('opponentDisconnected', onOpponentDisconnected);
+      socket.off('connect_error', onConnectError);
+      socket.off('gameAuthError', onGameAuthError);
     };
+  }, [gameState, socket]);
+
+  // Free our queue slot if the whole component unmounts mid-search (the
+  // Abort button below covers the in-app path).
+  const gameStateRef = useRef(gameState);
+  useEffect(() => {
+    gameStateRef.current = gameState;
   }, [gameState]);
+  useEffect(() => {
+    return () => {
+      if (gameStateRef.current === 'waiting') socket.emit('leaveVolleyQueue');
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleFindGame = (player: { matchMode: 'classic' | 'bestof3' | 'sudden' }) => {
-    const fullPlayerInfo = { 
-      ...player, 
-      name: profile?.name || 'Player', 
-      avatarUrl: profile?.avatarUrl || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix' 
+    const fullPlayerInfo = {
+      ...player,
+      name: profile?.name || 'Player',
+      avatarUrl: profile?.avatarUrl || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix'
     };
     setPlayerInfo(fullPlayerInfo);
+    // Lazy connect: only touches the network when entering online mode.
+    connectGameSocket();
     socket.emit('findVolleyGame', fullPlayerInfo);
   };
 
@@ -122,7 +161,15 @@ const VolleyGame = ({ onExit, profile, onGameStatusChange }: VolleyGameProps) =>
               </div>
             </div>
             <h2 className="text-4xl font-black text-white italic uppercase tracking-tighter mb-4">Searching Global Mesh...</h2>
-            <button onClick={() => setGameState('lobby')} className="px-8 py-3 border border-[#00FFD1] text-[#00FFD1] rounded-xl font-mono text-xs uppercase tracking-widest">Abort Uplink</button>
+            <button
+              onClick={() => {
+                // Tell the server to drop our queue entry — without this the
+                // 'aborted' player could still get yanked into a match.
+                socket.emit('leaveVolleyQueue');
+                setGameState('lobby');
+              }}
+              className="px-8 py-3 border border-[#00FFD1] text-[#00FFD1] rounded-xl font-mono text-xs uppercase tracking-widest"
+            >Abort Uplink</button>
           </motion.div>
         )}
 

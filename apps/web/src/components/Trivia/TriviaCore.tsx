@@ -1,16 +1,17 @@
 import React, { useState } from 'react';
-import { io, Socket } from 'socket.io-client';
 import TriviaLobby from './TriviaLobby';
 import TriviaGame from './TriviaGame';
 import { WagerMenu } from '../NeonBucks/WagerMenu';
+// Shared authed game socket — connects lazily when multiplayer starts, never
+// at module import (the old module-scope io() opened an anonymous socket to
+// the page origin for every visitor).
+import { connectGameSocket, getSocket } from '../../hooks/useGameSocket';
 
 interface TriviaCoreProps {
   onExit: () => void;
   profile: any;
   onGameStatusChange?: (inGame: boolean) => void;
 }
-
-const socket: Socket = io();
 
 const TriviaCore = ({ onExit, profile, onGameStatusChange }: TriviaCoreProps) => {
   const [view, setView] = useState<'lobby' | 'wager' | 'game'>('lobby');
@@ -21,6 +22,9 @@ const TriviaCore = ({ onExit, profile, onGameStatusChange }: TriviaCoreProps) =>
   const [wagerAmount, setWagerAmount] = useState<number>(0);
 
   const handleStartMultiplayer = (config: { mode: '1v1' | 'ffa' }) => {
+    // Lazy connect: only touches the network when entering online mode.
+    // TriviaGame's findTriviaGame emit is buffered until the connect lands.
+    connectGameSocket();
     setGameMode('multiplayer');
     setMatchConfig(config);
     setPracticeData(null);
@@ -67,7 +71,7 @@ const TriviaCore = ({ onExit, profile, onGameStatusChange }: TriviaCoreProps) =>
             onGameStatusChange?.(false);
           }} 
           profile={profile}
-          socket={socket}
+          socket={getSocket()}
           wagerAmount={wagerAmount}
         />
       )}

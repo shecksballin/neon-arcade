@@ -93,6 +93,7 @@ const AsteroidsGame = ({ onExit, profile, onGameStatusChange }: AsteroidsGamePro
             onCancel={() => setGameState('lobby')}
             onStart={handleStartWager}
             fixedMode={selectedLobbyMode || undefined}
+            isMultiplayer={isMultiplayer}
           />
         </div>
       )}

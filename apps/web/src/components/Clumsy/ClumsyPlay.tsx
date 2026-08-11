@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronLeft } from 'lucide-react';
+import GameBackButton from '../common/GameBackButton';
 
 interface ClumsyPlayProps {
   /** Return to the Clumsy lobby (unmounts the iframe, stopping the game). */
@@ -26,15 +26,7 @@ export default function ClumsyPlay({ onExit }: ClumsyPlayProps) {
         allow="pointer-lock; fullscreen; gamepad; autoplay; accelerometer; gyroscope"
       />
       {/* Back-to-lobby overlay (press Esc first if the pointer is locked). */}
-      <div className="absolute top-24 left-6 z-30">
-        <button
-          onClick={onExit}
-          title="Back to lobby"
-          className="p-3 bg-black/50 border border-[#00FFD1]/30 hover:border-[#00FFD1] hover:bg-[#00FFD1]/20 rounded-full text-white backdrop-blur-md transition-all cursor-pointer"
-        >
-          <ChevronLeft className="w-6 h-6" />
-        </button>
-      </div>
+      <GameBackButton onClick={onExit} positionClassName="absolute top-24 left-6 z-30" />
     </div>
   );
 }

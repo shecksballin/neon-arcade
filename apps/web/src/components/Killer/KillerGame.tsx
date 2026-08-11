@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import KillerLobby from './KillerLobby';
-import { ChevronLeft } from 'lucide-react';
+import GameBackButton from '../common/GameBackButton';
 
 interface KillerGameProps {
   onExit: () => void;
@@ -22,14 +22,7 @@ const KillerGame = ({ onExit, profile, onGameStatusChange }: KillerGameProps) =>
   if (gameState === 'playing') {
     return (
       <div className="relative w-full h-full bg-[#081616] flex items-center justify-center text-white">
-        <div className="absolute top-24 left-6 z-30 pointer-events-none">
-          <button
-            onClick={() => setGameState('lobby')}
-            className="p-3 bg-black/50 border border-[#00FFD1]/30 hover:border-[#00FFD1] hover:bg-[#00FFD1]/20 rounded-full text-white backdrop-blur-md transition-all cursor-pointer pointer-events-auto"
-          >
-            <ChevronLeft className="w-6 h-6" />
-          </button>
-        </div>
+        <GameBackButton onClick={() => setGameState('lobby')} positionClassName="absolute top-24 left-6 z-30" />
         <div className="text-center">
           <h2 className="text-4xl font-black text-[#00FFD1] tracking-widest uppercase italic mb-4">
             Game Under Construction
@@ -44,14 +37,7 @@ const KillerGame = ({ onExit, profile, onGameStatusChange }: KillerGameProps) =>
 
   return (
     <div className="w-full h-full relative">
-      <div className="absolute top-6 left-6 z-50">
-        <button
-          onClick={onExit}
-          className="p-2 bg-black/40 border border-[#00FFD1]/30 hover:bg-[#00FFD1]/20 rounded-full text-white transition-all cursor-pointer"
-        >
-          <ChevronLeft className="w-6 h-6" />
-        </button>
-      </div>
+      <GameBackButton onClick={onExit} title="Back to arcade" positionClassName="absolute top-6 left-6 z-50" />
       <KillerLobby
         onFindGame={handleStartGame}
         onPlayComputer={handleStartGame}

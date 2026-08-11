@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronLeft } from 'lucide-react';
+import GameBackButton from '../common/GameBackButton';
 
 // The standalone game lives in `public/Golf/` so Vite serves it VERBATIM. (A
 // `.html` under `src/` gets run through Vite's HTML transform — rewriting its
@@ -34,16 +34,8 @@ const NeonGolfClash = ({ onExit }: NeonGolfClashProps) => {
         </div>
       )}
 
-      {/* Back to lobby */}
-      <div className="absolute top-6 left-6 z-30">
-        <button
-          onClick={onExit}
-          className="p-2.5 bg-black/50 border border-[#00FFD1]/30 hover:border-[#00FFD1] hover:bg-[#00FFD1]/20 rounded-full text-white backdrop-blur-md transition-all cursor-pointer"
-          title="Back to lobby"
-        >
-          <ChevronLeft className="w-6 h-6" />
-        </button>
-      </div>
+      {/* Back to lobby — top-24 keeps it clear of the game's own top-left HUD */}
+      <GameBackButton onClick={onExit} positionClassName="absolute top-24 left-6 z-30" />
 
       <iframe
         src={GAME_SRC}

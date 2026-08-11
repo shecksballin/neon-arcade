@@ -24,11 +24,11 @@ import { z } from 'zod'
 import { sign } from 'hono/jwt'
 import nacl from 'tweetnacl'
 import bs58 from 'bs58'
-import { eq } from 'drizzle-orm'
+import { and, eq, gt, isNull, lte, sql } from 'drizzle-orm'
 import { buildSignInMessage } from '@neon/types'
 import { config } from '../config/env'
 import { requireDb } from '../db'
-import { users } from '../db/schema'
+import { users, nonces } from '../db/schema'
 import { requireAuth, type AuthVariables } from '../middleware/requireAuth'
 
 const auth = new Hono<{ Variables: AuthVariables }>()
@@ -47,22 +47,25 @@ const BASE58 = /^[1-9A-HJ-NP-Za-km-z]+$/
 const WalletSchema = z.string().min(32).max(44).regex(BASE58)
 
 // ─────────────────────────────────────────────────
-// NONCE STORE — in-memory for now
+// NONCE STORE — Drizzle `nonces` table, Map fallback
 // ─────────────────────────────────────────────────
-// Once Drizzle lands this becomes the `nonces` table (schema §8) so
-// nonces survive restarts and work across multiple instances. For a
-// single dev/Railway instance a Map is exactly equivalent.
+// The real store is the `nonces` table (schema §8): rows survive
+// restarts and work across multiple instances, and consumption is an
+// ATOMIC single-statement update (set used_at WHERE unused + unexpired,
+// RETURNING) so two concurrent /verify calls can never both spend the
+// same nonce. When the server runs without DATABASE_URL (db === null)
+// we keep the old in-memory Map so sign-in still works in dev.
 interface NonceRecord {
   wallet: string
   expiresAt: number
 }
-const nonces = new Map<string, NonceRecord>()
+const memoryNonces = new Map<string, NonceRecord>()
 
-/** Drop expired nonces so the Map can't grow forever. */
-function sweepNonces() {
+/** Drop expired Map entries so the fallback store can't grow forever. */
+function sweepMemoryNonces() {
   const now = Date.now()
-  for (const [nonce, record] of nonces) {
-    if (record.expiresAt <= now) nonces.delete(nonce)
+  for (const [nonce, record] of memoryNonces) {
+    if (record.expiresAt <= now) memoryNonces.delete(nonce)
   }
 }
 
@@ -92,7 +95,7 @@ function rateLimited(key: string): boolean {
 // ─────────────────────────────────────────────────
 // GET /api/auth/nonce?wallet=<address>
 // ─────────────────────────────────────────────────
-auth.get('/nonce', (c) => {
+auth.get('/nonce', async (c) => {
   const parsed = WalletSchema.safeParse(c.req.query('wallet'))
   if (!parsed.success) {
     return c.json({ error: 'Invalid wallet address' }, 400)
@@ -103,10 +106,24 @@ auth.get('/nonce', (c) => {
     return c.json({ error: 'Too many requests — try again later' }, 429)
   }
 
-  sweepNonces()
-
   const nonce = crypto.randomUUID()
-  nonces.set(nonce, { wallet, expiresAt: Date.now() + NONCE_TTL_MS })
+  const db = requireDb()
+
+  if (db) {
+    // Opportunistic sweep: expired rows are dead weight (a consume can
+    // never match them), so clear them out on the issue path.
+    await db.delete(nonces).where(lte(nonces.expiresAt, sql`now()`))
+
+    await db.insert(nonces).values({
+      nonce,
+      wallet,
+      expiresAt: new Date(Date.now() + NONCE_TTL_MS),
+    })
+  } else {
+    // No database — fall back to the in-memory store (dev only).
+    sweepMemoryNonces()
+    memoryNonces.set(nonce, { wallet, expiresAt: Date.now() + NONCE_TTL_MS })
+  }
 
   return c.json({ nonce })
 })
@@ -143,13 +160,40 @@ auth.post('/verify', async (c) => {
   // Consume the nonce FIRST (single-use, whatever happens next). A
   // failed signature check must still burn it, or it could be
   // brute-forced with repeated attempts.
-  const record = nonces.get(nonce)
-  nonces.delete(nonce)
+  const db = requireDb()
+  let issuedToWallet: string | null = null
 
-  if (!record || record.expiresAt <= Date.now()) {
+  if (db) {
+    // Atomic consume: exactly one statement claims the nonce by setting
+    // used_at, guarded on "not yet used" and "not yet expired". If two
+    // requests race, only one gets a row back — the other sees an empty
+    // RETURNING and is rejected below. This is why consumed rows are
+    // marked rather than deleted.
+    const [claimed] = await db
+      .update(nonces)
+      .set({ usedAt: sql`now()` })
+      .where(
+        and(
+          eq(nonces.nonce, nonce),
+          isNull(nonces.usedAt),
+          gt(nonces.expiresAt, sql`now()`)
+        )
+      )
+      .returning()
+
+    issuedToWallet = claimed?.wallet ?? null
+  } else {
+    // In-memory fallback (no DATABASE_URL): delete = consume.
+    const record = memoryNonces.get(nonce)
+    memoryNonces.delete(nonce)
+    issuedToWallet =
+      record && record.expiresAt > Date.now() ? record.wallet : null
+  }
+
+  if (!issuedToWallet) {
     return c.json({ error: 'Nonce expired or unknown — request a new one' }, 401)
   }
-  if (record.wallet !== wallet) {
+  if (issuedToWallet !== wallet) {
     return c.json({ error: 'Nonce was issued to a different wallet' }, 401)
   }
 

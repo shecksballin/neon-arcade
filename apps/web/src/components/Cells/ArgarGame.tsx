@@ -1,10 +1,50 @@
 // src/components/Cells/ArgarGame.tsx
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Maximize, Minimize, RefreshCw, X, Trophy, Activity, Target, Timer, Zap, Menu, Volume2, VolumeX } from 'lucide-react';
-import { GameEngine } from './gameEngine';
+import { Maximize, Minimize, RefreshCw, Trophy, Activity, Target, Timer, Zap, Menu, Volume2, VolumeX } from 'lucide-react';
+import GameBackButton from '../common/GameBackButton';
+import { GameEngine, type Entity } from './gameEngine';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
 import { useNeonBucks } from '../../NeonBucksStore';
+import { FreeplayNet, type NetFood } from '../../lib/freeplayNet';
+
+// ---------------------------------------------------------------------------
+// NETWORK-MODE ADAPTER HELPERS (free-play multiplayer)
+// The server is authoritative; these helpers map interpolated server players
+// into the Entity/Food shapes the existing canvas draw code already expects,
+// so the render path itself stays untouched.
+// ---------------------------------------------------------------------------
+
+/** The 24-point jiggle ring every rendered cell carries (offsets stay 0 online). */
+const makeNetCellPoints = () =>
+  Array.from({ length: 24 }, (_, i) => ({
+    angle: (i / 24) * Math.PI * 2,
+    offset: 0,
+    velocity: 0,
+  }));
+
+/** Stable neon color derived from the opaque server player id. */
+const colorForNetId = (id: string) => {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  return `hsl(${150 + (Math.abs(hash) % 60)}, 100%, 50%)`;
+};
+
+/** Build a minimal Entity-shaped render adapter for one remote player. */
+const makeNetCellEntity = (id: string): Entity => ({
+  id,
+  nickname: 'UNKNOWN',
+  x: 0,
+  y: 0,
+  radius: 15,
+  mass: 1,
+  color: colorForNetId(id),
+  cells: [{ x: 0, y: 0, radius: 15, velocityX: 0, velocityY: 0, mergeTimer: 0, points: makeNetCellPoints() }],
+  velocityX: 0,
+  velocityY: 0,
+  score: 0,
+  kills: 0,
+});
 
 const MiniMap = ({ player, zone, safeZone, nextSafeZone, worldSize, difficulty, leaderboard, camera }: any) => {
   const mapSize = 180;
@@ -106,7 +146,15 @@ interface ArgarGameProps {
   targetKills?: number;
 }
 
-const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = false, profile, onExit, wagerAmount = 0, wagerMode = null, targetKills }) => {
+const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, isMultiplayer = false, profile, onExit, wagerAmount = 0, wagerMode = null, targetKills }) => {
+  // NETWORK MODE: true only for the online free-play (wager) path. Derived ONCE
+  // per mount — every multiplayer branch below keys off this single boolean.
+  const isNetworkMode = isMultiplayer && wagerMode === 'free_play';
+  // The server free-play world has no shrink zone. Difficulty 1 is the local
+  // "Free Play / no zone" ruleset, so forcing it online disables every zone
+  // render/HUD path without touching any practice-mode code.
+  const difficulty = isNetworkMode ? 1 : difficultyProp;
+
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
@@ -137,6 +185,19 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
   const [cameraState, setCameraState] = useState({ x: 0, y: 0, zoom: 1 });
   const [worldSize, setWorldSize] = useState({ width: 0, height: 0 });
   const [enemies, setEnemies] = useState<any[]>([]);
+
+  // ── Network-mode session state (free-play multiplayer only) ───────────────
+  const netRef = useRef<FreeplayNet | null>(null);
+  const netInputRef = useRef({ dx: 0, dy: 0, boost: false });
+  const netEnemyCacheRef = useRef(new Map<string, Entity>()); // id -> render adapter
+  const netFoodSrcRef = useRef<NetFood[] | null>(null);       // identity cache: skip re-mapping unchanged food
+  const netFoodMappedRef = useRef<{ x: number; y: number; radius: number; color: string }[]>([]);
+  const [netJoined, setNetJoined] = useState(false);
+  const [netPot, setNetPot] = useState(0);                    // SOL ledger value echoed by the server
+  const [netEntryFee, setNetEntryFee] = useState(0);
+  const [netError, setNetError] = useState<string | null>(null);
+  const [respawnInfo, setRespawnInfo] = useState<{ by: string; until: number } | null>(null);
+  const [respawnRemaining, setRespawnRemaining] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isMuted, setIsMuted] = useState(() => localStorage.getItem('gameMuted') === 'true');
 
@@ -266,7 +327,9 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
 
   useEffect(() => {
     if (gameState === 'gameOver' && gameResult) {
-       if (wagerAmount > 0 && wagerMode) {
+       // NETWORK MODE: payouts live in the server ledger only — NeonBucks is
+       // never touched online; sessionWinnings is set by the server events.
+       if (!isNetworkMode && wagerAmount > 0 && wagerMode) {
           if (wagerMode === 'free_play') {
              if (gameResult === 'win') {
                  // Won free play
@@ -323,6 +386,28 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
   }, [isMultiplayer]);
+
+  // NETWORK MODE: leaving the component mid-session is a voluntary despawn —
+  // freeplay:leave makes the server auto-cash-out the current pot.
+  useEffect(() => {
+    if (!isNetworkMode) return;
+    return () => {
+      netRef.current?.leave();
+      netRef.current = null;
+    };
+  }, [isNetworkMode]);
+
+  // NETWORK MODE: respawn-overlay countdown ticker.
+  useEffect(() => {
+    if (!respawnInfo) {
+      setRespawnRemaining(0);
+      return;
+    }
+    const id = window.setInterval(() => {
+      setRespawnRemaining(Math.max(0, (respawnInfo.until - Date.now()) / 1000));
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [respawnInfo]);
 
   const renderGame = useCallback((ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, engine: GameEngine) => {
     // Helper to safely add alpha to hex or hsl
@@ -550,6 +635,110 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
     });
   }, [profile]);
 
+  /**
+   * NETWORK MODE frame: pull the interpolated server snapshot, write it into
+   * the engine's render fields (thin adapter — the draw code is untouched),
+   * publish the current input, and sync the HUD. NO local rules run here, so
+   * the empty-world instant-victory check can never fire online.
+   */
+  const networkFrame = useCallback((engine: GameEngine, time: number) => {
+    const net = netRef.current;
+    const view = net?.interpolate(time) ?? null;
+
+    if (view) {
+      // Own cell: position/radius come from the server only (null while dead).
+      if (view.you) {
+        const you = view.you;
+        const r = Number(you.r ?? you.radius ?? engine.player.radius);
+        engine.player.x = you.x;
+        engine.player.y = you.y;
+        engine.player.radius = r;
+        const cell0 = engine.player.cells[0];
+        if (cell0) {
+          cell0.x = you.x;
+          cell0.y = you.y;
+          cell0.radius = r;
+        }
+        engine.player.score = Number(you.mass ?? you.score ?? r);
+      }
+      // Local boost input drives the glow instantly; the server confirms via speed.
+      engine.player.isBoosting = netInputRef.current.boost;
+      engine.player.boostTimer = netInputRef.current.boost ? 1 : 0;
+
+      // Remote players -> cached Entity-shaped adapters for the existing draw code.
+      const cache = netEnemyCacheRef.current;
+      const seen = new Set<string>();
+      engine.enemies = view.players.map((pl) => {
+        seen.add(pl.id);
+        let ent = cache.get(pl.id);
+        if (!ent) {
+          ent = makeNetCellEntity(pl.id);
+          cache.set(pl.id, ent);
+        }
+        const r = Number(pl.r ?? pl.radius ?? 15);
+        ent.x = pl.x;
+        ent.y = pl.y;
+        ent.radius = r;
+        ent.nickname = pl.name ?? 'UNKNOWN';
+        ent.score = Number(pl.pot ?? 0);
+        ent.isBoosting = !!pl.boosting;
+        ent.boostTimer = pl.boosting ? 1 : 0;
+        const c = ent.cells[0];
+        c.x = pl.x;
+        c.y = pl.y;
+        c.radius = r;
+        return ent;
+      });
+      // Prune adapters for players that left our view.
+      for (const id of Array.from(cache.keys())) {
+        if (!seen.has(id)) cache.delete(id);
+      }
+
+      // Food: re-map only when the delta-accumulated array actually changed.
+      if (view.food !== netFoodSrcRef.current) {
+        netFoodSrcRef.current = view.food;
+        netFoodMappedRef.current = view.food.map((f) => ({
+          x: f.x,
+          y: f.y,
+          radius: f.radius ?? 8,
+          color: f.color ?? '#00E0B7',
+        }));
+      }
+      engine.food = netFoodMappedRef.current;
+
+      // Leaderboard: server sends [{name, pot}] — adapt to the HUD entry shape
+      // (score column shows the pot; the JSX formats it as SOL online).
+      setLeaderboard(
+        view.leaderboard.map((l) => ({
+          name: l.name,
+          score: l.pot,
+          color: '#00FFD1',
+          isPlayer: !!profile?.name && l.name === profile.name,
+        }))
+      );
+    }
+
+    // Publish input: normalized mouse direction from the screen centre (the
+    // player's cell is camera-locked there) + the boost key. Sent at 20Hz by
+    // the FreeplayNet interval; we just keep the latest values fresh.
+    const mdx = engine.mouseX - engine.width / 2;
+    const mdy = engine.mouseY - engine.height / 2;
+    const len = Math.hypot(mdx, mdy);
+    const DEADZONE_PX = 12; // cell rests when the cursor sits on top of it
+    netInputRef.current.dx = len > DEADZONE_PX ? mdx / len : 0;
+    netInputRef.current.dy = len > DEADZONE_PX ? mdy / len : 0;
+    net?.setInput({ ...netInputRef.current });
+
+    // Camera + the same lightweight HUD sync the local path performs.
+    engine.updateCamera();
+    setScore(Math.floor(engine.player.score));
+    setPlayerCellCount(1);
+    setPlayerPos({ x: engine.player.x, y: engine.player.y });
+    setCameraState({ x: engine.camera.x, y: engine.camera.y, zoom: engine.camera.zoom });
+    setWorldSize({ width: engine.worldWidth, height: engine.worldHeight });
+    setIsBoosting(netInputRef.current.boost);
+  }, [profile]);
+
   const gameLoop = useCallback((time: number) => {
     const engine = engineRef.current;
     const canvas = canvasRef.current;
@@ -557,6 +746,15 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
 
     const dt = time - lastTimeRef.current;
     lastTimeRef.current = time;
+
+    if (isNetworkMode) {
+      // ── NETWORK MODE: no local simulation, no bots, no local win checks ──
+      networkFrame(engine, time);
+      const netCtx = canvas.getContext('2d');
+      if (netCtx) renderGame(netCtx, canvas, engine);
+      animationFrameRef.current = requestAnimationFrame(gameLoop);
+      return;
+    }
 
     engine.update(dt);
     
@@ -627,7 +825,7 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
     if (ctx) renderGame(ctx, canvas, engine);
 
     animationFrameRef.current = requestAnimationFrame(gameLoop);
-  }, [renderGame]);
+  }, [renderGame, networkFrame, isNetworkMode]);
 
   useEffect(() => {
     if (gameState === 'playing') {
@@ -653,6 +851,7 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
     }
     if (e.code === 'ShiftLeft') {
       e.preventDefault();
+      netInputRef.current.boost = true; // network mode: sent with the 20Hz input
       if (engineRef.current) engineRef.current.player.isBoosting = true;
     }
     if (e.code === 'KeyF') {
@@ -669,7 +868,8 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
       const holdDuration = spaceHoldStartTime.current ? now - spaceHoldStartTime.current : 0;
       
       // If short press (tap) AND we haven't already merged this press, split
-      if (holdDuration < 200 && !hasTriggeredMerge.current && spaceHoldStartTime.current !== null) {
+      // (multiplayer v1 has no split/merge — single circle per player).
+      if (holdDuration < 200 && !hasTriggeredMerge.current && spaceHoldStartTime.current !== null && !isNetworkMode) {
         engineRef.current?.split();
       }
       
@@ -680,6 +880,7 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
     }
     if (e.code === 'ShiftLeft') {
       e.preventDefault();
+      netInputRef.current.boost = false;
       if (engineRef.current) engineRef.current.player.isBoosting = false;
     }
   };
@@ -693,7 +894,95 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
     };
   }, []);
 
+  /**
+   * NETWORK MODE: join (or re-join after a session ended) the permanent
+   * free-play world. All money/HUD state below is driven purely by server
+   * events — nothing here ever touches NeonBucks.
+   */
+  const startNetworkGame = () => {
+    setNetError(null);
+    setNetJoined(false);
+    setNetPot(0);
+    setKills(0);
+    setRespawnInfo(null);
+    setSessionWinnings(0);
+    netEnemyCacheRef.current.clear();
+    netFoodSrcRef.current = null;
+    netFoodMappedRef.current = [];
+
+    netRef.current?.dispose(); // safety: never stack two sessions
+    const net = new FreeplayNet('cells');
+    netRef.current = net;
+    net.join({
+      onJoined: (info) => {
+        // The server's world size wins over the canvas-derived local guess.
+        const engine = engineRef.current;
+        if (engine) {
+          engine.worldWidth = info.world.w;
+          engine.worldHeight = info.world.h;
+        }
+        setNetEntryFee(info.entryFee);
+        setNetPot(info.entryFee);
+        setNetJoined(true);
+      },
+      onPot: ({ pot, kills: k }) => {
+        setNetPot(pot);
+        setKills(k);
+      },
+      onKill: ({ victimName }) => {
+        // No coords in the payload — anchor the notification on our own cell.
+        const engine = engineRef.current;
+        addKillNotification({ name: victimName, x: engine?.player.x ?? 0, y: engine?.player.y ?? 0 });
+      },
+      onKilled: ({ by, respawnIn }) => {
+        setRespawnInfo({ by, until: Date.now() + respawnIn });
+        // Death always aborts a cash-out hold in progress (server did too).
+        setIsCashingOut(false);
+        setCashoutHoldProgress(0);
+        cashoutStartTime.current = null;
+      },
+      onRespawn: ({ pot }) => {
+        setRespawnInfo(null);
+        setNetPot(pot);
+      },
+      onEliminated: ({ potLost }) => {
+        // Environment death: pot goes to the house, session over.
+        setSessionWinnings(-potLost);
+        setGameResult('lost');
+        setGameState('gameOver');
+        if (engineRef.current) engineRef.current.gameState = 'gameOver';
+        netRef.current?.dispose(); // already settled server-side — no leave emit
+        netRef.current = null;
+      },
+      onCashoutConfirmed: ({ payout, kills: k }) => {
+        // The ONLY way a cash-out completes: the server confirmed the payout.
+        setSessionWinnings(payout);
+        setKills(k);
+        setGameResult('win');
+        setGameState('gameOver');
+        if (engineRef.current) engineRef.current.gameState = 'gameOver';
+        netRef.current?.dispose();
+        netRef.current = null;
+      },
+      onError: ({ code, message }) => {
+        setNetError(message ?? code);
+        setGameState('menu');
+        if (engineRef.current) engineRef.current.gameState = 'menu';
+        netRef.current?.dispose();
+        netRef.current = null;
+      },
+    });
+
+    if (engineRef.current) engineRef.current.gameState = 'playing';
+    setGameState('playing');
+    setGameResult(null);
+  };
+
   const startGame = () => {
+    if (isNetworkMode) {
+      startNetworkGame();
+      return;
+    }
     if (engineRef.current) {
       engineRef.current.gameState = 'playing';
       setGameState('playing');
@@ -701,6 +990,10 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
   };
 
   const resetGame = () => {
+    if (isNetworkMode) {
+      startNetworkGame();
+      return;
+    }
     engineRef.current?.reset();
     engineRef.current!.gameState = 'playing';
     setGameState('playing');
@@ -733,14 +1026,22 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
      return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // Network mode: any live pot can be cashed out (it always holds at least the
+  // entry fee); practice keeps the original kills>0 gate.
+  const canCashout = isNetworkMode ? netPot > 0 : kills > 0;
+
   const handleCashoutDown = () => {
-     if (gameState === 'playing' && kills > 0 && wagerMode === 'free_play') {
+     if (gameState === 'playing' && canCashout && wagerMode === 'free_play') {
         setIsCashingOut(true);
         cashoutStartTime.current = performance.now();
+        // The server runs its own authoritative 3s hold timer (and slows us);
+        // the local bar is only visual feedback.
+        if (isNetworkMode) netRef.current?.startCashout();
      }
   };
 
   const handleCashoutUp = () => {
+     if (isNetworkMode && isCashingOut) netRef.current?.cancelCashout();
      setIsCashingOut(false);
      setCashoutHoldProgress(0);
      cashoutStartTime.current = null;
@@ -753,7 +1054,11 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
            const duration = Math.max(0, performance.now() - cashoutStartTime.current);
            const p = duration / 3000;
            setCashoutHoldProgress(Math.min(p, 1));
-           if (p >= 1 && engineRef.current) {
+           if (p >= 1 && isNetworkMode) {
+               // Pin the bar at full and WAIT: only the server's
+               // freeplay:cashout_confirmed event ends a network session.
+               af = requestAnimationFrame(tickCashout);
+           } else if (p >= 1 && engineRef.current) {
                setIsCashingOut(false);
                engineRef.current.gameState = 'gameOver';
                engineRef.current.gameResult = 'win';
@@ -887,6 +1192,16 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
                 <p className="text-lg font-black text-red-500 italic tracking-tighter leading-none mt-1 uppercase">{kills}</p>
              </div>
           </div>
+          {/* Network mode: live pot (server ledger, SOL units) */}
+          {isNetworkMode && (
+            <div className="backdrop-blur-md bg-black/40 border border-yellow-500/20 px-6 py-3 rounded-xl flex items-center gap-3">
+               <Trophy className="w-4 h-4 text-yellow-500" />
+               <div className="text-left">
+                  <p className="text-[10px] font-mono text-white/40 uppercase">Pot (SOL)</p>
+                  <p className="text-lg font-black text-yellow-500 italic tracking-tighter leading-none mt-1">{netPot.toFixed(3)}</p>
+               </div>
+            </div>
+          )}
           {boostTimer > 0 && (
             <motion.div 
               initial={{ scale: 0.8, opacity: 0 }}
@@ -922,7 +1237,8 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
               >
                 <span className="opacity-50">#{idx + 1}</span>
                 <span className="flex-1 px-3 truncate">{entry.name}</span>
-                <span className="font-bold">{Math.floor(entry.score)}</span>
+                {/* Online the score column is the SOL pot — keep the decimals */}
+                <span className="font-bold">{isNetworkMode ? Number(entry.score ?? 0).toFixed(3) : Math.floor(entry.score)}</span>
               </div>
             ))}
           </div>
@@ -1009,12 +1325,7 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
         >
           {isFullscreen ? <Minimize className="w-6 h-6" /> : <Maximize className="w-6 h-6" />}
         </button>
-        <button 
-          onClick={onExit}
-          className="p-4 bg-white/5 border border-white/10 rounded-2xl text-red-500 hover:bg-red-500/10 hover:border-red-500/50 transition-all shadow-2xl"
-        >
-          <X className="w-6 h-6" />
-        </button>
+        <GameBackButton onClick={onExit} title="Exit Game" />
       </div>
 
       {/* Cashout Button for Free Play Wager */}
@@ -1027,16 +1338,21 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
             onTouchStart={handleCashoutDown}
             onTouchEnd={handleCashoutUp}
             className={`px-8 py-4 rounded-xl font-mono text-xs font-black tracking-widest uppercase border select-none transition-all ${
-              kills > 0 
-                ? 'bg-yellow-500/10 border-yellow-500 text-yellow-500 shadow-[0_0_20px_rgba(234,179,8,0.2)] hover:bg-yellow-500/25 active:scale-95 cursor-pointer' 
+              canCashout
+                ? 'bg-yellow-500/10 border-yellow-500 text-yellow-500 shadow-[0_0_20px_rgba(234,179,8,0.2)] hover:bg-yellow-500/25 active:scale-95 cursor-pointer'
                 : 'bg-white/5 border-white/10 text-white/30 cursor-not-allowed'
             }`}
           >
             <div className="flex items-center justify-center gap-1.5">
-              {kills > 0 ? (
-                <>HOLD TO CASHOUT <img src="/neon-bucks-icon.png" alt="NB" referrerPolicy="no-referrer" className="h-5 w-auto drop-shadow-[0_0_5px_rgba(234,179,8,0.5)]" /></>
+              {canCashout ? (
+                isNetworkMode ? (
+                  // Online pots are SOL ledger values, not NeonBucks.
+                  <>HOLD TO CASHOUT {netPot.toFixed(3)} SOL</>
+                ) : (
+                  <>HOLD TO CASHOUT <img src="/neon-bucks-icon.png" alt="NB" referrerPolicy="no-referrer" className="h-5 w-auto drop-shadow-[0_0_5px_rgba(234,179,8,0.5)]" /></>
+                )
               ) : (
-                'GET A KILL TO CASHOUT'
+                isNetworkMode ? 'SYNCING POT...' : 'GET A KILL TO CASHOUT'
               )}
             </div>
           </button>
@@ -1049,6 +1365,31 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
               />
             </div>
           )}
+        </div>
+      )}
+
+      {/* NETWORK MODE: respawn countdown after a player kill (pot was stolen) */}
+      {isNetworkMode && respawnInfo && gameState === 'playing' && (
+        <div className="absolute inset-0 z-[85] flex items-center justify-center pointer-events-none bg-black/50 backdrop-blur-sm">
+          <div className="text-center space-y-3">
+            <p className="text-red-500 font-mono text-sm tracking-[0.4em] uppercase">Consumed by {respawnInfo.by}</p>
+            <p className="text-8xl font-black italic text-white">{respawnRemaining.toFixed(1)}s</p>
+            <p className="text-white/50 font-mono text-xs uppercase tracking-widest">Pot reset to entry fee — redeploying</p>
+          </div>
+        </div>
+      )}
+
+      {/* NETWORK MODE: joining indicator until the first server state lands */}
+      {isNetworkMode && gameState === 'playing' && !netJoined && (
+        <div className="absolute inset-0 z-[85] flex items-center justify-center pointer-events-none">
+          <p className="text-[#00FFD1] font-mono text-sm tracking-[0.4em] uppercase animate-pulse">Linking to Grid...</p>
+        </div>
+      )}
+
+      {/* NETWORK MODE: server-side join/session errors */}
+      {netError && (
+        <div className="absolute top-24 left-1/2 -translate-x-1/2 z-[110] bg-red-500/20 border border-red-500/50 backdrop-blur-md px-6 py-3 rounded-xl">
+          <p className="text-red-400 font-mono text-xs uppercase tracking-widest">{netError}</p>
         </div>
       )}
 
@@ -1103,9 +1444,9 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty = 3, isMultiplayer = f
         {gameState === 'gameOver' && (
           <ResultsScreen
             won={gameResult === 'win'}
-            stake={wagerMode ? wagerAmount : 0}
-            winnings={wagerMode ? sessionWinnings : 0}
-            gameMode={wagerMode ? `Practice Wager - ${wagerMode}` : (isMultiplayer ? 'Online' : 'Practice')}
+            stake={isNetworkMode ? netEntryFee : (wagerMode ? wagerAmount : 0)}
+            winnings={isNetworkMode ? sessionWinnings : (wagerMode ? sessionWinnings : 0)}
+            gameMode={isNetworkMode ? 'Online Free Play (SOL)' : (wagerMode ? `Practice Wager - ${wagerMode}` : (isMultiplayer ? 'Online' : 'Practice'))}
             kills={kills}
             onRematch={resetGame}
             onExit={onExit}

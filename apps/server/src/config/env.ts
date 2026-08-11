@@ -50,12 +50,31 @@ const envSchema = z.object({
     message: 'TOTP_ENC_KEY must be 64 hex characters (openssl rand -hex 32) — set it in Doppler',
   }).optional(),
 
-  // Exact frontend origin for CORS (security protocol says never "*").
-  // Defaults to the local Vite dev server.
-  CLIENT_ORIGIN: z.string().url().default('http://localhost:5173'),
+  // Frontend origin(s) for CORS (security protocol says never "*").
+  // Comma-separated exact origins, e.g. "https://neonarcade.app" or
+  // "https://neonarcade.app,https://staging.neonarcade.app". Local
+  // loopback origins (any port) are always allowed on top of this list —
+  // Vite silently moves to 5174+ when 5173 is taken, and a hardcoded
+  // port turns that into every API call dying on CORS preflight.
+  CLIENT_ORIGIN: z.string().default('http://localhost:5173'),
 
   // Server
   PORT: z.coerce.number().default(3002),
+
+  // Region tag for THIS server instance ('local', 'us-east', 'eu', ...).
+  // Single-region deploy for now, but free-play worlds and their permanent
+  // match rows are keyed per (game, REGION), so a future multi-region
+  // rollout needs no schema change. Clients latency-probe via GET /ping.
+  REGION: z.string().default('local'),
+
+  // House rake on free-play kill transfers, in percent (10 = 10%).
+  // Money math lives ONLY in services/wagerService.ts, which reads this.
+  HOUSE_FEE_PERCENT: z.coerce.number().default(10),
+
+  // Free-play entry fee, in SOL-denominated ledger units. Deposits are a
+  // ledger stub in this pass — TODO(on-chain): verify real deposits before
+  // crediting (never import @solana/web3.js here yet).
+  FREEPLAY_ENTRY_FEE: z.coerce.number().default(0.05),
 })
 
 // Parse process.env once. Throws and halts boot if invalid.

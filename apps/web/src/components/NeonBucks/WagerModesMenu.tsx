@@ -8,9 +8,15 @@ interface WagerModesMenuProps {
   onCancel: () => void;
   onStart: (stake: number, mode: 'free_play' | 'slayer' | 'snake', targetKills?: number) => void;
   fixedMode?: 'free_play' | 'slayer' | 'snake';
+  /**
+   * True when the caller is launching the ONLINE path. Online free play is
+   * paid from the server-side SOL ledger (freeplay entry fee), so the local
+   * NeonBucks wager must NOT also be deducted — otherwise players pay twice.
+   */
+  isMultiplayer?: boolean;
 }
 
-export function WagerModesMenu({ gameTitle, onCancel, onStart, fixedMode }: WagerModesMenuProps) {
+export function WagerModesMenu({ gameTitle, onCancel, onStart, fixedMode, isMultiplayer = false }: WagerModesMenuProps) {
   const { balance, isFirstPractice, canAfford, wager, useFreeChance } = useNeonBucks();
   const [stake, setStake] = useState<number>(10);
   const [mode, setMode] = useState<'free_play' | 'slayer' | 'snake'>(fixedMode || 'free_play');
@@ -26,6 +32,16 @@ export function WagerModesMenu({ gameTitle, onCancel, onStart, fixedMode }: Wage
 
   const handleStart = () => {
     const activeMode = fixedMode || mode;
+
+    // ONLINE free play: the server ledger charges the SOL entry fee on
+    // freeplay:join — NeonBucks are a purely local practice currency and
+    // must stay untouched (design contract: "Free play multiplayer does
+    // NOT touch NeonBucks"). Skip the free-chance/deduction entirely.
+    if (isMultiplayer && activeMode === 'free_play') {
+      onStart(stake, activeMode, undefined);
+      return;
+    }
+
     if (isFirstPractice) {
       useFreeChance();
       onStart(stake, activeMode, activeMode === 'free_play' && enablePresetTarget ? targetKills : undefined);

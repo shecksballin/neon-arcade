@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import GolfLobby from './GolfLobby';
 import NeonGolfClash from './NeonGolfClash';
-import { ChevronLeft } from 'lucide-react';
+import GameBackButton from '../common/GameBackButton';
 
 interface GolfGameProps {
   onExit: () => void;
@@ -28,14 +28,7 @@ const GolfGame = ({ onExit, profile, onGameStatusChange }: GolfGameProps) => {
 
   return (
     <div className="w-full h-full relative">
-      <div className="absolute top-6 left-6 z-50">
-        <button
-          onClick={onExit}
-          className="p-2 bg-black/40 border border-[#00FFD1]/30 hover:bg-[#00FFD1]/20 rounded-full text-white transition-all cursor-pointer"
-        >
-          <ChevronLeft className="w-6 h-6" />
-        </button>
-      </div>
+      <GameBackButton onClick={onExit} title="Back to arcade" positionClassName="absolute top-6 left-6 z-50" />
       <GolfLobby
         onFindGame={handleStartGame}
         onPlayComputer={handleStartGame}

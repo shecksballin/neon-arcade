@@ -88,6 +88,7 @@ const CellsGame = ({ onExit, profile }: CellsGameProps) => {
             onCancel={() => setGameState('lobby')}
             onStart={handleStartWager}
             fixedMode={selectedLobbyMode || undefined}
+            isMultiplayer={isMultiplayer}
           />
         </div>
       )}

@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, RefreshCw, Gamepad2, Trophy, Heart, Target, Navigation, Skull, Maximize, Flame, Zap, Sword, ShieldAlert, Radiation, Menu, Volume2, VolumeX } from 'lucide-react';
+import { RefreshCw, Gamepad2, Trophy, Heart, Target, Navigation, Skull, Maximize, Flame, Zap, Sword, ShieldAlert, Radiation, Menu, Volume2, VolumeX } from 'lucide-react';
+import GameBackButton from '../common/GameBackButton';
 import { useGunSound } from './useGunSound';
 import { useGameAudio } from './useGameAudio';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
 import { useNeonBucks } from '../../NeonBucksStore';
+import { FreeplayNet } from '../../lib/freeplayNet';
 
 interface AsteroidsGameProps {
   onExit: () => void;
@@ -61,7 +63,15 @@ interface KillNotification {
   lifetime: number;
 }
 
-const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficulty = 1, isMultiplayer = false, wagerAmount = 0, wagerMode = null, targetKills }) => {
+const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficulty: difficultyProp = 1, isMultiplayer = false, wagerAmount = 0, wagerMode = null, targetKills }) => {
+  // NETWORK MODE: true only for the online free-play (wager) path. Derived ONCE
+  // per mount — every multiplayer branch below keys off this single boolean.
+  const isNetworkMode = isMultiplayer && wagerMode === 'free_play';
+  // The server free-play world has no shrink zone. Difficulty 1 is the local
+  // "Free Sector / no zone" ruleset, so forcing it online disables every zone
+  // sim/render/HUD path without touching any practice-mode code.
+  const difficulty = isNetworkMode ? 1 : difficultyProp;
+
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
@@ -150,6 +160,21 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
   const isUiReloaderHeldRef = useRef(false);
   const reloadHoldTimeRef = useRef(0);
 
+  // ── Network-mode session state (free-play multiplayer only) ───────────────
+  const netRef = useRef<FreeplayNet | null>(null);
+  const netInputRef = useRef<{ turn: -1 | 0 | 1; shoot: boolean; reload: boolean }>({ turn: 0, shoot: false, reload: false });
+  const netKillsRef = useRef(0); // loop-side copy of kills for the zoom camera
+  const netBotCacheRef = useRef(new Map<string, GameObject>()); // player id -> ship adapter
+  const netAsteroidCacheRef = useRef(new Map<string | number, GameObject>()); // asteroid id -> adapter (keeps cosmetic spin)
+  const netServerAmmoRef = useRef({ magazine: 30, reloading: false }); // gates the local gun sound
+  const reloadPulseUntilRef = useRef(0); // UI reload click -> short reload-input pulse
+  const [netJoined, setNetJoined] = useState(false);
+  const [netPot, setNetPot] = useState(0); // SOL ledger value echoed by the server
+  const [netEntryFee, setNetEntryFee] = useState(0);
+  const [netError, setNetError] = useState<string | null>(null);
+  const [respawnInfo, setRespawnInfo] = useState<{ by: string; until: number } | null>(null);
+  const [respawnRemaining, setRespawnRemaining] = useState(0);
+
   // Persistent counters to guarantee deterministic 1:10 and 1:15 spawn ratios
   const spawnedRegularCountRef = useRef(0);
   const spawnedHealthCountRef = useRef(0);
@@ -231,14 +256,22 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
   const [isCashingOut, setIsCashingOut] = useState(false);
   const cashoutStartTime = useRef<number | null>(null);
 
+  // Network mode: any live pot can be cashed out (it always holds at least the
+  // entry fee); practice keeps the original kills>0 gate.
+  const canCashout = isNetworkMode ? netPot > 0 : kills > 0;
+
   const handleCashoutDown = () => {
-     if (gameState === 'playing' && kills > 0 && wagerMode === 'free_play') {
+     if (gameState === 'playing' && canCashout && wagerMode === 'free_play') {
         setIsCashingOut(true);
         cashoutStartTime.current = performance.now();
+        // The server runs its own authoritative 3s hold timer (and slows our
+        // turn rate); the local bar is only visual feedback.
+        if (isNetworkMode) netRef.current?.startCashout();
      }
   };
 
   const handleCashoutUp = () => {
+     if (isNetworkMode && isCashingOut) netRef.current?.cancelCashout();
      setIsCashingOut(false);
      setCashoutHoldProgress(0);
      cashoutStartTime.current = null;
@@ -251,7 +284,11 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
            const duration = Math.max(0, performance.now() - cashoutStartTime.current);
            const p = duration / 3000;
            setCashoutHoldProgress(Math.min(p, 1));
-           if (p >= 1) {
+           if (p >= 1 && isNetworkMode) {
+               // Pin the bar at full and WAIT: only the server's
+               // freeplay:cashout_confirmed event ends a network session.
+               af = requestAnimationFrame(tickCashout);
+           } else if (p >= 1) {
                setIsCashingOut(false);
                setGameState('victory'); // Victory gives the cash and triggers game over screen
            } else {
@@ -264,6 +301,28 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
      }
      return () => cancelAnimationFrame(af);
   }, [isCashingOut, gameState]);
+
+  // NETWORK MODE: leaving the component mid-session is a voluntary despawn —
+  // freeplay:leave makes the server auto-cash-out the current pot.
+  useEffect(() => {
+    if (!isNetworkMode) return;
+    return () => {
+      netRef.current?.leave();
+      netRef.current = null;
+    };
+  }, [isNetworkMode]);
+
+  // NETWORK MODE: respawn-overlay countdown ticker.
+  useEffect(() => {
+    if (!respawnInfo) {
+      setRespawnRemaining(0);
+      return;
+    }
+    const id = window.setInterval(() => {
+      setRespawnRemaining(Math.max(0, (respawnInfo.until - Date.now()) / 1000));
+    }, 100);
+    return () => window.clearInterval(id);
+  }, [respawnInfo]);
 
   // Generate stars once for the large world
   useEffect(() => {
@@ -297,6 +356,9 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       keysRef.current[e.key.toLowerCase()] = true;
+      if (e.key.toLowerCase() === 'f' && !e.repeat) {
+        toggleFullscreen();
+      }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       keysRef.current[e.key.toLowerCase()] = false;
@@ -375,7 +437,9 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
 
   useEffect(() => {
     if (gameState === 'gameover' || gameState === 'victory') {
-       if (wagerAmount > 0 && wagerMode) {
+       // NETWORK MODE: payouts live in the server ledger only — NeonBucks is
+       // never touched online; sessionWinnings is set by the server events.
+       if (!isNetworkMode && wagerAmount > 0 && wagerMode) {
           if (wagerMode === 'free_play') {
              if (gameState === 'victory') { // manual cashout sets to victory
                  const payout = playerRef.current.kills * wagerAmount;
@@ -759,6 +823,140 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
     leaderboardRef.current = list;
   };
 
+  /**
+   * NETWORK MODE tick: no local simulation — map the interpolated server
+   * snapshot into the refs the existing draw() already renders, publish the
+   * current input, and sync the HUD at ~10Hz. None of the local win/lose
+   * rules run here, so the empty-world instant-victory bug cannot fire online.
+   */
+  const networkTick = (dt: number, time: number) => {
+    const net = netRef.current;
+    const player = playerRef.current;
+    const view = net?.interpolate(time) ?? null;
+
+    if (view) {
+      // Own ship pose is server-authoritative (you is null while dead).
+      if (view.you) {
+        player.x = view.you.x;
+        player.y = view.you.y;
+        player.angle = Number(view.you.angle ?? player.angle);
+        netServerAmmoRef.current.magazine = Number(view.you.ammo ?? view.you.mag ?? view.you.magazine ?? 30);
+        netServerAmmoRef.current.reloading = !!view.you.reloading;
+      }
+
+      // Remote players -> bot-shaped adapters for the existing draw code.
+      const cache = netBotCacheRef.current;
+      const seen = new Set<string>();
+      botsRef.current = view.players.map((pl) => {
+        seen.add(pl.id);
+        let ship = cache.get(pl.id);
+        if (!ship) {
+          ship = { x: pl.x, y: pl.y, vx: 0, vy: 0, radius: 15, angle: 0, type: 'bot', id: pl.id };
+          cache.set(pl.id, ship);
+        }
+        ship.x = pl.x;
+        ship.y = pl.y;
+        ship.angle = Number(pl.angle ?? 0);
+        ship.nickname = pl.name ?? 'PILOT';
+        ship.health = Number(pl.hp ?? pl.health ?? 100);
+        return ship;
+      });
+      for (const id of Array.from(cache.keys())) {
+        if (!seen.has(id)) cache.delete(id);
+      }
+
+      // Asteroids drift server-side; the spin is a purely cosmetic local touch.
+      const aCache = netAsteroidCacheRef.current;
+      const aSeen = new Set<string | number>();
+      asteroidsRef.current = view.asteroids.map((a) => {
+        const key = a.id ?? `${Math.round(a.x)}|${Math.round(a.y)}`; // idless fallback
+        aSeen.add(key);
+        let rock = aCache.get(key);
+        if (!rock) {
+          rock = {
+            x: a.x, y: a.y, vx: 0, vy: 0,
+            radius: 60,
+            rotation: Math.random() * Math.PI * 2,
+            rotationSpeed: (Math.random() - 0.5) * 0.05,
+            subType: 'normal', color: '#ffffff',
+          };
+          aCache.set(key, rock);
+        }
+        rock.x = a.x;
+        rock.y = a.y;
+        rock.radius = Number(a.r ?? a.radius ?? rock.radius);
+        rock.rotation = (rock.rotation || 0) + (rock.rotationSpeed || 0) * dt;
+        return rock;
+      });
+      for (const key of Array.from(aCache.keys())) {
+        if (!aSeen.has(key)) aCache.delete(key);
+      }
+
+      // Bullets: the streak heading comes from the lib's derived angle.
+      bulletsRef.current = view.bullets.map((b) => ({
+        x: b.x, y: b.y, vx: 0, vy: 0, radius: 3,
+        type: 'bullet' as const,
+        rotation: Number(b.angle ?? 0),
+        color: '#00FFD1',
+      }));
+    }
+
+    // ── Publish input (the FreeplayNet interval sends it at 20Hz) ──
+    const keys = keysRef.current;
+    const left = keys['a'] || keys['arrowleft'];
+    const right = keys['d'] || keys['arrowright'];
+    const turn = ((right ? 1 : 0) - (left ? 1 : 0)) as -1 | 0 | 1;
+    const shoot = isShootingRef.current || !!keys[' '] || !!keys['space'];
+    const reload = !!keys['r'] || isUiReloaderHeldRef.current || time < reloadPulseUntilRef.current;
+    netInputRef.current = { turn, shoot, reload };
+    net?.setInput({ ...netInputRef.current });
+
+    // Local gun sound at the fire rate while the server still has ammo for us.
+    const nowMs = Date.now();
+    if (shoot && nowMs - lastShootTimeRef.current >= SHOOT_INTERVAL &&
+        netServerAmmoRef.current.magazine > 0 && !netServerAmmoRef.current.reloading) {
+      triggerShot();
+      lastShootTimeRef.current = nowMs;
+    }
+
+    // Camera follow + kill-based zoom (identical maths to the local path).
+    const lerp = 0.1;
+    cameraRef.current.x += (player.x - cameraRef.current.x) * lerp;
+    cameraRef.current.y += ((player.y - dimensions.height * 0.15) - cameraRef.current.y) * lerp;
+    const targetZoom = 1 / (1 + Math.min(netKillsRef.current, 10) * 0.1);
+    currentZoomRef.current += (targetZoom - currentZoomRef.current) * 0.03 * dt;
+
+    // Kill-feed / damage text lifetimes (same bookkeeping as the local path).
+    damageIndicatorsRef.current = damageIndicatorsRef.current.map(di => ({ ...di, lifetime: di.lifetime - dt, y: di.y - 1.5 * dt })).filter(di => di.lifetime > 0);
+    killNotificationsRef.current = killNotificationsRef.current.map(kn => ({ ...kn, lifetime: kn.lifetime - dt })).filter(kn => kn.lifetime > 0);
+    hitmarkersRef.current = hitmarkersRef.current.filter(h => nowMs - h.time < 150);
+
+    // Throttled HUD sync (~10Hz), mirroring the local pattern.
+    if (nowMs - lastHudUpdateRef.current > 100) {
+      lastHudUpdateRef.current = nowMs;
+      setPlayerPos({ x: player.x, y: player.y });
+      if (view?.you) {
+        setHealth(Math.max(0, Math.round(Number(view.you.hp ?? view.you.health ?? 100))));
+        setAmmo({
+          magazine: netServerAmmoRef.current.magazine,
+          reserve: 0, // server free play has no reserve pool (reload refills fully)
+          reloading: netServerAmmoRef.current.reloading,
+        });
+      }
+      if (view) {
+        // Server leaderboard is [{name, pot}] — the JSX shows pot online.
+        const lb = view.leaderboard.map((l) => ({
+          name: l.name,
+          pot: l.pot,
+          kills: undefined as number | undefined,
+          isPlayer: !!profile?.name && l.name === profile.name,
+        }));
+        setLeaderboard(lb);
+        leaderboardRef.current = lb;
+      }
+    }
+  };
+
   const update = (time: number) => {
     if (!lastTimeRef.current) {
       lastTimeRef.current = time;
@@ -768,6 +966,14 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
 
     const dt = (time - lastTimeRef.current) / (1000 / 60);
     lastTimeRef.current = time;
+
+    if (gameState === 'playing' && isNetworkMode) {
+      // ── NETWORK MODE: server-authoritative — skip ALL local simulation ──
+      networkTick(dt, time);
+      draw();
+      requestRef.current = requestAnimationFrame(update);
+      return;
+    }
 
     if (gameState === 'playing') {
       const player = playerRef.current;
@@ -1231,9 +1437,12 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
         nukeTriggeredRef.current = false;
     }
 
-    if (wagerMode === 'free_play' && targetKills !== undefined && playerRef.current.kills >= targetKills && gameState === 'playing') {
+    // These local win conditions must NEVER fire in network mode: an empty
+    // botsRef (no bots online) or a client-side kill counter would otherwise
+    // declare an instant, unearned victory. Server events end online sessions.
+    if (!isNetworkMode && wagerMode === 'free_play' && targetKills !== undefined && playerRef.current.kills >= targetKills && gameState === 'playing') {
        setGameState('victory');
-    } else if ((wagerMode === 'slayer' || wagerMode === 'snake') && botsRef.current.length === 0 && gameState === 'playing') {
+    } else if (!isNetworkMode && (wagerMode === 'slayer' || wagerMode === 'snake') && botsRef.current.length === 0 && gameState === 'playing') {
        setGameState('victory');
     }
 
@@ -1756,12 +1965,115 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
     };
   }, [gameState, dimensions]);
 
+  /**
+   * NETWORK MODE: join (or re-join after a session ended) the permanent
+   * free-play world. All money/HUD state below is driven purely by server
+   * events — nothing here ever touches NeonBucks.
+   */
+  const startNetworkGame = () => {
+    setNetError(null);
+    setNetJoined(false);
+    setNetPot(0);
+    setSessionWinnings(0);
+    setRespawnInfo(null);
+    setScore(0);
+    setKills(0);
+    setHealth(100);
+    netKillsRef.current = 0;
+    netBotCacheRef.current.clear();
+    netAsteroidCacheRef.current.clear();
+    netServerAmmoRef.current = { magazine: 30, reloading: false };
+
+    // Neutral local shells — every gameplay value is overwritten by snapshots.
+    playerRef.current = {
+      x: WORLD_SIZE / 2, y: WORLD_SIZE / 2, vx: 0, vy: 0,
+      angle: -Math.PI / 2, angularVelocity: 0, radius: 15,
+      rotationSpeed: 0.008, angularFriction: 0.88, acceleration: 0.2, friction: 0.98,
+      isHit: false, hitTimer: 0, kills: 0,
+      magazine: 30, reserve: 0, reloadTimer: 0, boostReserve: 0,
+    };
+    setAmmo({ magazine: 30, reserve: 0, reloading: false });
+    setReloadProgress(0);
+    setPlayerPos({ x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 });
+    cameraRef.current = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
+    currentZoomRef.current = 1;
+    bulletsRef.current = [];
+    asteroidsRef.current = [];
+    botsRef.current = [];
+    particlesRef.current = [];
+    damageIndicatorsRef.current = [];
+    killNotificationsRef.current = [];
+    hitmarkersRef.current = [];
+    setLeaderboard([]);
+    leaderboardRef.current = [];
+
+    netRef.current?.dispose(); // safety: never stack two sessions
+    const net = new FreeplayNet('asteroids');
+    netRef.current = net;
+    net.join({
+      onJoined: (info) => {
+        setNetJoined(true);
+        setNetEntryFee(info.entryFee);
+        setNetPot(info.entryFee);
+      },
+      onPot: ({ pot, kills: k }) => {
+        setNetPot(pot);
+        setKills(k);
+        netKillsRef.current = k;
+      },
+      onKill: ({ victimName }) => {
+        // Reuse the existing canvas kill feed + audio.
+        killNotificationsRef.current.push({ id: Math.random().toString(), nickname: victimName, lifetime: 90 });
+        playKillSound();
+      },
+      onKilled: ({ by, respawnIn }) => {
+        setRespawnInfo({ by, until: Date.now() + respawnIn });
+        // Death always aborts a cash-out hold in progress (server did too).
+        setIsCashingOut(false);
+        setCashoutHoldProgress(0);
+        cashoutStartTime.current = null;
+      },
+      onRespawn: ({ pot }) => {
+        setRespawnInfo(null);
+        setNetPot(pot);
+      },
+      onEliminated: ({ potLost }) => {
+        // Asteroid collision: the house takes the pot, no respawn.
+        setSessionWinnings(-potLost);
+        setHealth(0);
+        setGameState('gameover');
+        netRef.current?.dispose(); // already settled server-side — no leave emit
+        netRef.current = null;
+      },
+      onCashoutConfirmed: ({ payout, kills: k }) => {
+        // The ONLY way a cash-out completes: the server confirmed the payout.
+        setSessionWinnings(payout);
+        setKills(k);
+        setGameState('victory');
+        netRef.current?.dispose();
+        netRef.current = null;
+      },
+      onError: ({ code, message }) => {
+        setNetError(message ?? code);
+        setGameState('menu');
+        netRef.current?.dispose();
+        netRef.current = null;
+      },
+    });
+
+    setGameState('playing');
+  };
+
   const startGame = () => {
+    if (isNetworkMode) {
+      startNetworkGame();
+      return;
+    }
     setGameState('playing');
     setScore(0);
     setKills(0);
     setHealth(100);
-    
+
     // Initial zone setup
     const initialSafeZone = { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2, radius: WORLD_SIZE };
     zoneRef.current = {
@@ -1962,6 +2274,16 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
                     <p className="text-lg font-black text-[#00FFD1] italic tracking-tighter leading-none mt-1">{kills}</p>
                   </div>
                 </div>
+                {/* Network mode: live pot (server ledger, SOL units) */}
+                {isNetworkMode && (
+                  <div className="backdrop-blur-md bg-black/40 border border-yellow-500/20 px-6 py-3 rounded-xl flex items-center gap-3">
+                    <Trophy className="w-4 h-4 text-yellow-500" />
+                    <div className="text-left">
+                      <p className="text-[10px] font-mono text-white/40 uppercase leading-none">Pot (SOL)</p>
+                      <p className="text-lg font-black text-yellow-500 italic tracking-tighter leading-none mt-1">{netPot.toFixed(3)}</p>
+                    </div>
+                  </div>
+                )}
                 <div className="backdrop-blur-md bg-black/40 border border-[#00FFD1]/20 px-6 py-3 rounded-xl flex items-center gap-3">
                   <Heart className={`w-4 h-4 ${health < 30 ? 'text-red-500 animate-pulse' : 'text-[#FF0080]'}`} />
                   <div className="text-left">
@@ -1982,7 +2304,14 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
                 )}
                 <div 
                   className={`backdrop-blur-md bg-black/40 border border-[#00FFD1]/20 px-6 py-3 rounded-xl flex items-center gap-3 cursor-pointer select-none hover:bg-black/60 transition-all ${ammo.magazine === 0 && !ammo.reloading ? 'animate-pulse border-red-500' : ''}`}
-                  onClick={() => { 
+                  onClick={() => {
+                    if (isNetworkMode) {
+                      // Server-side reload: pulse the reload input flag for a
+                      // few ticks; the server drives the actual 1.5s timer.
+                      reloadPulseUntilRef.current = performance.now() + 250;
+                      triggerReload();
+                      return;
+                    }
                     if (!ammo.reloading && ammo.magazine < 100 && ammo.reserve > 0) {
                       playerRef.current.reloadTimer = 1.5;
                       triggerReload();
@@ -2021,7 +2350,8 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
                     <p className="text-[10px] font-mono text-white/40 uppercase leading-none">
                       Ammo {ammo.reloading && `(${Math.floor(reloadProgress * 100)}%)`} <span className="hidden sm:inline border border-white/20 rounded px-1 ml-1 text-xs">PRESS R</span>
                     </p>
-                    <p className="text-lg font-black text-white italic tracking-tighter leading-none mt-1">{ammo.magazine} / {ammo.reserve}</p>
+                    {/* Online there is no reserve pool — reloads always refill */}
+                    <p className="text-lg font-black text-white italic tracking-tighter leading-none mt-1">{ammo.magazine} / {isNetworkMode ? '∞' : ammo.reserve}</p>
                   </div>
                 </div>
               </div>
@@ -2085,7 +2415,8 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
                     >
                       <span className="opacity-50">#{idx + 1}</span>
                       <span className="flex-1 px-3 truncate italic uppercase">{entry.name}</span>
-                      <span className="font-bold">{entry.kills}</span>
+                      {/* Online the ranking column is the SOL pot */}
+                      <span className="font-bold">{isNetworkMode ? Number(entry.pot ?? 0).toFixed(3) : entry.kills}</span>
                     </div>
                   ))}
                 </div>
@@ -2162,16 +2493,11 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
               <button 
                 onClick={toggleFullscreen}
                 className="p-4 bg-white/5 border border-white/10 rounded-2xl text-[#00FFD1] hover:bg-[#00FFD1]/10 transition-all shadow-2xl active:scale-90"
-                title="Toggle Fullscreen"
+                title="Toggle Fullscreen (F)"
               >
                 <Maximize className="w-6 h-6" />
               </button>
-              <button 
-                onClick={onExit}
-                className="p-4 bg-white/5 border border-white/10 rounded-2xl text-red-500 hover:bg-red-500/10 hover:border-red-500/50 transition-all shadow-2xl active:scale-90"
-              >
-                <X className="w-6 h-6" />
-              </button>
+              <GameBackButton onClick={onExit} title="Exit Game" />
             </div>
 
             {/* Cashout Button for Free Play Wager */}
@@ -2184,16 +2510,21 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
                   onTouchStart={handleCashoutDown}
                   onTouchEnd={handleCashoutUp}
                   className={`px-8 py-4 rounded-xl font-mono text-xs font-black tracking-widest uppercase border select-none transition-all ${
-                    (playerRef.current?.kills ?? 0) > 0 
-                      ? 'bg-yellow-500/10 border-yellow-500 text-yellow-500 shadow-[0_0_20px_rgba(234,179,8,0.2)] hover:bg-yellow-500/25 active:scale-95 cursor-pointer' 
+                    (isNetworkMode ? canCashout : (playerRef.current?.kills ?? 0) > 0)
+                      ? 'bg-yellow-500/10 border-yellow-500 text-yellow-500 shadow-[0_0_20px_rgba(234,179,8,0.2)] hover:bg-yellow-500/25 active:scale-95 cursor-pointer'
                       : 'bg-white/5 border-white/10 text-white/30 cursor-not-allowed'
                   }`}
                 >
                   <div className="flex items-center justify-center gap-1.5">
-                    {(playerRef.current?.kills ?? 0) > 0 ? (
-                      <>HOLD TO CASHOUT <img src="/neon-bucks-icon.png" alt="NB" referrerPolicy="no-referrer" className="h-5 w-auto drop-shadow-[0_0_5px_rgba(234,179,8,0.5)]" /></>
+                    {(isNetworkMode ? canCashout : (playerRef.current?.kills ?? 0) > 0) ? (
+                      isNetworkMode ? (
+                        // Online pots are SOL ledger values, not NeonBucks.
+                        <>HOLD TO CASHOUT {netPot.toFixed(3)} SOL</>
+                      ) : (
+                        <>HOLD TO CASHOUT <img src="/neon-bucks-icon.png" alt="NB" referrerPolicy="no-referrer" className="h-5 w-auto drop-shadow-[0_0_5px_rgba(234,179,8,0.5)]" /></>
+                      )
                     ) : (
-                      'GET A KILL TO CASHOUT'
+                      isNetworkMode ? 'SYNCING POT...' : 'GET A KILL TO CASHOUT'
                     )}
                   </div>
                 </button>
@@ -2210,6 +2541,31 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
           </>
         )}
       </AnimatePresence>
+
+      {/* NETWORK MODE: respawn countdown after a player kill (pot was stolen) */}
+      {isNetworkMode && respawnInfo && gameState === 'playing' && (
+        <div className="absolute inset-0 z-[85] flex items-center justify-center pointer-events-none bg-black/50 backdrop-blur-sm">
+          <div className="text-center space-y-3">
+            <p className="text-red-500 font-mono text-sm tracking-[0.4em] uppercase">Shot down by {respawnInfo.by}</p>
+            <p className="text-8xl font-black italic text-white">{respawnRemaining.toFixed(1)}s</p>
+            <p className="text-white/50 font-mono text-xs uppercase tracking-widest">Pot reset to entry fee — redeploying</p>
+          </div>
+        </div>
+      )}
+
+      {/* NETWORK MODE: joining indicator until the first server state lands */}
+      {isNetworkMode && gameState === 'playing' && !netJoined && (
+        <div className="absolute inset-0 z-[85] flex items-center justify-center pointer-events-none">
+          <p className="text-[#00FFD1] font-mono text-sm tracking-[0.4em] uppercase animate-pulse">Linking to Grid...</p>
+        </div>
+      )}
+
+      {/* NETWORK MODE: server-side join/session errors */}
+      {netError && (
+        <div className="absolute top-24 left-1/2 -translate-x-1/2 z-[110] bg-red-500/20 border border-red-500/50 backdrop-blur-md px-6 py-3 rounded-xl">
+          <p className="text-red-400 font-mono text-xs uppercase tracking-widest">{netError}</p>
+        </div>
+      )}
 
       {/* Blitz Countdown Overlay */}
       {uiZone.countdownTimer !== null && (
@@ -2282,15 +2638,25 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
                 </div>
               </div>
             </div>
+
+            <div className="absolute bottom-8 right-8">
+              <button
+                onClick={toggleFullscreen}
+                className="p-4 bg-white/5 border border-white/10 rounded-2xl text-[#00FFD1] hover:bg-[#00FFD1]/10 transition-all shadow-2xl active:scale-90"
+                title="Toggle Fullscreen (F)"
+              >
+                <Maximize className="w-6 h-6" />
+              </button>
+            </div>
           </motion.div>
         )}
 
         {(gameState === 'victory' || gameState === 'gameover') && (
           <ResultsScreen
             won={gameState === 'victory'}
-            stake={wagerMode ? wagerAmount : 0}
-            winnings={wagerMode ? sessionWinnings : 0}
-            gameMode={wagerMode ? `Practice Wager - ${wagerMode}` : (isMultiplayer ? 'Online' : 'Practice')}
+            stake={isNetworkMode ? netEntryFee : (wagerMode ? wagerAmount : 0)}
+            winnings={isNetworkMode ? sessionWinnings : (wagerMode ? sessionWinnings : 0)}
+            gameMode={isNetworkMode ? 'Online Free Play (SOL)' : (wagerMode ? `Practice Wager - ${wagerMode}` : (isMultiplayer ? 'Online' : 'Practice'))}
             kills={kills}
             onRematch={startGame}
             onExit={onExit}

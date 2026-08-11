@@ -79,6 +79,17 @@ function ConnectionPill({ status }: any) {
 
 
 
+// Friendly captions for the server's gameEnded `reason` codes. Unknown codes
+// fall through as-is (better raw than silent).
+const SERVER_END_REASONS: Record<string, string> = {
+  resign:       'Opponent resigned',
+  disconnect:   'Opponent disconnected',
+  draw_agreed:  'Draw agreed',
+  checkmate:    'Checkmate',
+  reported:     'Match complete',
+  conflict:     'Conflicting reports — game voided',
+};
+
 export default function OnlineGame({
   playerColor      = 'white',
   onSendMove,
@@ -89,6 +100,7 @@ export default function OnlineGame({
   playerName,
   profile,
   onGameEnd,
+  serverGameEnd    = null, // { winner: 'white'|'black'|'draw', reason } | null
   onRematchRequest,
   onReturnToLobby
 }: any) {
@@ -148,6 +160,21 @@ export default function OnlineGame({
     resetGame();
     onRematchRequest?.();
   }, [resetGame, onRematchRequest]);
+
+  // ── Server-declared game end ────────────────────────────────────────────────
+  // Local chess.js already detects mate/stalemate/draw; the server event fills
+  // the gaps only IT can see (resign, disconnect, agreed draw). When the local
+  // result is already terminal we keep it (richer message); otherwise we
+  // synthesize a GameOverOverlay-shaped result from the server payload.
+  const localIsOver = ['checkmate', 'stalemate', 'draw'].includes(gameResult.status);
+  const usingServerEnd = !localIsOver && !!serverGameEnd;
+  const displayResult = usingServerEnd
+    ? {
+        status:  serverGameEnd.winner === 'draw' ? 'draw' : 'checkmate',
+        winner:  serverGameEnd.winner === 'draw' ? null : serverGameEnd.winner,
+        message: SERVER_END_REASONS[serverGameEnd.reason] ?? serverGameEnd.reason,
+      }
+    : gameResult;
 
   const playerCaptured   = playerColor   === 'white' ? capturedPieces.white : capturedPieces.black;
   const opponentCaptured = opponentColor === 'white' ? capturedPieces.white : capturedPieces.black;
@@ -228,10 +255,12 @@ export default function OnlineGame({
           orientation={playerColor}
         />
         <GameOverOverlay
-          gameResult={gameResult}
+          gameResult={displayResult}
           playerColor={playerColor}
-          onRematch={handleRematch}
-          rematchText="Request Rematch"
+          // No chess rematch protocol exists server-side yet, so a
+          // server-declared end (resign/disconnect) offers the lobby instead.
+          onRematch={usingServerEnd ? onReturnToLobby : handleRematch}
+          rematchText={usingServerEnd ? 'Return to Lobby' : 'Request Rematch'}
         />
 
         {/* User Info Bottom Left */}

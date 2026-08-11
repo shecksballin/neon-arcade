@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Trophy, Timer, ChevronLeft, Maximize2, Zap, Brain, Target, Info } from 'lucide-react';
+import { Trophy, Timer, Maximize2, Zap, Brain, Target, Info } from 'lucide-react';
+import GameBackButton from '../common/GameBackButton';
 import { Question } from './TriviaQuestions';
 import { Socket } from 'socket.io-client';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
@@ -34,6 +35,11 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
   const [opponentScore, setOpponentScore] = useState(0);
   const [players, setPlayers] = useState<any[]>([]);
   const [gameId, setGameId] = useState<string | null>(null);
+  // Multiplayer only: the correct option index for the CURRENT question, as
+  // revealed by the server (triviaAnswerResult / triviaReveal). The server
+  // strips correctAnswer from triviaGameStart, so this is the only way a
+  // multiplayer client ever learns the answer. null = not revealed yet.
+  const [revealedAnswer, setRevealedAnswer] = useState<number | null>(null);
 
   const [sessionWinnings, setSessionWinnings] = useState<number>(0);
   const [correctCount, setCorrectCount] = useState<number>(0);
@@ -41,6 +47,19 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const nextQuestionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Refs mirroring state the socket handlers need — the multiplayer effect
+  // binds its listeners once, so reading state directly would be stale.
+  const questionIndexRef = useRef(0);
+  const gameStartedRef = useRef(false);
+  useEffect(() => {
+    questionIndexRef.current = currentQuestionIndex;
+  }, [currentQuestionIndex]);
+  // onExit is an inline prop — going through a ref keeps the multiplayer
+  // effect from tearing down / re-queueing when the parent re-renders.
+  const onExitRef = useRef(onExit);
+  useEffect(() => {
+    onExitRef.current = onExit;
+  }, [onExit]);
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -61,6 +80,7 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
     setCorrectCount(0);
     setSelectedOption(null);
     setIsCorrect(null);
+    setRevealedAnswer(null);
     setTimeLeft(15);
     setGameState('waiting');
     
@@ -71,8 +91,11 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
     }
   }, [practiceQuestions, topicName, mode, wagerAmount]);
 
-  // --- PRACTICE MODE LOGIC ---
-  const startPracticeGame = useCallback(() => {
+  // 3-2-1 intro countdown, then flip to 'playing'. Used by BOTH practice and
+  // multiplayer (triviaGameStart) — without this the multiplayer client would
+  // sit on the countdown screen forever, since only the server advances
+  // questions and nothing else flips gameState.
+  const runCountdown = useCallback(() => {
     setGameState('countdown');
     setCountdown(3);
     const interval = setInterval(() => {
@@ -86,6 +109,11 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
       });
     }, 1000);
   }, []);
+
+  // --- PRACTICE MODE LOGIC ---
+  const startPracticeGame = useCallback(() => {
+    runCountdown();
+  }, [runCountdown]);
 
   const handleNextQuestion = useCallback(() => {
     if (currentQuestionIndex < questions.length - 1) {
@@ -102,6 +130,22 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
   const handleAnswer = useCallback((optionIndex: number | null, isTimeUp: boolean = false) => {
     if (selectedOption !== null || gameState !== 'playing' || !questions[currentQuestionIndex]) return;
 
+    // ── Multiplayer: server-authoritative ───────────────────────────────────
+    // The client never sees the answer key and never scores itself: it only
+    // reports which option was picked (NO timeLeft — the server times us).
+    // Correctness + reveal come back via `triviaAnswerResult`, scores only via
+    // `triviaUpdate`, and the timeout reveal via `triviaReveal` — so when time
+    // runs out there is nothing to send.
+    if (mode === 'multiplayer') {
+      if (isTimeUp || optionIndex === null) return;
+      setSelectedOption(optionIndex); // lock the UI while awaiting the verdict
+      if (socket && gameId) {
+        socket.emit('triviaAnswer', { gameId, answerIndex: optionIndex });
+      }
+      return;
+    }
+
+    // ── Practice: local scoring (unchanged) ─────────────────────────────────
     let correct = false;
     if (!isTimeUp && optionIndex !== null) {
       setSelectedOption(optionIndex);
@@ -114,9 +158,9 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
       setScore(prev => prev + points);
       setCorrectCount(prev => prev + 1);
     }
-    
+
     // Per question wager update for practice
-    if (mode === 'practice' && wagerAmount > 0 && !isFirstPractice) {
+    if (wagerAmount > 0 && !isFirstPractice) {
        if (correct) {
           win(wagerAmount);
           setSessionWinnings(prev => prev + wagerAmount);
@@ -124,21 +168,17 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
           wager(wagerAmount);
           setSessionWinnings(prev => prev - wagerAmount);
        }
-    } else if (mode === 'practice' && wagerAmount > 0 && isFirstPractice) {
+    } else if (wagerAmount > 0 && isFirstPractice) {
        if (correct) {
           win(wagerAmount);
           setSessionWinnings(prev => prev + wagerAmount);
        }
     }
 
-    if (mode === 'multiplayer' && socket && gameId) {
-      socket.emit('triviaAnswer', { gameId, answerIndex: optionIndex ?? -1, timeLeft: isTimeUp ? 0 : timeLeft });
-    } else {
-      // In practice, auto-advance after 2 seconds
-      nextQuestionTimeoutRef.current = setTimeout(() => {
-        handleNextQuestion();
-      }, 2000);
-    }
+    // In practice, auto-advance after 2 seconds
+    nextQuestionTimeoutRef.current = setTimeout(() => {
+      handleNextQuestion();
+    }, 2000);
   }, [selectedOption, gameState, questions, currentQuestionIndex, timeLeft, mode, socket, gameId, handleNextQuestion, wagerAmount, isFirstPractice, win, wager, setCorrectCount]);
 
   // --- MULTIPLAYER LOGIC ---
@@ -146,51 +186,104 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
     if (mode === 'multiplayer' && socket) {
       socket.emit('findTriviaGame', { profile, config });
 
-      socket.on('triviaGameStart', (data: any) => {
+      // Named handlers + handler-specific socket.off: the socket is the
+      // SHARED game singleton, so blanket .off('event') would also strip
+      // listeners owned by other components (and the global auth logger).
+      const onTriviaGameStart = (data: any) => {
+        gameStartedRef.current = true;
         setGameId(data.gameId);
-        setQuestions(data.questions);
+        setQuestions(data.questions); // NOTE: server strips correctAnswer
         if (data.topic) setCurrentTopic(data.topic);
         setPlayers(data.players);
-        setGameState('countdown');
-        setCountdown(3);
-      });
+        // FFA late-join: server tells us which question is live.
+        if (typeof data.currentQuestionIndex === 'number') {
+          setCurrentQuestionIndex(data.currentQuestionIndex);
+        }
+        runCountdown();
+      };
 
-      socket.on('triviaUpdate', (data: any) => {
-          if (data.scores) {
-              const myScore = data.scores[profile?.name ?? ''] || 0;
-              setScore(myScore);
-              // For 1v1, track opponent specifically
-              if (config.mode === '1v1') {
-                  const oppName = Object.keys(data.scores).find(name => name !== profile?.name);
-                  if (oppName) setOpponentScore(data.scores[oppName]);
-              }
-              setPlayers(data.players);
+      const onTriviaUpdate = (data: any) => {
+        if (data.scores) {
+          // Scores come ONLY from the server — no optimistic local adds.
+          const myScore = data.scores[profile?.name ?? ''] || 0;
+          setScore(myScore);
+          // For 1v1, track opponent specifically
+          if (config.mode === '1v1') {
+            const oppName = Object.keys(data.scores).find(name => name !== profile?.name);
+            if (oppName) setOpponentScore(data.scores[oppName]);
           }
-      });
+          setPlayers(data.players);
+        }
+      };
 
-      socket.on('triviaNextQuestion', (data: any) => {
+      // Private verdict for OUR answer: correctness + the answer key.
+      const onTriviaAnswerResult = (data: any) => {
+        if (data.questionIndex !== questionIndexRef.current) return; // stale
+        setIsCorrect(!!data.correct);
+        setRevealedAnswer(data.correctAnswer);
+        if (data.correct) setCorrectCount(prev => prev + 1);
+      };
+
+      // Room-wide reveal at the 15s deadline (covers players who never answered).
+      const onTriviaReveal = (data: any) => {
+        if (data.questionIndex !== questionIndexRef.current) return;
+        setRevealedAnswer(prev => prev ?? data.correctAnswer);
+      };
+
+      const onTriviaNextQuestion = (data: any) => {
         setCurrentQuestionIndex(data.questionIndex);
         setSelectedOption(null);
         setIsCorrect(null);
+        setRevealedAnswer(null);
         setTimeLeft(15);
-      });
+      };
 
-      socket.on('triviaEnded', (data: any) => {
+      const onTriviaEnded = (data: any) => {
         setGameState('ended');
         setWinner(data.winner);
         setPlayers(data.results);
-      });
+      };
+
+      const onGameAuthError = (data: any) => {
+        // Server refused matchmaking (e.g. account setup unfinished).
+        console.warn('[trivia] cannot play online:', data?.message ?? data?.code);
+        onExitRef.current();
+      };
+
+      const onConnectError = (err: Error) => {
+        // Auth rejection while queueing would leave us on the scanning screen
+        // forever — warn and bail back to the lobby.
+        if (err.message === 'unauthorized' || err.message === 'auth_unavailable') {
+          console.warn('[trivia] socket auth failed:', err.message);
+          if (!gameStartedRef.current) onExitRef.current();
+        }
+      };
+
+      socket.on('triviaGameStart', onTriviaGameStart);
+      socket.on('triviaUpdate', onTriviaUpdate);
+      socket.on('triviaAnswerResult', onTriviaAnswerResult);
+      socket.on('triviaReveal', onTriviaReveal);
+      socket.on('triviaNextQuestion', onTriviaNextQuestion);
+      socket.on('triviaEnded', onTriviaEnded);
+      socket.on('gameAuthError', onGameAuthError);
+      socket.on('connect_error', onConnectError);
 
       return () => {
-        socket.off('triviaGameStart');
-        socket.off('triviaUpdate');
-        socket.off('triviaNextQuestion');
-        socket.off('triviaEnded');
+        // Still queued (never matched)? Free the server-side queue slot.
+        if (!gameStartedRef.current) socket.emit('leaveTriviaQueue');
+        socket.off('triviaGameStart', onTriviaGameStart);
+        socket.off('triviaUpdate', onTriviaUpdate);
+        socket.off('triviaAnswerResult', onTriviaAnswerResult);
+        socket.off('triviaReveal', onTriviaReveal);
+        socket.off('triviaNextQuestion', onTriviaNextQuestion);
+        socket.off('triviaEnded', onTriviaEnded);
+        socket.off('gameAuthError', onGameAuthError);
+        socket.off('connect_error', onConnectError);
       };
     } else if (mode === 'practice') {
       startPracticeGame();
     }
-  }, [mode, socket, profile, config, startPracticeGame]);
+  }, [mode, socket, profile, config, startPracticeGame, runCountdown]);
 
   // Timer logic
   useEffect(() => {
@@ -301,8 +394,13 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
               <h2 className="text-4xl font-black text-white italic tracking-tighter uppercase mb-4">Scanning Neural Grid</h2>
               <p className="text-[#00FFD1] font-mono tracking-widest text-xs uppercase animate-pulse">Waiting for synchronization...</p>
               
-              <button 
-                onClick={onExit}
+              <button
+                onClick={() => {
+                  // Tell the server to drop our queue entry — without this the
+                  // 'aborted' player could still get yanked into a match.
+                  socket?.emit('leaveTriviaQueue');
+                  onExit();
+                }}
                 className="mt-12 px-8 py-3 rounded-xl border border-white/10 text-white/40 font-bold uppercase tracking-widest text-[10px] hover:bg-white/5 transition-all"
               >
                 Abort Link
@@ -344,13 +442,23 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {questions[currentQuestionIndex]?.options?.map((option, idx) => {
                   const isSelected = selectedOption === idx;
-                  const isCorrectAnswer = questions[currentQuestionIndex]?.correctAnswer === idx;
-                  
+                  // Where the answer key comes from depends on the mode:
+                  // practice questions carry correctAnswer locally; multiplayer
+                  // only learns it from the server's reveal events.
+                  const answerKey = mode === 'multiplayer'
+                    ? revealedAnswer
+                    : (questions[currentQuestionIndex]?.correctAnswer ?? null);
+                  const revealed = mode === 'multiplayer'
+                    ? revealedAnswer !== null
+                    : selectedOption !== null;
+                  const isCorrectAnswer = answerKey === idx;
+                  const locked = selectedOption !== null || revealed;
+
                   let borderColor = "border-white/10";
                   let bgColor = "bg-[rgba(255,255,255,0.05)]";
                   let textColor = "text-white/80";
 
-                  if (selectedOption !== null) {
+                  if (revealed) {
                     if (isCorrectAnswer) {
                         borderColor = "border-[#00FFD1]";
                         bgColor = "bg-[#00FFD1]/20";
@@ -360,18 +468,23 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
                         bgColor = "bg-red-500/20";
                         textColor = "text-red-500";
                     }
+                  } else if (isSelected) {
+                    // Multiplayer: answer locked in, verdict still in flight.
+                    borderColor = "border-[#00FFD1]/60";
+                    bgColor = "bg-[#00FFD1]/10";
+                    textColor = "text-white";
                   }
 
                   return (
                     <motion.button
                       key={idx}
-                      whileHover={selectedOption === null ? { scale: 1.02, backgroundColor: "rgba(255, 255, 255, 0.08)" } : {}}
-                      whileTap={selectedOption === null ? { scale: 0.98 } : {}}
+                      whileHover={!locked ? { scale: 1.02, backgroundColor: "rgba(255, 255, 255, 0.08)" } : {}}
+                      whileTap={!locked ? { scale: 0.98 } : {}}
                       onClick={() => handleAnswer(idx)}
-                      disabled={selectedOption !== null}
-                      className={`flex items-center gap-6 p-6 rounded-2xl border-2 backdrop-blur-md transition-all text-left group ${borderColor} ${bgColor} ${selectedOption === null ? 'cursor-pointer hover:border-white/20' : 'cursor-default'}`}
+                      disabled={locked}
+                      className={`flex items-center gap-6 p-6 rounded-2xl border-2 backdrop-blur-md transition-all text-left group ${borderColor} ${bgColor} ${!locked ? 'cursor-pointer hover:border-white/20' : 'cursor-default'}`}
                     >
-                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-xl transition-colors ${selectedOption !== null && isCorrectAnswer ? 'bg-[#00FFD1] text-[#081616]' : 'bg-white/10 text-white/40'}`}>
+                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-xl transition-colors ${revealed && isCorrectAnswer ? 'bg-[#00FFD1] text-[#081616]' : 'bg-white/10 text-white/40'}`}>
                         {String.fromCharCode(65 + idx)}
                       </div>
                       <span className={`text-xl font-bold uppercase tracking-wide ${textColor}`}>
@@ -390,7 +503,7 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
               stake={mode === 'practice' ? wagerAmount : 0}
               winnings={mode === 'practice' ? sessionWinnings : 0} // Profit for practice is exact sessionWinnings
               gameMode={mode === 'practice' ? 'Self-Wager' : 'Online'}
-              questionsRight={mode === 'practice' ? correctCount : Math.round((score / 150) * questions.length)/* rough estimate since score=timeLeft*10 */}
+              questionsRight={correctCount /* multiplayer counts arrive via triviaAnswerResult */}
               onRematch={() => {
                    if (mode === 'practice') {
                        setGameState('waiting');
@@ -412,15 +525,7 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
       </div>
 
       {/* Floating Controls */}
-      <div className="absolute bottom-8 left-8 flex gap-3 z-[60]">
-        <button
-          onClick={onExit}
-          className="p-2.5 border border-red-500/40 rounded-full bg-[#081616]/80 text-red-500 hover:bg-red-500/20 hover:shadow-[0_0_15px_rgba(239,68,68,0.3)] transition-all flex items-center justify-center cursor-pointer select-none"
-          title="Exit Game"
-        >
-          <ChevronLeft size={24} />
-        </button>
-      </div>
+      <GameBackButton onClick={onExit} title="Exit Game" positionClassName="absolute bottom-8 left-8 z-[60]" />
 
       <div className="absolute bottom-8 right-8 flex gap-3 z-[60]">
         <button 

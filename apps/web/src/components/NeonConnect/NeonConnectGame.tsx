@@ -17,7 +17,11 @@ import { ChevronLeft,
   MessageSquare,
   Undo2,
   Plus, CircleDollarSign } from 'lucide-react';
-import { io, Socket } from "socket.io-client";
+import GameBackButton from '../common/GameBackButton';
+// Shared authed game socket — connects lazily when entering online mode,
+// never at import (the old per-effect bare io() reconnected on every
+// myPlayerId/gameStatus change and re-queued freshly-matched players).
+import { connectGameSocket, getSocket } from "../../hooks/useGameSocket";
 import { LibraryBlob } from "../glass/LibraryBlob";
 import { WagerMenu } from "../NeonBucks/WagerMenu";
 import { ResultsScreen } from "../NeonBucks/ResultsScreen";
@@ -358,7 +362,6 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
   const [moveHistory, setMoveHistory] = useState<Move[]>([]);
   const [animatingColumn, setAnimatingColumn] = useState<number | null>(null);
   const [canPlay, setCanPlay] = useState(true);
-  const [socket, setSocket] = useState<Socket | null>(null);
   const [onlineOpponent, setOnlineOpponent] = useState<string | null>(null);
   const [myTurn, setMyTurn] = useState<boolean>(true);
   const [myPlayerId, setMyPlayerId] = useState<number>(HUMAN);
@@ -375,6 +378,19 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
   const resultBuffer = useRef<AudioBuffer | null>(null);
   const soundPlayedRef = useRef(false);
 
+  // Singleton — stable across renders, NOT connected until connectGameSocket().
+  const socket = getSocket();
+
+  // Refs mirroring mutable state the socket handlers read. The online effect
+  // binds its listeners ONCE (keyed only on mode) — reading state directly in
+  // the handlers would be stale, and putting the state in the effect deps was
+  // the old reconnect-churn bug (matched player-2 instantly re-queued).
+  const myPlayerIdRef = useRef(myPlayerId);
+  const gameStatusRef = useRef(gameStatus);
+  const winnerRef = useRef(winner);
+  const matchedRef = useRef(false); // paired into a game this online session?
+  const profileRef = useRef(profile);
+
   useEffect(() => {
     if (onGameStatusChange) {
       onGameStatusChange(mode !== "lobby");
@@ -384,6 +400,22 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
   useEffect(() => {
     boardRef.current = board;
   }, [board]);
+
+  useEffect(() => {
+    myPlayerIdRef.current = myPlayerId;
+  }, [myPlayerId]);
+
+  useEffect(() => {
+    gameStatusRef.current = gameStatus;
+  }, [gameStatus]);
+
+  useEffect(() => {
+    winnerRef.current = winner;
+  }, [winner]);
+
+  useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
 
   // ==================== Audio Engine ====================
   useEffect(() => {
@@ -569,8 +601,17 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
 
       return { success: true };
     },
-    [getAvailableRow, checkWin, isBoardFull],
+    // mode/wagerAmount/win were missing here — the stale closure kept `mode`
+    // frozen at 'lobby', so practice payouts never fired and the online socket
+    // handlers would apply moves with lobby-era rules.
+    [getAvailableRow, checkWin, isBoardFull, mode, wagerAmount, win],
   );
+
+  // Fresh executeMove for the once-bound socket handlers (see refs above).
+  const executeMoveRef = useRef(executeMove);
+  useEffect(() => {
+    executeMoveRef.current = executeMove;
+  }, [executeMove]);
 
   // ==================== Interaction Handling ====================
 
@@ -677,80 +718,166 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
     handleColumnClick,
   ]);
 
-  // ==================== Socket.io Integration ====================
+  // ==================== Reset helpers ====================
 
-  useEffect(() => {
-    if (mode !== "online") return;
-
-    const s = io();
-    setSocket(s);
-
-    s.emit("neonconnect_join", { profile });
-
-    s.on(
-      "neonconnect_match",
-      (data: { opponent: string; turn: boolean; playerId: number }) => {
-        setOnlineOpponent(data.opponent);
-        setMyTurn(data.turn);
-        setMyPlayerId(data.playerId);
-        setCurrentPlayer(
-          data.turn
-            ? data.playerId
-            : data.playerId === HUMAN
-              ? OPPONENT
-              : HUMAN,
-        );
-      },
-    );
-
-    s.on("neonconnect_opponent_move", (data: { col: number }) => {
-      const { col } = data;
-      setAnimatingColumn(col);
-      const opponentId = myPlayerId === HUMAN ? OPPONENT : HUMAN;
-      setTimeout(() => {
-        const result = executeMove(col, opponentId);
-        if (result) {
-          if (
-            gameStatus === "playing" &&
-            !("won" in result) &&
-            !("draw" in result)
-          ) {
-            setMyTurn(true);
-            setCurrentPlayer(myPlayerId);
-          }
-        }
-        setAnimatingColumn(null);
-      }, 600);
-    });
-
-    s.on("neonconnect_opponent_quit", () => {
-      setGameStatus("won");
-      setWinner(myPlayerId);
-      setCanPlay(false);
-      setOnlineOpponent((prev) => (prev ? `${prev} (DISCONNECTED)` : null));
-    });
-
-    return () => {
-      s.disconnect();
-    };
-  }, [mode, profile, myPlayerId, executeMove, gameStatus]);
-
-  const resetGame = () => {
+  // Clears ALL local board state. `firstPlayer` = who moves first (connect
+  // player ids are absolute: 1 or 2, not relative to this client).
+  const applyLocalReset = useCallback((firstPlayer: number = HUMAN) => {
     setBoard(Array(ROWS * COLS).fill(EMPTY));
-    setCurrentPlayer(HUMAN);
+    setCurrentPlayer(firstPlayer);
     setGameStatus("playing");
     setWinner(null);
     setMoveHistory([]);
     setAnimatingColumn(null);
     setCanPlay(true);
-    if (mode === "online" && socket) {
+  }, []);
+
+  // "New Game" — online it is a two-sided rematch handshake: we only ASK the
+  // server; the board clears when the room-broadcast neonconnect_reset lands
+  // (see onRoomReset below). Local modes reset immediately.
+  const resetGame = () => {
+    if (mode === "online") {
       socket.emit("neonconnect_reset");
+      return;
     }
+    applyLocalReset();
   };
+
+  // ==================== Socket.io Integration ====================
+
+  // Keyed ONLY on mode==='online' — mutable state (myPlayerId, gameStatus,
+  // winner) is read via refs inside the handlers. The old deps list tore the
+  // socket down and re-queued the player whenever a match assigned playerId 2
+  // or the game ended.
+  useEffect(() => {
+    if (mode !== "online") return;
+
+    // Lazy connect the shared authed socket (no-op when already connected).
+    const s = connectGameSocket();
+    matchedRef.current = false;
+    // Until the server pairs us the board must not be playable (myTurn
+    // defaults to true for local modes).
+    setMyTurn(false);
+    setOnlineOpponent(null);
+
+    s.emit("neonconnect_join", { profile: profileRef.current });
+
+    const onMatch = (data: { opponent: string; turn: boolean; playerId: number }) => {
+      matchedRef.current = true;
+      setOnlineOpponent(data.opponent);
+      setMyTurn(data.turn);
+      setMyPlayerId(data.playerId);
+      setCurrentPlayer(
+        data.turn
+          ? data.playerId
+          : data.playerId === HUMAN
+            ? OPPONENT
+            : HUMAN,
+      );
+    };
+
+    const onOpponentMove = (data: { col: number }) => {
+      const { col } = data;
+      setAnimatingColumn(col);
+      const opponentId = myPlayerIdRef.current === HUMAN ? OPPONENT : HUMAN;
+      setTimeout(() => {
+        const result = executeMoveRef.current(col, opponentId);
+        if (result) {
+          if (
+            gameStatusRef.current === "playing" &&
+            !("won" in result) &&
+            !("draw" in result)
+          ) {
+            setMyTurn(true);
+            setCurrentPlayer(myPlayerIdRef.current);
+          }
+        }
+        setAnimatingColumn(null);
+      }, 600);
+    };
+
+    // Server-declared result (board is authoritative server-side and ELO is
+    // settled there). Local move handling usually detects the same outcome a
+    // beat earlier — re-setting identical state is harmless — but this event
+    // is the authority, and the only signal for server-only endings.
+    const onEnded = (data: { winner: 1 | 2 | "draw"; reason?: string }) => {
+      if (data.winner === "draw") {
+        setGameStatus("draw");
+        setWinner(null);
+      } else {
+        setGameStatus("won");
+        setWinner(data.winner);
+      }
+      setCanPlay(false);
+    };
+
+    // Room-broadcast rematch: BOTH players requested a reset — clear the
+    // board whether or not WE were the one who clicked New Game.
+    const onRoomReset = (data?: { firstPlayer?: number }) => {
+      // First mover per server rule: loser of the previous game, player 2
+      // after a draw. Derive locally; prefer an explicit server field if the
+      // payload carries one.
+      const derived =
+        winnerRef.current === HUMAN
+          ? OPPONENT
+          : winnerRef.current === OPPONENT
+            ? HUMAN
+            : OPPONENT; // draw (or unknown) → previous player 2 moves first
+      const first =
+        typeof data?.firstPlayer === "number" ? data.firstPlayer : derived;
+      applyLocalReset(first);
+      setMyTurn(myPlayerIdRef.current === first);
+    };
+
+    const onOpponentQuit = () => {
+      setGameStatus("won");
+      setWinner(myPlayerIdRef.current);
+      setCanPlay(false);
+      setOnlineOpponent((prev) => (prev ? `${prev} (DISCONNECTED)` : null));
+    };
+
+    const onGameAuthError = (data: any) => {
+      // Server refused matchmaking (e.g. account setup unfinished).
+      console.warn("[connect] cannot play online:", data?.message ?? data?.code);
+      setMode("lobby");
+    };
+
+    const onConnectError = (err: Error) => {
+      if (err.message === "unauthorized" || err.message === "auth_unavailable") {
+        console.warn("[connect] socket auth failed:", err.message);
+        if (!matchedRef.current) setMode("lobby");
+      }
+    };
+
+    s.on("neonconnect_match", onMatch);
+    s.on("neonconnect_opponent_move", onOpponentMove);
+    s.on("neonconnect_ended", onEnded);
+    s.on("neonconnect_reset", onRoomReset);
+    s.on("neonconnect_opponent_quit", onOpponentQuit);
+    s.on("gameAuthError", onGameAuthError);
+    s.on("connect_error", onConnectError);
+
+    return () => {
+      // Still queued (never matched)? Free the server-side queue slot.
+      // Matched? Tell the server we walked away — the shared singleton stays
+      // CONNECTED, so without this a mid-game UI exit would strand the
+      // opponent until our tab closed (active game = forfeit server-side).
+      if (!matchedRef.current) s.emit("leaveConnectQueue");
+      else s.emit("neonconnect_leave");
+      s.off("neonconnect_match", onMatch);
+      s.off("neonconnect_opponent_move", onOpponentMove);
+      s.off("neonconnect_ended", onEnded);
+      s.off("neonconnect_reset", onRoomReset);
+      s.off("neonconnect_opponent_quit", onOpponentQuit);
+      s.off("gameAuthError", onGameAuthError);
+      s.off("connect_error", onConnectError);
+    };
+  }, [mode, applyLocalReset]);
 
   if (mode === "lobby" || mode === "practice_wager") {
     return (
       <div className="min-h-screen bg-[#081616] flex flex-col items-center justify-center p-6 relative overflow-hidden">
+        <GameBackButton onClick={onExit} title="Back to arcade" positionClassName="absolute top-6 left-6 z-50" />
         {mode === "practice_wager" && (
           <WagerMenu 
             gameTitle="Neon Connect"
@@ -808,7 +935,7 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
 
             <ParticleCard
               onClick={() => {
-                resetGame();
+                applyLocalReset();
                 setMode("local_coop");
               }}
               className="magic-bento-card magic-bento-card--border-glow px-4 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer hover:border-[#00FFD1]"
@@ -905,14 +1032,16 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
       `}</style>
 
       {/* Permanent Left Sidebar (Nav & Actions) */}
-      <ConnectNavSidebar 
+      {/* Mode switches use applyLocalReset, NOT resetGame — resetGame while
+          online emits a rematch request instead of clearing the board. */}
+      <ConnectNavSidebar
         gameTitle="Neon Connect"
-        onReturn={() => { resetGame(); setMode("lobby"); }}
+        onReturn={() => { applyLocalReset(); setMode("lobby"); }}
         onExit={onExit}
         gameMode={mode}
-        onPlayOnline={() => { resetGame(); setMode("online"); }}
-        onPlayComputer={() => { resetGame(); setMode("local"); }}
-        onPlayLocal={() => { resetGame(); setMode("local_coop"); }}
+        onPlayOnline={() => { applyLocalReset(); setMode("online"); }}
+        onPlayComputer={() => { applyLocalReset(); setMode("local"); }}
+        onPlayLocal={() => { applyLocalReset(); setMode("local_coop"); }}
         profile={profile}
       />
 
@@ -920,13 +1049,13 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
         <div className="flex justify-center items-center py-10 min-h-full gap-8 max-w-[1200px] mx-auto">
           {/* Game Selection */}
           <div className="w-[280px] h-[652px] flex-shrink-0 mt-[40px]">
-             <GameMenuPanel 
-               onReturn={() => { resetGame(); setMode("lobby"); }}
+             <GameMenuPanel
+               onReturn={() => { applyLocalReset(); setMode("lobby"); }}
                onExit={onExit}
                gameMode={mode}
-               onPlayOnline={() => { resetGame(); setMode("online"); }}
-               onPlayComputer={() => { resetGame(); setMode("practice_wager"); }} // Practice in Connect
-               onPlayLocal={() => { resetGame(); setMode("local_coop"); }}
+               onPlayOnline={() => { applyLocalReset(); setMode("online"); }}
+               onPlayComputer={() => { applyLocalReset(); setMode("practice_wager"); }} // Practice in Connect
+               onPlayLocal={() => { applyLocalReset(); setMode("local_coop"); }}
                profile={profile}
              />
           </div>
@@ -1026,7 +1155,7 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
                       gameMode={mode === "local" ? "Practice" : (mode === "online" ? "Online" : "Local")}
                       onRematch={resetGame}
                       onExit={() => {
-                        resetGame();
+                        applyLocalReset();
                         setMode("lobby");
                       }}
                     />

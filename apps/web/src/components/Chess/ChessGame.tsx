@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { io } from 'socket.io-client';
 import { Globe, Cpu, LogOut, Users, Trophy, TrendingUp, Settings, Award, MessageSquare, History } from 'lucide-react';
 import { ParticleCard } from '../glass/MagicGameTile';
 import GameLobby from './GameLobby';
@@ -8,6 +7,9 @@ import OnlineGame from './OnlineGame';
 import LocalGame from './LocalGame';
 import { useComputerMove } from './useComputerMove';
 import { DEFAULT_SKILL_LEVEL } from './difficulty';
+// Shared authed game socket — connects lazily when the player enters online
+// mode (connectGameSocket), never at module import.
+import { connectGameSocket, getSocket } from '../../hooks/useGameSocket';
 
 interface ChessGameProps {
   onExit: () => void;
@@ -15,7 +17,11 @@ interface ChessGameProps {
   onGameStatusChange?: (inProgress: boolean) => void;
 }
 
-const socket = io();
+/** Server-declared end of an online game (resign / disconnect / mate / draw). */
+export interface ServerGameEnd {
+  winner: 'white' | 'black' | 'draw';
+  reason: string;
+}
 
 // Internal component for the left nav sidebar (based on SidebarMenu)
 function ChessNavSidebar({ 
@@ -253,6 +259,13 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
 
   const [externalMove, setExternalMove] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'waiting' | 'disconnected'>('disconnected');
+  // Result pushed by the server (resign / disconnect / reported mate / draw).
+  // Rendered by OnlineGame's end overlay — local chess.js detection alone
+  // can't see the opponent resigning or dropping.
+  const [serverGameEnd, setServerGameEnd] = useState<ServerGameEnd | null>(null);
+
+  // Singleton — stable across renders, NOT connected until connectGameSocket().
+  const socket = getSocket();
 
   const { getBestMove } = useComputerMove();
 
@@ -263,58 +276,84 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
   }, [gameState, onGameStatusChange]);
 
   useEffect(() => {
-    socket.on('connect', () => {
-      setConnectionStatus('connected');
-    });
-
-    socket.on('disconnect', () => {
+    // Named handlers + handler-specific socket.off: the socket is SHARED with
+    // the other games, so blanket socket.off('event') would strip their
+    // listeners (and the global connect_error logger) too.
+    const onConnect = () => setConnectionStatus('connected');
+    const onDisconnect = () => setConnectionStatus('disconnected');
+    const onConnectError = (err: Error) => {
+      // 'unauthorized' / 'auth_unavailable' — token missing/expired or the
+      // server can't verify JWTs. Surface via the existing status pill.
+      if (err.message === 'unauthorized' || err.message === 'auth_unavailable') {
+        console.warn('[chess] socket auth failed:', err.message);
+      }
       setConnectionStatus('disconnected');
-    });
-
-    socket.on('waiting', () => {
+    };
+    const onWaiting = () => {
       setGameState('waiting');
       setConnectionStatus('waiting');
-    });
-
-    socket.on('gameStart', (data: any) => {
+    };
+    const onGameStart = (data: any) => {
       setGameState('playing');
       setGameData(data);
       setGameMode(data.mode);
       setConnectionStatus('connected');
-    });
-
-    socket.on('gameEnded', (data: any) => {
+      setServerGameEnd(null);
+      setExternalMove(null);
+    };
+    const onGameEnded = (data: any) => {
       setGameState('ended');
-    });
-
-    socket.on('opponentDisconnected', () => {
+      setServerGameEnd({
+        winner: data?.winner ?? 'draw',
+        reason: data?.reason ?? 'ended',
+      });
+    };
+    const onOpponentDisconnected = () => {
+      // Informational only — the server follows up with gameEnded
+      // { reason: 'disconnect' }, which drives the end overlay. (The old
+      // hard reset to lobby hid the result and faked a 'Disconnected' pill.)
+      console.info('[chess] opponent disconnected — awaiting server result');
+    };
+    const onMoveMade = (data: any) => setExternalMove(data.move);
+    const onGameAuthError = (data: any) => {
+      // Server refused matchmaking (e.g. account setup unfinished).
+      console.warn('[chess] cannot play online:', data?.message ?? data?.code);
       setGameState('lobby');
-      setGameData(null);
-      setGameMode(null);
       setConnectionStatus('disconnected');
-    });
+    };
 
-    socket.on('moveMade', (data: any) => {
-      setExternalMove(data.move);
-    });
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('connect_error', onConnectError);
+    socket.on('waiting', onWaiting);
+    socket.on('gameStart', onGameStart);
+    socket.on('gameEnded', onGameEnded);
+    socket.on('opponentDisconnected', onOpponentDisconnected);
+    socket.on('moveMade', onMoveMade);
+    socket.on('gameAuthError', onGameAuthError);
 
     return () => {
-      socket.off('connect');
-      socket.off('disconnect');
-      socket.off('waiting');
-      socket.off('gameStart');
-      socket.off('gameEnded');
-      socket.off('opponentDisconnected');
-      socket.off('moveMade');
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('connect_error', onConnectError);
+      socket.off('waiting', onWaiting);
+      socket.off('gameStart', onGameStart);
+      socket.off('gameEnded', onGameEnded);
+      socket.off('opponentDisconnected', onOpponentDisconnected);
+      socket.off('moveMade', onMoveMade);
+      socket.off('gameAuthError', onGameAuthError);
     };
-  }, []);
+  }, [socket]);
 
   const handleFindGame = () => {
-    const fullPlayer = { 
+    const fullPlayer = {
       name: profile?.name || 'Player',
       avatarUrl: profile?.avatarUrl || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix'
     };
     setPlayerData(fullPlayer);
+    // Lazy connect: only touches the network when entering online mode.
+    connectGameSocket();
+    if (!socket.connected) setConnectionStatus('connecting');
     socket.emit('findGame', fullPlayer);
   };
 
@@ -354,6 +393,7 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
     setGameMode(null);
     setPlayerData(null);
     setExternalMove(null);
+    setServerGameEnd(null);
   };
 
   if (gameState === 'lobby' || gameState === 'practice_wager') {
@@ -460,6 +500,7 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
                 gameId={gameData?.gameId}
                 opponentName={gameData?.whitePlayer?.socketId === socket.id ? gameData?.blackPlayer?.name : gameData?.whitePlayer?.name}
                 playerName={playerData?.name}
+                serverGameEnd={serverGameEnd}
                 onReturnToLobby={handleReturnToLobby}
                 onRematchRequest={() => {}}
               />

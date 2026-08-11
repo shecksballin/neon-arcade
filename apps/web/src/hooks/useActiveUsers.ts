@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
+import { SOCKET_URL } from "./useGameSocket";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const SOCKET_URL = "";
+// Presence lives on its own anonymous namespace on the game server.
+const PRESENCE_URL = `${SOCKET_URL}/presence`;
 const HEARTBEAT_INTERVAL_MS = 20_000;  // send heartbeat every 20s
 const RECONNECT_BASE_DELAY_MS = 1_000; // start retry at 1s
 const RECONNECT_MAX_DELAY_MS = 30_000; // cap retry at 30s
@@ -73,10 +75,13 @@ export function useActiveUsers({
     if (!enabled) return;
     if (socketRef.current?.connected) return;
 
-    const socket = io(undefined, {
+    const socket = io(PRESENCE_URL, {
       // No auth payload — anonymous by design. Server assigns the session id.
       reconnection: false,         // we handle reconnect manually with backoff
       transports: ["polling", "websocket"],
+      // Do NOT share a Manager with the authed game socket (same host):
+      // its options (reconnection:true) would override our manual backoff.
+      forceNew: true,
     });
 
     socketRef.current = socket;

@@ -1,5 +1,6 @@
 import React, { useRef } from "react";
-import { ChevronLeft, Globe, Cpu, CircleDollarSign, Users } from 'lucide-react';
+import { Globe, Cpu, CircleDollarSign, Users } from 'lucide-react';
+import GameBackButton from '../common/GameBackButton';
 import { LibraryBlob } from "../glass/LibraryBlob";
 import { ParticleCard, GlobalSpotlight } from "../glass/MagicGameTile";
 import { DifficultySelector } from "./DifficultySelector";
@@ -34,6 +35,7 @@ const GameLobby = ({
 
   return (
     <div className="min-h-screen bg-[#081616] flex flex-col items-center justify-center p-6 relative overflow-hidden">
+      <GameBackButton onClick={onExit} title="Back to arcade" positionClassName="absolute top-6 left-6 z-50" />
       <LibraryBlob />
       <GlobalSpotlight gridRef={containerRef} />
 

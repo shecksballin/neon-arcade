@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { io, Socket } from 'socket.io-client';
+import type { Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
 import { ChevronLeft, Trophy, User, Zap, Maximize2 } from 'lucide-react';
+import GameBackButton from '../common/GameBackButton';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
 import { useNeonBucks } from '../../NeonBucksStore';
 
@@ -32,6 +33,10 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
   const [gameState, setGameState] = useState<'countdown' | 'playing' | 'ended'>('countdown');
   const [countdown, setCountdown] = useState(3);
   const [winner, setWinner] = useState<string | null>(null);
+  // Server-declared result. Preferred over name comparison — two players named
+  // 'Player' would otherwise BOTH think they won. null = fall back to names
+  // (computer mode, or an old-style volleyEnded without winnerSocketId).
+  const [wonMatch, setWonMatch] = useState<boolean | null>(null);
   const { win, balance } = useNeonBucks();
   
   const gameContainerRef = useRef<HTMLDivElement>(null);
@@ -113,14 +118,17 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
     source.start(0);
   }, []);
 
+  // Did WE win? Server socket-id verdict when available, name compare otherwise.
+  const iWon = wonMatch ?? (winner === playerData.name);
+
   useEffect(() => {
     if (gameState === 'ended') {
-      playEffect(winner === playerData.name);
-      if (mode === 'computer' && winner === playerData.name && wagerAmount > 0) {
+      playEffect(iWon);
+      if (mode === 'computer' && iWon && wagerAmount > 0) {
         win(wagerAmount * 2);
       }
     }
-  }, [gameState, winner, playerData.name, playEffect, mode, wagerAmount, win]);
+  }, [gameState, iWon, playEffect, mode, wagerAmount, win]);
 
   const WINNING_SCORE = playerData.matchMode === 'classic' ? 11 : (playerData.matchMode === 'bestof3' ? 2 : 1);
 
@@ -438,45 +446,60 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
     };
   }, [gameState, mode, gameData, socket]);
 
-  // Multiplayer Sync
+  // Multiplayer Sync — named handlers + handler-specific socket.off: the
+  // socket is the SHARED game singleton, so blanket .off('event') would strip
+  // listeners belonging to other components too.
   useEffect(() => {
-    if (mode === 'multiplayer') {
-      socket.on('volleyUpdate', (data: any) => {
-        ballPos.current = data.ballPos;
-        if (isP1.current) {
-          paddle2Y.current = data.paddle2Y;
-        } else {
-          paddle1Y.current = data.paddle1Y;
-        }
-        setScore(data.score);
-      });
+    if (mode !== 'multiplayer') return;
 
-      socket.on('volleyEnded', (data: any) => {
-        setGameState('ended');
-        setWinner(data.winner);
-        setEndReason({ reason: data.reason, details: data.details });
-      });
+    const onVolleyUpdate = (data: any) => {
+      ballPos.current = data.ballPos;
+      if (isP1.current) {
+        paddle2Y.current = data.paddle2Y;
+      } else {
+        paddle1Y.current = data.paddle1Y;
+      }
+      setScore(data.score);
+    };
 
-      socket.on('rematchOffered', () => {
-        setRematchStatus('offered');
-      });
+    const onVolleyEnded = (data: any) => {
+      setGameState('ended');
+      setWinner(data.winner);
+      // Prefer the server's socket-id verdict; fall back to display-name
+      // comparison for backward compatibility.
+      setWonMatch(
+        typeof data.winnerSocketId === 'string'
+          ? data.winnerSocketId === socket.id
+          : null
+      );
+      setEndReason({ reason: data.reason, details: data.details });
+    };
 
-      socket.on('volleyGameReset', (data: any) => {
-        setScore(data.score);
-        setGameState('playing');
-        setWinner(null);
-        setEndReason(null);
-        setRematchStatus('none');
-        ballPos.current = data.ballPos;
-      });
+    const onRematchOffered = () => {
+      setRematchStatus('offered');
+    };
 
-      return () => {
-        socket.off('volleyUpdate');
-        socket.off('volleyEnded');
-        socket.off('rematchOffered');
-        socket.off('volleyGameReset');
-      };
-    }
+    const onVolleyGameReset = (data: any) => {
+      setScore(data.score);
+      setGameState('playing');
+      setWinner(null);
+      setWonMatch(null);
+      setEndReason(null);
+      setRematchStatus('none');
+      ballPos.current = data.ballPos;
+    };
+
+    socket.on('volleyUpdate', onVolleyUpdate);
+    socket.on('volleyEnded', onVolleyEnded);
+    socket.on('rematchOffered', onRematchOffered);
+    socket.on('volleyGameReset', onVolleyGameReset);
+
+    return () => {
+      socket.off('volleyUpdate', onVolleyUpdate);
+      socket.off('volleyEnded', onVolleyEnded);
+      socket.off('rematchOffered', onRematchOffered);
+      socket.off('volleyGameReset', onVolleyGameReset);
+    };
   }, [mode, socket, isP1]);
 
   const handleRematchRequest = () => {
@@ -484,6 +507,7 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
       setScore({ p1: 0, p2: 0 });
       setGameState('playing');
       setWinner(null);
+      setWonMatch(null);
       setEndReason(null);
       setRematchStatus('none');
       resetBall();
@@ -614,9 +638,9 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
          <AnimatePresence>
             {gameState === 'ended' && (
               <ResultsScreen
-                won={winner === playerData.name}
+                won={iWon}
                 stake={mode === 'computer' ? wagerAmount : 0}
-                winnings={mode === 'computer' ? (winner === playerData.name ? wagerAmount * 2 : 0) : 0}
+                winnings={mode === 'computer' ? (iWon ? wagerAmount * 2 : 0) : 0}
                 gameMode={mode === 'computer' ? 'Practice' : 'Online'}
                 onRematch={handleRematchRequest}
                 onExit={onExit}
@@ -632,6 +656,7 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
       )}
 
       {/* Floating Controls - Styled like Asteroids */}
+      <GameBackButton onClick={onExit} title="Exit Game" positionClassName="absolute bottom-8 left-8 z-[60] pointer-events-auto" />
       <div className="absolute bottom-8 right-8 flex gap-3 pointer-events-auto z-[60]">
         <button 
           onClick={toggleFullscreen}

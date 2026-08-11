@@ -1,6 +1,7 @@
 import React, { useState, Suspense } from 'react';
 import PugShooterLobby, { PugShooterMatchConfig } from './PugShooterLobby';
-import { ChevronLeft, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
+import GameBackButton from '../common/GameBackButton';
 
 // Lazy-loaded so the iframe host (and with it the whole three.js + Rapier game
 // behind it) is only fetched when the player starts a match, keeping the
@@ -43,14 +44,7 @@ const PugShooterGame = ({ onExit, profile, onGameStatusChange }: PugShooterGameP
 
   return (
     <div className="w-full h-full relative">
-      <div className="absolute top-6 left-6 z-50">
-        <button
-          onClick={onExit}
-          className="p-2 bg-black/40 border border-[#00FFD1]/30 hover:bg-[#00FFD1]/20 rounded-full text-white transition-all cursor-pointer"
-        >
-          <ChevronLeft className="w-6 h-6" />
-        </button>
-      </div>
+      <GameBackButton onClick={onExit} title="Back to arcade" positionClassName="absolute top-6 left-6 z-50" />
       <PugShooterLobby
         onFindGame={setMatch}
         onPlayComputer={setMatch}

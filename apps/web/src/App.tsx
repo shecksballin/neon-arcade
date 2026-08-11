@@ -43,7 +43,7 @@ import GolfGame from "./components/Golf/GolfGame";
 import ClumsyGame from "./components/Clumsy/ClumsyGame";
 import KillerGame from "./components/Killer/KillerGame";
 import PugShooterGame from "./components/PugShooter/PugShooterGame";
-import { io } from "socket.io-client";
+import { disconnectGameSocket } from "./hooks/useGameSocket";
 
 import { SidebarMenu } from "./components/SidebarMenu";
 
@@ -350,6 +350,7 @@ export default function App() {
 
   const handleDisconnectWallet = async () => {
     setShowWallet(false);
+    disconnectGameSocket(); // drop the game socket so a stale-token session can't linger
     clearSession(); // our backend JWT dies with the Privy session
     await logout();
   };
