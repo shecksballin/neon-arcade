@@ -39,10 +39,12 @@ import { eq } from 'drizzle-orm'
 import * as OTPAuth from 'otpauth'
 import QRCode from 'qrcode'
 import {
+  SEASON_START_RP,
   USERNAME_REGEX,
   PIN_REGEX,
   TOTP_CODE_REGEX,
   TOTP_ISSUER,
+  getLevelInfo,
 } from '@neon/types'
 import { config } from '../config/env'
 import { requireDb } from '../db'
@@ -50,6 +52,7 @@ import { users } from '../db/schema'
 import { requireAuth, type AuthVariables } from '../middleware/requireAuth'
 import { encryptTotpSecret, decryptTotpSecret } from '../lib/totpCrypto'
 import { createRateLimiter } from '../lib/rateLimit'
+import { linkIdentities } from '../services/accountService'
 
 const profile = new Hono<{ Variables: AuthVariables }>()
 
@@ -83,6 +86,12 @@ profile.get('/me', async (c) => {
   const wallet = c.get('wallet')
   const [row] = await db.select().from(users).where(eq(users.wallet, wallet)).limit(1)
 
+  // RANKED 2.0: `rp1v1` / `rpFfa` are the source of truth for the badge
+  // (the client derives tier AND division from RP via getRankInfo). `elo` /
+  // `eloFfa` are kept only as the legacy mirror rankService writes alongside
+  // RP — the client's `rankRpOf` prefers `rp` and falls back to `elo`, so
+  // sending both is a no-flag-day migration. The hidden TrueSkill layer
+  // (mu/sigma) is deliberately NOT here: it would expose matchmaking.
   return c.json({
     wallet,
     username: row?.username ?? null,
@@ -90,6 +99,15 @@ profile.get('/me', async (c) => {
     totpEnabled: row?.totpEnabled ?? false,
     elo: row?.elo ?? 0,
     eloFfa: row?.eloFfa ?? 0,
+    rp: row?.rp1v1 ?? SEASON_START_RP,
+    rpFfa: row?.rpFfa ?? SEASON_START_RP,
+    season: row?.season ?? 1,
+    // PROGRESSION. `xp` is the stored career counter; `level` is DERIVED from
+    // it here purely so a client that has not imported the curve still has a
+    // number to print. getLevelInfo(xp) on the client yields the same value —
+    // the level is never stored, exactly like the rank badge.
+    xp: row?.xp ?? 0,
+    level: getLevelInfo(row?.xp ?? 0).level,
   })
 })
 
@@ -124,9 +142,24 @@ profile.post('/register', async (c) => {
 
   // Once TOTP is enrolled the account is sealed — changing credentials
   // becomes a recovery flow, not a re-register.
+  //
+  // Reaching this at all means sign-in resolved to an account that is
+  // already finished (routes/auth.ts maps every identity a person owns
+  // onto one account, so "their" account is the one being described
+  // here). The way back in is the PIN + authenticator code they already
+  // set up, so say that — and hand the client a `code` it can branch on
+  // to open the login form instead of guessing from the wording.
   const [existing] = await db.select().from(users).where(eq(users.wallet, wallet)).limit(1)
   if (existing?.totpEnabled) {
-    return c.json({ error: 'This wallet already has a registered account' }, 409)
+    return c.json(
+      {
+        error:
+          'You already have an account — sign in with your PIN and authenticator code',
+        code: 'account_exists',
+        username: existing.username,
+      },
+      409
+    )
   }
 
   // argon2id (Bun's native hasher, OWASP-recommended defaults). The raw
@@ -150,8 +183,9 @@ profile.post('/register', async (c) => {
   // enrollment replaces its username/PIN/secret); a unique-index
   // violation that still escapes is the case-insensitive username
   // registry saying "taken".
+  let userId: string
   try {
-    await db
+    const [row] = await db
       .insert(users)
       .values({
         wallet,
@@ -170,6 +204,8 @@ profile.post('/register', async (c) => {
           updatedAt: new Date(),
         },
       })
+      .returning({ id: users.id })
+    userId = row!.id
   } catch (err: unknown) {
     // Postgres 23505 = unique_violation → the username index (the wallet
     // conflict is absorbed by the upsert above). Drizzle wraps the
@@ -183,6 +219,14 @@ profile.post('/register', async (c) => {
     console.error('register failed:', err)
     return c.json({ error: 'Registration failed — try again' }, 500)
   }
+
+  // Belt and braces on the one-account-per-person rule. Sign-in already
+  // linked every identity it verified (services/accountService.ts), but
+  // that only ran for sessions minted since identity linking shipped —
+  // this makes sure the account is at least reachable by its own wallet
+  // whatever route created it. ON CONFLICT DO NOTHING inside, so it is a
+  // no-op on the normal path.
+  await linkIdentities(userId, [{ kind: 'wallet', value: wallet }])
 
   // The QR is rendered server-side so the secret never needs a client
   // QR library; classic black-on-white scans most reliably.
@@ -245,9 +289,15 @@ profile.post('/totp/verify', async (c) => {
     return c.json({ error: 'Invalid code — check your authenticator app' }, 401)
   }
 
+  // Burn the code as well as accepting it. `delta` is an offset in 30s
+  // steps from the current one, so this is the absolute step the code
+  // belongs to — recording it stops the very same code being replayed at
+  // POST /api/auth/login while it is still inside its window.
+  const step = Math.floor(Date.now() / 1000 / 30) + delta
+
   await db
     .update(users)
-    .set({ totpEnabled: true, updatedAt: new Date() })
+    .set({ totpEnabled: true, totpLastStep: step, updatedAt: new Date() })
     .where(eq(users.wallet, wallet))
 
   return c.json({ enabled: true, username: row.username })

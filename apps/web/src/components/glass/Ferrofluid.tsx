@@ -360,10 +360,31 @@ export function Ferrofluid({
           fn.call(obj);
         }
       };
+      // Program.remove() and Geometry.remove() are real ogl methods and do free
+      // their GPU objects. Mesh has none, and — the one that mattered —
+      // NEITHER DOES Renderer: `destroy` does not exist in ogl, so this call was
+      // a silent no-op and the WebGL context survived every unmount.
+      //
+      // That leaked once per lobby visit, and this component (via LibraryBlob)
+      // is in EVERY game lobby. Browsers cap live contexts around 16, so after a
+      // dozen or so game entries the browser starts force-losing the oldest ones
+      // and the blobs go blank. ogl also sets `gl.renderer = this`, so the live
+      // context pins the whole renderer graph in memory too.
+      //
+      // WEBGL_lose_context is the only way to hand a context back on demand.
       callIfFn(programRef.current, 'remove');
       callIfFn(geometryRef.current, 'remove');
       callIfFn(meshRef.current, 'remove');
       callIfFn(rendererRef.current, 'destroy');
+      try {
+        const dyingGl = rendererRef.current?.gl;
+        if (dyingGl) {
+          delete (dyingGl as any).renderer;
+          dyingGl.getExtension('WEBGL_lose_context')?.loseContext();
+        }
+      } catch {
+        /* context already gone — nothing to release */
+      }
       programRef.current = null;
       geometryRef.current = null;
       meshRef.current = null;

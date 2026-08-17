@@ -58,6 +58,35 @@ export function CursorBlob3D() {
          * Adjust camera.position.z if the blob feels too large or small.
          */
         camera={{ position: [0, 0, 5], fov: 50 }}
+        /**
+         * WHY eventSource IS PINNED TO document.body.
+         *
+         * R3F subscribes its event system inside `onCreated`, which runs
+         * asynchronously after the renderer exists, and by default it
+         * subscribes to `canvas.parentElement`. Leaving the landing page
+         * while that is still in flight — clicking PLAY NOW, say — unmounts
+         * this Canvas first, so `parentElement` is null by the time the
+         * callback fires and R3F throws:
+         *
+         *   TypeError: Cannot read properties of null (reading 'addEventListener')
+         *       at Object.connect → onCreated
+         *
+         * The throw happens in an async callback, so the SafeErrorBoundary
+         * around this component cannot catch it. R3F's setup is left
+         * half-finished, its teardown never runs, and the WebGL context
+         * leaks — a few transitions later the browser force-reclaims one
+         * ("THREE.WebGLRenderer: Context Lost") and the whole page freezes.
+         * That freeze is what made the account screen look permanently
+         * stuck: the spinner stops repainting while the sign-in it is
+         * waiting on is still running perfectly well underneath.
+         *
+         * document.body is the one element guaranteed to exist for the
+         * lifetime of the page — unlike a ref, which React nulls on
+         * unmount, reintroducing the exact crash. It costs nothing here:
+         * the scene registers no pointer handlers, so R3F's interaction
+         * list is empty and a pointer move raycasts against nothing.
+         */
+        eventSource={typeof document !== 'undefined' ? document.body : undefined}
         style={{ width: '100%', height: '100%' }}
       >
         <BlobScene />

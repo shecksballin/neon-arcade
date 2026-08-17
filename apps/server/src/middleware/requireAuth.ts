@@ -17,6 +17,7 @@
 import { createMiddleware } from 'hono/factory'
 import { verify } from 'hono/jwt'
 import { config } from '../config/env'
+import { isSessionRevoked } from '../lib/sessionRevocation'
 
 // What requireAuth adds to the Hono context for downstream handlers
 export type AuthVariables = {
@@ -38,17 +39,31 @@ export const requireAuth = createMiddleware<{ Variables: AuthVariables }>(
 
     const token = header.slice('Bearer '.length)
 
+    let wallet: string
+    let issuedAt: unknown
     try {
       // verify() throws on a bad signature OR an expired `exp` claim
       const payload = await verify(token, config.JWT_SECRET, 'HS256')
-      const wallet = payload.wallet
-      if (typeof wallet !== 'string' || wallet.length === 0) {
+      const claim = payload.wallet
+      if (typeof claim !== 'string' || claim.length === 0) {
         throw new Error('token payload missing wallet')
       }
-      c.set('wallet', wallet)
+      wallet = claim
+      issuedAt = payload.iat
     } catch {
       return c.json({ error: 'Invalid or expired token' }, 401)
     }
+
+    // A valid signature is no longer the last word: the account may have
+    // signed out since this token was minted. Sessions run 30 days, so
+    // without this check "sign out" would only ever mean "this browser
+    // forgot its copy". See lib/sessionRevocation.ts — cached, and it
+    // fails OPEN so a database blip cannot sign everybody out.
+    if (await isSessionRevoked(wallet, issuedAt)) {
+      return c.json({ error: 'Signed out — please sign in again' }, 401)
+    }
+
+    c.set('wallet', wallet)
 
     await next()
   }

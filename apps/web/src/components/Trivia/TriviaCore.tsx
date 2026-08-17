@@ -21,6 +21,9 @@ const TriviaCore = ({ onExit, profile, onGameStatusChange }: TriviaCoreProps) =>
   const [practiceData, setPracticeData] = useState<{ topic: string, questions: any[] } | null>(null);
   const [wagerAmount, setWagerAmount] = useState<number>(0);
 
+  // ONLINE ENTRY. Straight from the lobby to matchmaking: no WagerMenu, no
+  // stake, no confirmation step — TriviaGame mounts already showing
+  // SEARCHING FOR ONLINE MATCH while `findTriviaGame` is in flight.
   const handleStartMultiplayer = (config: { mode: '1v1' | 'ffa' }) => {
     // Lazy connect: only touches the network when entering online mode.
     // TriviaGame's findTriviaGame emit is buffered until the connect lands.
@@ -28,6 +31,9 @@ const TriviaCore = ({ onExit, profile, onGameStatusChange }: TriviaCoreProps) =>
     setGameMode('multiplayer');
     setMatchConfig(config);
     setPracticeData(null);
+    // NO MONEY ONLINE: clear any stake left over from a previous practice
+    // session so it can never follow the player into an online match.
+    setWagerAmount(0);
     setView('game');
     onGameStatusChange?.(true);
   };

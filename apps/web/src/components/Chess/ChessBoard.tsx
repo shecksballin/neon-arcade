@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import ChessPiece from './ChessPiece';
 import { playCaptureSequence } from './animeTimeline';
 import { useChessPieces } from './useChessPieces';
@@ -52,6 +52,37 @@ interface ChessBoardProps {
   orientation?: 'white' | 'black';
 }
 
+/** The desktop square size the board was originally built around. */
+const DEFAULT_SQUARE_SIZE = 75;
+/** Below this a chess piece stops being a reliable tap target. */
+const MIN_SQUARE_SIZE = 34;
+/**
+ * Vertical space the surrounding UI needs: the captured-piece rows above and
+ * below the board, plus the app's floating nav. Measured against the tightest
+ * of the three game screens (ComputerGame).
+ */
+const BOARD_CHROME_PX = 210;
+/** Horizontal breathing room so the board never touches the screen edges. */
+const BOARD_GUTTER_PX = 24;
+
+/**
+ * The largest square size that lets the whole 8x8 board fit on screen, capped
+ * at the original 75.
+ *
+ * The board is laid out in absolute pixels — piece positions, move animations
+ * and the combat-text overlay are all `col * squareSize` — so it cannot be
+ * made responsive with CSS alone. Recomputing the ONE number they all derive
+ * from keeps every one of those calculations correct at any size. At 75 the
+ * board is 600px wide, which overflowed every phone in portrait.
+ */
+function fitSquareSize(): number {
+  if (typeof window === 'undefined') return DEFAULT_SQUARE_SIZE;
+  const byWidth = (window.innerWidth - BOARD_GUTTER_PX) / 8;
+  const byHeight = (window.innerHeight - BOARD_CHROME_PX) / 8;
+  const fit = Math.floor(Math.min(byWidth, byHeight));
+  return Math.max(MIN_SQUARE_SIZE, Math.min(DEFAULT_SQUARE_SIZE, fit));
+}
+
 const ChessBoard = ({
   position = DEFAULT_POSITION,
   history = [],
@@ -62,9 +93,26 @@ const ChessBoard = ({
   pendingPromotion,
   resolvePromotion,
   isPremovePhase = false,
-  squareSize = 75,
+  squareSize: squareSizeProp,
   orientation = 'white',
 }: ChessBoardProps) => {
+  // No call site passes squareSize today, so in practice this is always the
+  // responsive value; the prop is kept so a caller can still pin a size.
+  const [fittedSize, setFittedSize] = useState(fitSquareSize);
+  useEffect(() => {
+    const sync = () => setFittedSize(fitSquareSize());
+    window.addEventListener('resize', sync);
+    // Rotating a phone changes both dimensions; some browsers fire
+    // orientationchange before the new innerWidth settles, so resize (which
+    // follows it) is the one that matters — both are cheap to listen for.
+    window.addEventListener('orientationchange', sync);
+    return () => {
+      window.removeEventListener('resize', sync);
+      window.removeEventListener('orientationchange', sync);
+    };
+  }, []);
+  const squareSize = squareSizeProp ?? fittedSize;
+
   const boardRef = useRef<HTMLDivElement>(null);
   const prevHistoryLengthRef = useRef(0);
   const { pieces, lastMove, historyLength } = useChessPieces(history);
@@ -151,6 +199,14 @@ const ChessBoard = ({
   const containerStyle = {
     '--board-size': `${squareSize * 8}px`,
     '--square-size': `${squareSize}px`,
+    // touch-action: manipulation drops the double-tap-to-zoom gesture, and
+    // with it the ~300ms delay browsers hold every tap for while they wait to
+    // see whether a second one is coming. On a board where you tap a piece
+    // then tap a destination, that delay is the difference between the board
+    // feeling responsive and feeling broken.
+    touchAction: 'manipulation',
+    // Suppress the grey flash Android paints over the tapped square.
+    WebkitTapHighlightColor: 'transparent',
   } as React.CSSProperties;
 
   return (

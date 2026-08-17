@@ -6,8 +6,8 @@ import { useNeonBucks } from '../../NeonBucksStore';
 interface WagerModesMenuProps {
   gameTitle: string;
   onCancel: () => void;
-  onStart: (stake: number, mode: 'free_play' | 'slayer' | 'snake', targetKills?: number) => void;
-  fixedMode?: 'free_play' | 'slayer' | 'snake';
+  onStart: (stake: number, mode: 'free_play' | 'slayer' | 'lms', targetKills?: number) => void;
+  fixedMode?: 'free_play' | 'slayer' | 'lms';
   /**
    * True when the caller is launching the ONLINE path. Online free play is
    * paid from the server-side SOL ledger (freeplay entry fee), so the local
@@ -19,7 +19,7 @@ interface WagerModesMenuProps {
 export function WagerModesMenu({ gameTitle, onCancel, onStart, fixedMode, isMultiplayer = false }: WagerModesMenuProps) {
   const { balance, isFirstPractice, canAfford, wager, useFreeChance } = useNeonBucks();
   const [stake, setStake] = useState<number>(10);
-  const [mode, setMode] = useState<'free_play' | 'slayer' | 'snake'>(fixedMode || 'free_play');
+  const [mode, setMode] = useState<'free_play' | 'slayer' | 'lms'>(fixedMode || 'free_play');
   const [targetKills, setTargetKills] = useState<number>(4);
   const [enablePresetTarget, setEnablePresetTarget] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -47,8 +47,8 @@ export function WagerModesMenu({ gameTitle, onCancel, onStart, fixedMode, isMult
       onStart(stake, activeMode, activeMode === 'free_play' && enablePresetTarget ? targetKills : undefined);
     } else {
       let requiredBalance = stake;
-      if (activeMode === 'snake') {
-         // Snake pot buy-in is the stake
+      if (activeMode === 'lms') {
+         // LMS pot buy-in is the stake
          requiredBalance = stake;
       }
       
@@ -195,18 +195,18 @@ export function WagerModesMenu({ gameTitle, onCancel, onStart, fixedMode, isMult
             </div>
           )}
 
-          {(!fixedMode || fixedMode === 'snake') && (
+          {(!fixedMode || fixedMode === 'lms') && (
             <div
-              onClick={() => !fixedMode && setMode('snake')}
+              onClick={() => !fixedMode && setMode('lms')}
               className={`p-4 border rounded-xl cursor-pointer transition-all ${
-                mode === 'snake'
+                mode === 'lms'
                   ? 'border-[#00FFD1] bg-[#00FFD1]/10'
                   : 'border-white/10 bg-[#111E1E] hover:border-white/30'
               }`}
             >
               <div className="flex items-center gap-2 mb-1">
-                <Crown className={`w-4 h-4 ${mode === 'snake' ? 'text-[#00FFD1]' : 'text-white/50'}`} />
-                <span className="font-bold uppercase tracking-wider text-sm">Snake</span>
+                <Crown className={`w-4 h-4 ${mode === 'lms' ? 'text-[#00FFD1]' : 'text-white/50'}`} />
+                <span className="font-bold uppercase tracking-wider text-sm">LAST MAN STANDING</span>
               </div>
               <p className="text-[10px] text-white/50">
                 Last man standing wins the ENTIRE pot (simulated AI buy-ins).

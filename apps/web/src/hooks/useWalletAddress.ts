@@ -10,8 +10,10 @@
  * one so their in-game identity stays stable.
  */
 
-import { usePrivy } from '@privy-io/react-auth'
-import { useWallets } from '@privy-io/react-auth/solana'
+// useAuth(), not usePrivy(): the SDK is loaded lazily and lives OUTSIDE this
+// component's tree, so Privy's own hooks would throw here. See src/auth.
+// The type import stays — types are erased, so it costs no bundle weight.
+import { useAuth } from '../auth'
 import type { ConnectedStandardSolanaWallet } from '@privy-io/react-auth/solana'
 
 /**
@@ -35,8 +37,7 @@ export function useWalletAddress(): {
   ready: boolean
   authenticated: boolean
 } {
-  const { ready, authenticated } = usePrivy()
-  const { wallets } = useWallets()
+  const { ready, authenticated, wallets } = useAuth()
 
   const wallet = pickPrimaryWallet(wallets)
 

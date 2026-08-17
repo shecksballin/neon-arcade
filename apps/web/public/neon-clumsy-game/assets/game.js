@@ -25,7 +25,19 @@ function mulberry32(seed) {
 
 const STEP = 1 / 60;
 const touchMode = ("ontouchstart" in window) && navigator.maxTouchPoints > 0;
-const devMode = new URLSearchParams(location.search).has("dev");
+const bootParams = new URLSearchParams(location.search);
+const devMode = bootParams.has("dev");
+
+// ---------- embedded autostart ----------
+// The arcade only mounts this game once the player has ALREADY committed to a
+// round: they pressed PRACTICE, their WAGER MATCH queue found an opponent, or a
+// PRIVATE WAGER lobby finished readying up. Pressing PLAY again is a second menu
+// for a decision already made, so `?autostart=1` boots straight into the
+// countdown and `&name=` carries the arcade profile name that the old nickname
+// field used to ask for. The menu screen itself is left intact — it is simply
+// never shown in the embed.
+const autoStart = bootParams.get("autostart") === "1";
+const bootNick = (bootParams.get("name") || "").trim().slice(0, 14);
 
 const ui = new UI();
 const audio = new AudioSys();
@@ -106,7 +118,11 @@ addEventListener("mousemove", (e) => {
     camPitch - e.movementY * CFG.mouseSens));
 });
 canvas.addEventListener("click", () => {
-  if (mode === "PLAYING" && !touchMode && !document.pointerLockElement && player.alive && !paused) {
+  // COUNTDOWN is included for the embedded autostart: the round now begins
+  // without the click that PLAY used to provide, so the 3-2-1 is the window in
+  // which the player's first click has to be able to grab the mouse.
+  if ((mode === "PLAYING" || mode === "COUNTDOWN") && !touchMode &&
+      !document.pointerLockElement && player.alive && !paused) {
     canvas.requestPointerLock();
   } else if (mode === "PLAYING" && !player.alive && specTarget) {
     cycleSpectate();
@@ -116,7 +132,34 @@ canvas.addEventListener("click", () => {
 });
 
 function requestLock() {
-  if (!touchMode) { try { canvas.requestPointerLock(); } catch (_) {} }
+  if (touchMode) return;
+  // Pointer lock needs user activation. A freshly-created iframe has none, so
+  // the autostart call below is EXPECTED to be refused — swallow both the throw
+  // and the rejected promise, and let the canvas click above do the real work.
+  try {
+    const p = canvas.requestPointerLock();
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch (_) {}
+}
+
+/**
+ * Recover the two things a round normally inherits from the PLAY click, on the
+ * player's first interaction with the embedded frame instead: the AudioContext
+ * (created suspended without user activation) and the music loop. Pointer lock
+ * is deliberately NOT taken here — that would steal the cursor from clicks on
+ * the mute button; the canvas handler above owns it.
+ */
+function armEmbedActivation() {
+  const activate = () => {
+    audio.resume();
+    audio.playMusic();
+    if (audio.ctx && audio.ctx.state !== "suspended") {
+      removeEventListener("pointerdown", activate, true);
+      removeEventListener("keydown", activate, true);
+    }
+  };
+  addEventListener("pointerdown", activate, true);
+  addEventListener("keydown", activate, true);
 }
 
 // touch controls
@@ -280,8 +323,18 @@ async function boot() {
     buildPawns();
     spawnAll();          // menu diorama: mummies idle on the top layer
     mode = "MENU";
-    ui.showMenu();
-    menuCamera(0);
+    if (autoStart) {
+      // Straight into the countdown — no menu, no second PLAY press. The nick
+      // field is still what ui.nickname() reads (feed + end screen), so seed it
+      // from the arcade profile before the round starts.
+      if (bootNick) ui.els.nick.value = bootNick;
+      ui.show("loading", false);
+      armEmbedActivation();
+      startRound();
+    } else {
+      ui.showMenu();
+      menuCamera(0);
+    }
   } catch (err) {
     console.error("boot failed:", err);
     ui.loadingFailed();
@@ -345,6 +398,7 @@ function startRound() {
   elims = []; recoveries = [];
   winner = null; endDelay = -1; playerEndDelay = -1;
   roundTime = 0; aliveCount = CFG.players;
+  roundStartedAt = Date.now();   // arms the XP report (see reportResult)
   specTarget = null;
   playerDeathPos = null;
   ui.spectating(null);
@@ -383,6 +437,34 @@ function eliminate(pawn) {
   }
 }
 
+// ── progression ────────────────────────────────────────────────────────────
+// The arcade awards XP for every finished game, but this one runs inside an
+// iframe with no server behind it, so the result has to travel outward: ONE
+// message when the player's round is over, which the parent
+// (components/Clumsy/ClumsyPlay.tsx) hands to the stats endpoint. That endpoint
+// clamps and daily-caps it — an unverifiable result is worth XP, never rank.
+//
+// Both endings funnel through here (winning the round, and being eliminated
+// before it ends), and `roundStartedAt` is cleared on the way so a round can
+// only ever report once.
+let roundStartedAt = 0;
+function reportResult(win) {
+  if (window.parent === window || !roundStartedAt) return;
+  const startedAt = roundStartedAt;
+  roundStartedAt = 0;
+  window.parent.postMessage({
+    type: "neon-clumsy:result",
+    won: !!win,
+    // Tiles claimed is the game's own score. Bumps are not kills — nobody
+    // dies in Clumsy — so the arcade records no K/D for it.
+    tiles: player.stats.tiles,
+    place: win ? 1 : (playerPlace || null),
+    total: CFG.players,
+    durationMs: Date.now() - startedAt,
+    roundId: String(startedAt),
+  }, window.location.origin);
+}
+
 function roundEnd() {
   mode = "ENDED";
   document.exitPointerLock && document.exitPointerLock();
@@ -399,6 +481,7 @@ function roundEnd() {
       place: playerPlace || 2, total: CFG.players, stats: player.stats,
     });
   }
+  reportResult(win);
 }
 
 function playerEliminatedScreen() {
@@ -406,6 +489,10 @@ function playerEliminatedScreen() {
   document.exitPointerLock && document.exitPointerLock();
   if (touchMode) ui.els.touchUI.style.display = "none";
   ui.showEnd({ win: false, place: playerPlace, total: CFG.players, stats: player.stats });
+  // The player's round is over even though the match runs on for the
+  // spectators — award it now rather than depending on them watching to the
+  // end. reportResult() self-disarms, so roundEnd() will not double it.
+  reportResult(false);
 }
 
 function startSpectate() {

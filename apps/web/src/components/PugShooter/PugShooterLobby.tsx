@@ -1,8 +1,10 @@
 import React, { useRef, useState } from "react";
-import { Cpu, CircleDollarSign, Settings, X } from "lucide-react";
+import { Cpu, Globe, Settings, Swords, X } from "lucide-react";
 import { DifficultySelector } from "../common/DifficultySelector";
 import { LibraryBlob } from "../glass/LibraryBlob";
 import { ParticleCard, GlobalSpotlight } from "../glass/MagicGameTile";
+import PrivateWagerRoom from "../social/PrivateWagerRoom";
+import LobbyModeTiles from "../common/LobbyModeTiles";
 import {
   loadPugShooterOptions,
   savePugShooterOptions,
@@ -41,9 +43,14 @@ const DIFFICULTY_TIERS: { id: PugShooterDifficulty; label: string; caption: stri
 ];
 
 interface PugShooterLobbyProps {
+  /** ONLINE: enter the queue — the parent shows SEARCHING FOR ONLINE MATCH.
+   *  Free, no stake; the chosen mode/map/difficulty boot the matched round. */
   onFindGame: (config: PugShooterMatchConfig) => void;
+  /** PRACTICE: boot the local bot match immediately. Behaviour unchanged. */
   onPlayComputer: (config: PugShooterMatchConfig) => void;
   onExit: () => void;
+  /** Matchmaking refusal to surface (e.g. account setup unfinished). */
+  error?: string | null;
 }
 
 // One slider row of the lobby Options panel, styled after the arcade's volume config.
@@ -58,12 +65,17 @@ const OPTION_SLIDERS: {
   { key: "volume", label: "Volume", format: (v) => `${Math.round(v * 100)}%` },
 ];
 
-const PugShooterLobby = ({ onFindGame, onPlayComputer }: PugShooterLobbyProps) => {
+const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyProps) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [mode, setMode] = useState<PugShooterMode>("ffa");
   const [map, setMap] = useState<PugShooterMap>("city");
   const [difficultyIndex, setDifficultyIndex] = useState(1); // normal
   const [showOptions, setShowOptions] = useState(false);
+  // PRIVATE WAGER: invite-only round against a friend, in the mode selected
+  // above. PugShooterGame's `useOnlineLobbyQueue` keeps its `lobbyGame:start`
+  // listener mounted while this lobby is on screen, so the started match takes
+  // over on its own — hence no `onStarted` handoff below.
+  const [showPrivateWager, setShowPrivateWager] = useState(false);
   // Shared with the game via localStorage: the iframe reads these at boot, and its own
   // pause-screen Options writes back to the same entry.
   const [options, setOptions] = useState<PugShooterOptions>(loadPugShooterOptions);
@@ -170,19 +182,33 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer }: PugShooterLobbyProps) =
         </div>
 
         <div className="w-full">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full text-left">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full text-left">
             <ParticleCard
               onClick={() => onFindGame(config())}
               className="magic-bento-card magic-bento-card--border-glow px-8 py-6 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl hover:shadow-[0_0_50px_rgba(0,255,209,0.3)] hover:scale-[1.02] active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
             >
               <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>
-              <CircleDollarSign className="w-8 h-8 group-hover:rotate-12 transition-transform" />
+              <Globe className="w-8 h-8 group-hover:rotate-12 transition-transform" />
               <div className="text-center">
-                <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">
-                  Wager Match
-                </span>
+                <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">Wager Match</span>
                 <span className="block text-[8px] opacity-60 font-bold tracking-widest mt-1">
                   GLOBAL WAGER ARENA
+                </span>
+              </div>
+            </ParticleCard>
+            {/* PRIVATE WAGER — new card (this lobby has no local co-op to
+                replace), styled exactly like Practice per the contract. */}
+            <ParticleCard
+              onClick={() => setShowPrivateWager(true)}
+              className="magic-bento-card magic-bento-card--border-glow px-8 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
+            >
+              <Swords className="w-8 h-8 text-zinc-400 group-hover:rotate-12 transition-transform group-hover:text-[#00FFD1]" />
+              <div className="text-center">
+                <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">
+                  Private Wager
+                </span>
+                <span className="block text-[8px] text-white/40 font-bold tracking-widest mt-1">
+                  INVITE A FRIEND
                 </span>
               </div>
             </ParticleCard>
@@ -202,6 +228,17 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer }: PugShooterLobbyProps) =
             </ParticleCard>
           </div>
         </div>
+
+        {/* Matchmaking refusals (no account, servers unreachable, …) */}
+        {error && (
+          <p className="text-[10px] font-mono tracking-[0.25em] uppercase text-[#FF6B9A]">
+            {error}
+          </p>
+        )}
+
+        <p className="text-[9px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/40">
+          Online matches are free — no stake, no entry fee
+        </p>
 
         {/* Bot difficulty — applies to every mode; bots fill each side */}
         <div className="w-full max-w-xl mx-auto px-6 py-5 rounded-2xl border border-[#00FFD1]/25 bg-[#041010]/80">
@@ -223,6 +260,8 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer }: PugShooterLobbyProps) =
           <Settings className="w-4 h-4" />
           Game Options
         </button>
+
+        <LobbyModeTiles />
       </div>
 
       {/* Centered options popup */}
@@ -271,6 +310,17 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer }: PugShooterLobbyProps) =
             </p>
           </div>
         </div>
+      )}
+
+      {/* Private-wager waiting room. The room seats 2 in every Pug Shooter
+          mode (that is what the server's queue actually pairs), so it renders
+          the 1v1 diagonal layout. */}
+      {showPrivateWager && (
+        <PrivateWagerRoom
+          gameKey="pugshooter"
+          mode={mode}
+          onClose={() => setShowPrivateWager(false)}
+        />
       )}
     </div>
   );

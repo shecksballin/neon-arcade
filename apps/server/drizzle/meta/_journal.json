@@ -15,6 +15,41 @@
       "when": 1786418482736,
       "tag": "0001_milky_shatterstar",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786457395542,
+      "tag": "0002_sharp_magik",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786482821251,
+      "tag": "0003_loose_big_bertha",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786555605858,
+      "tag": "0004_account_identities",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786613820969,
+      "tag": "0005_session_revocation",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787000000000,
+      "tag": "0006_xp_levels",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Trophy, Timer, Maximize2, Zap, Brain, Target, Info } from 'lucide-react';
+// (Brain dropped with the old "Scanning Neural Grid" block — the shared
+// SearchingForMatch screen owns that visual now.)
+import { Trophy, Timer, Maximize2, Zap, Target, Info } from 'lucide-react';
 import GameBackButton from '../common/GameBackButton';
+// The one matchmaking screen every online game shows while queued.
+import { SearchingForMatch } from '../common/SearchingForMatch';
 import { Question } from './TriviaQuestions';
 import { Socket } from 'socket.io-client';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
@@ -41,12 +45,25 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
   // multiplayer client ever learns the answer. null = not revealed yet.
   const [revealedAnswer, setRevealedAnswer] = useState<number | null>(null);
 
+  // ── Matchmaking queue readout (FFA only) ──────────────────────────────────
+  // The searching screen is OPTIMISTIC: it renders as soon as this component
+  // mounts in multiplayer, never waiting for a server reply. These two values
+  // only feed the `PLAYERS n / N` counter, refreshed by `queue:status`.
+  const [queueCount, setQueueCount] = useState(1);
+  const [queueNeeded, setQueueNeeded] = useState(2);
+  // Set by `triviaMatched`: the roster is locked but the server is still
+  // generating the question set (10-20s of LLM latency). Purely cosmetic —
+  // it only swaps the searching screen's subtitle so the copy stops implying
+  // we are still hunting for a human.
+  const [matchedAwaitingQuestions, setMatchedAwaitingQuestions] = useState(false);
+
   const [sessionWinnings, setSessionWinnings] = useState<number>(0);
   const [correctCount, setCorrectCount] = useState<number>(0);
   const { win, wager, isFirstPractice } = useNeonBucks();
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const nextQuestionTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const countdownRef = useRef<NodeJS.Timeout | null>(null);
   // Refs mirroring state the socket handlers need — the multiplayer effect
   // binds its listeners once, so reading state directly would be stale.
   const questionIndexRef = useRef(0);
@@ -98,10 +115,16 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
   const runCountdown = useCallback(() => {
     setGameState('countdown');
     setCountdown(3);
-    const interval = setInterval(() => {
+    // Tracked in a ref, not a local, because the only thing that used to stop
+    // this interval was `clearInterval` INSIDE the setCountdown updater — and
+    // React skips updaters for an unmounted component. Exiting during the 3-2-1
+    // therefore left a 1Hz interval ticking for the rest of the session.
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    countdownRef.current = setInterval(() => {
       setCountdown(prev => {
         if (prev <= 1) {
-          clearInterval(interval);
+          if (countdownRef.current) clearInterval(countdownRef.current);
+          countdownRef.current = null;
           setGameState('playing');
           return 0;
         }
@@ -109,6 +132,17 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
       });
     }, 1000);
   }, []);
+
+  // One teardown for every timer this component can leave behind. The question
+  // timer already has its own (see below); these two did not.
+  useEffect(
+    () => () => {
+      if (countdownRef.current) clearInterval(countdownRef.current);
+      if (nextQuestionTimeoutRef.current) clearTimeout(nextQuestionTimeoutRef.current);
+      if (timerRef.current) clearInterval(timerRef.current);
+    },
+    [],
+  );
 
   // --- PRACTICE MODE LOGIC ---
   const startPracticeGame = useCallback(() => {
@@ -202,6 +236,21 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
         runCountdown();
       };
 
+      // Live queue readout. The socket is the shared singleton, so filter by
+      // game — chess/volley/connect publish the same event name.
+      // Roster locked, questions still generating. The searching screen stays
+      // up (only triviaGameStart clears it) but its subtitle now tells the
+      // truth about what we are waiting on.
+      const onTriviaMatched = () => setMatchedAwaitingQuestions(true);
+
+      const onQueueStatus = (data: any) => {
+        if (data?.game !== 'trivia' || !data?.inQueue) return;
+        if (typeof data.current === 'number') setQueueCount(data.current);
+        if (typeof data.needed === 'number' && data.needed > 0) {
+          setQueueNeeded(data.needed);
+        }
+      };
+
       const onTriviaUpdate = (data: any) => {
         if (data.scores) {
           // Scores come ONLY from the server — no optimistic local adds.
@@ -259,6 +308,8 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
         }
       };
 
+      socket.on('queue:status', onQueueStatus);
+      socket.on('triviaMatched', onTriviaMatched);
       socket.on('triviaGameStart', onTriviaGameStart);
       socket.on('triviaUpdate', onTriviaUpdate);
       socket.on('triviaAnswerResult', onTriviaAnswerResult);
@@ -271,6 +322,8 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
       return () => {
         // Still queued (never matched)? Free the server-side queue slot.
         if (!gameStartedRef.current) socket.emit('leaveTriviaQueue');
+        socket.off('queue:status', onQueueStatus);
+        socket.off('triviaMatched', onTriviaMatched);
         socket.off('triviaGameStart', onTriviaGameStart);
         socket.off('triviaUpdate', onTriviaUpdate);
         socket.off('triviaAnswerResult', onTriviaAnswerResult);
@@ -379,32 +432,38 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
       {/* Main Game Stage */}
       <div className="relative w-full max-w-4xl px-6 flex flex-col items-center z-10">
         <AnimatePresence mode="wait">
+          {/* MATCHMAKING — shown the instant multiplayer is entered, with no
+              dependency on a server ack (that dependency was the bug). Same
+              shared component and same copy as every other online game; the
+              old "Scanning Neural Grid" block lived here. */}
           {gameState === 'waiting' && mode === 'multiplayer' && (
-            <motion.div 
+            <motion.div
               key="waiting"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="flex flex-col items-center"
+              className="flex flex-col items-center w-full"
             >
-              <div className="relative">
-                <div className="w-32 h-32 rounded-full border-4 border-[#00FFD1]/20 border-t-[#00FFD1] animate-spin mb-8" />
-                <Brain className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-12 h-12 text-[#00FFD1] animate-pulse" />
-              </div>
-              <h2 className="text-4xl font-black text-white italic tracking-tighter uppercase mb-4">Scanning Neural Grid</h2>
-              <p className="text-[#00FFD1] font-mono tracking-widest text-xs uppercase animate-pulse">Waiting for synchronization...</p>
-              
-              <button
-                onClick={() => {
-                  // Tell the server to drop our queue entry — without this the
-                  // 'aborted' player could still get yanked into a match.
+              <SearchingForMatch
+                playersInQueue={queueCount}
+                // 1v1 hides the counter (no playersNeeded); FFA shows
+                // PLAYERS n / N straight from the server's queue:status.
+                playersNeeded={queueNeeded}
+                // Once matched we are no longer searching — we are waiting on
+                // the server's question set. Say so instead of lying.
+                subtitle={
+                  matchedAwaitingQuestions
+                    ? 'Opponents locked in — preparing questions'
+                    : undefined
+                }
+                onCancel={() => {
+                  // Drop our queue entry — without this the 'cancelled'
+                  // player could still get yanked into a match. The effect
+                  // cleanup emits it again on unmount; it is idempotent.
                   socket?.emit('leaveTriviaQueue');
                   onExit();
                 }}
-                className="mt-12 px-8 py-3 rounded-xl border border-white/10 text-white/40 font-bold uppercase tracking-widest text-[10px] hover:bg-white/5 transition-all"
-              >
-                Abort Link
-              </button>
+              />
             </motion.div>
           )}
 
@@ -503,6 +562,8 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
               stake={mode === 'practice' ? wagerAmount : 0}
               winnings={mode === 'practice' ? sessionWinnings : 0} // Profit for practice is exact sessionWinnings
               gameMode={mode === 'practice' ? 'Self-Wager' : 'Online'}
+              // Online stakes nothing — hide the Wagered/Payout rows.
+              moneyless={mode !== 'practice'}
               questionsRight={correctCount /* multiplayer counts arrive via triviaAnswerResult */}
               onRematch={() => {
                    if (mode === 'practice') {

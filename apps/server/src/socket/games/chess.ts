@@ -3,13 +3,16 @@
  * ==========================================================================
  * Client contract (Chess/ChessGame.tsx + OnlineGame.tsx):
  *
- *   C→S  findGame { name?, avatarUrl? }   — enter the FIFO queue
+ *   C→S  findGame { name?, avatarUrl? }   — enter the skill-based queue
  *   C→S  leaveQueue                       — leave the queue (no payload)
  *   C→S  makeMove { gameId, move, fen }   — UCI move + post-move FEN
  *   C→S  resign <gameId>                  — bare string payload
  *   C→S  offerDraw <gameId> / acceptDraw <gameId>
  *   C→S  reportGameEnd { gameId, winner, reason }
- *   S→C  waiting <string>                 — queued acknowledgment
+ *   S→C  waiting <string>                 — legacy queued acknowledgment
+ *   S→C  queue:status { game:'chess', mode:'1v1', inQueue, current, needed }
+ *          — emitted on EVERY findGame/leaveQueue, duplicates included. This
+ *            is the never-silent ack; `waiting` is kept only for old clients.
  *   S→C  gameStart { mode:'multiplayer', gameId, whitePlayer, blackPlayer }
  *   S→C  moveMade { move, fen, moveNumber } — OPPONENT ONLY (see below)
  *   S→C  drawOffered                      — opponent socket only
@@ -30,19 +33,42 @@
  * Wallets are server-side bookkeeping ONLY and are never emitted.
  */
 
-import { randomUUID } from 'node:crypto'
 import type { Server, Socket } from 'socket.io'
 import { z } from 'zod'
 import { eq } from 'drizzle-orm'
+import { SEASON_START_RP } from '@neon/types'
 import { db } from '../../db'
 import { users } from '../../db/schema'
-import { settle1v1, type RatingAfter } from '../../services/eloService'
+// RANKED 2.0: TrueSkill + RP live in rankService; eloService is now only the
+// wire projection that strips wallet/mu/sigma out of a settlement result.
+import { settleRanked1v1 } from '../../services/rankService'
+import { publicRating, type PublicRating } from '../../services/eloService'
+// Stats live next to the rating settle: the same exactly-once guard covers
+// both, so a rating change and a match_results row can never disagree.
+import { recordResults } from '../../services/statsService'
+// Shared matchmaking queue — idempotent and NEVER silent (socket/queue.ts).
+// Chess used to run its own array-based queue whose "one slot per wallet,
+// replace" path returned without emitting anything, so a second `findGame`
+// from the same wallet produced total silence and froze the client's lobby.
+import {
+  joinQueue,
+  leaveQueue as leaveSharedQueue,
+  attachQueueCleanup,
+  QUEUE_STATUS_EVENT,
+  type QueueMatch,
+} from '../queue'
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'
+
+// Queue coordinates. Chess has exactly one queue; the mode label only has to
+// be stable so the client can filter `queue:status` by { game, mode }.
+const CHESS_GAME = 'chess'
+const CHESS_MODE = '1v1'
+const CHESS_PLAYERS_NEEDED = 2
 
 // How long a solo reportGameEnd stays "pending" waiting for the opponent to
 // confirm or contradict it before the server settles it (design contract).
@@ -55,15 +81,24 @@ const RESULT_CONFLICT_WINDOW_MS = 10_000
 type Color = 'white' | 'black'
 type ChessWinner = Color | 'draw'
 
-interface QueueEntry {
+interface ChessPlayer {
   socketId: string
-  wallet: string // NEVER emitted — used only for pairing rules + ELO
+  wallet: string // NEVER emitted — used only for pairing rules + rating
   name: string // canonical: socket.data.username (never the payload's name)
   avatarUrl: string | null // cosmetic, client-supplied
+  rating: number // users.rp1v1 snapshot taken when the player entered the queue
 }
 
-interface ChessPlayer extends QueueEntry {
-  rating: number // users.elo snapshot at match time (0 when no DB)
+/**
+ * Per-player extras carried through the shared queue. The rating is snapshotted
+ * at JOIN time (not at pairing time) on purpose: it keeps the match handoff
+ * fully synchronous, so no `await` window can open between "queue picked these
+ * two sockets" and "the game exists" — a window in which a disconnect would
+ * have stranded the survivor with no game to clean up.
+ */
+interface ChessMeta {
+  avatarUrl: string | null
+  rating: number
 }
 
 interface PendingResult {
@@ -82,12 +117,15 @@ interface ChessGame {
   moves: string[]
   turn: Color // server-tracked; alternates on each ACCEPTED move
   status: 'active' | 'ended'
-  eloSettled: boolean // exactly-once guard around eloService.settle1v1
+  /** Exactly-once guard around rankService.settleRanked1v1 (and the stats
+   *  write that rides with it). Name kept for continuity with the client
+   *  contract docs; it now guards an RP + TrueSkill settlement. */
+  eloSettled: boolean
+  /** Wall-clock start, for match_results.durationMs (stats only). */
+  startedAt: number
   pendingResult: PendingResult | null // trust-but-verify reportGameEnd state
 }
 
-// FIFO queue (shift(), not the reference server's LIFO pop()).
-const queue: QueueEntry[] = []
 // gameId → game, plus a socket.id → gameId index for O(1) lookups.
 const games = new Map<string, ChessGame>()
 const gameBySocket = new Map<string, string>()
@@ -124,27 +162,47 @@ const reportGameEndSchema = z.object({
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Remove every queue entry matching the predicate (splice in place). */
-function removeFromQueue(match: (entry: QueueEntry) => boolean): void {
-  for (let i = queue.length - 1; i >= 0; i--) {
-    if (match(queue[i])) queue.splice(i, 1)
-  }
-}
-
-/** Best-effort users.elo snapshot for the gameStart payload. 0 on no DB. */
+/**
+ * Best-effort VISIBLE RP snapshot for the gameStart payload (the number under
+ * each player's name). Reads `users.rp1v1` — the Ranked 2.0 source of truth
+ * for this ladder — not the legacy `users.elo` mirror.
+ *
+ * Falls back to the season-start RP rather than 0 when there is no database,
+ * so a DB-less server shows "Copper V", not a rank that does not exist.
+ */
 async function fetchRating(wallet: string): Promise<number> {
-  if (!db) return 0
+  if (!db) return SEASON_START_RP
   try {
     const [row] = await db
-      .select({ elo: users.elo })
+      .select({ rp: users.rp1v1 })
       .from(users)
       .where(eq(users.wallet, wallet))
       .limit(1)
-    return row?.elo ?? 0
+    return row?.rp ?? SEASON_START_RP
   } catch (err) {
     console.error('[chess] rating lookup failed:', err)
-    return 0
+    return SEASON_START_RP
   }
+}
+
+/** The ACTIVE game this socket is playing, if any (ended bindings ignored). */
+function activeGameOf(socketId: string): ChessGame | undefined {
+  const gameId = gameBySocket.get(socketId)
+  if (!gameId) return undefined
+  const game = games.get(gameId)
+  return game && game.status === 'active' ? game : undefined
+}
+
+/** "You are not in the chess queue." Used wherever we decline to queue —
+ *  answering is mandatory so an optimistic client can drop its spinner. */
+function emitNotQueued(socket: Socket): void {
+  socket.emit(QUEUE_STATUS_EVENT, {
+    game: CHESS_GAME,
+    mode: CHESS_MODE,
+    inQueue: false,
+    current: 0,
+    needed: CHESS_PLAYERS_NEEDED,
+  })
 }
 
 /** Which color a socket plays in a game, or null if not a participant. */
@@ -176,7 +234,7 @@ function destroyGame(io: Server, game: ChessGame): void {
 }
 
 /**
- * End a game exactly once: settle ELO (unless voided), emit gameEnded with
+ * End a game exactly once: settle RANK (unless voided), emit gameEnded with
  * newRatings (ALWAYS present — null when unrated/voided/no-DB), clean up.
  *
  * `settle=false` is the conflict path: two contradicting reportGameEnd
@@ -199,19 +257,62 @@ async function endGame(
     game.pendingResult = null
   }
 
-  let newRatings: { white: RatingAfter; black: RatingAfter } | null = null
+  let newRatings: { white: PublicRating; black: PublicRating } | null = null
   if (settle && !game.eloSettled) {
     // Flag BEFORE the await so a racing end path can never settle twice.
     game.eloSettled = true
-    // Draws settle with S=0.5 (contract) — NOT skipped like the ref server.
+    // Chess is on the '1v1' ladder. A DRAW is a real drawn TrueSkill outcome
+    // (never skipped): the hidden skill barely moves and RP only converges
+    // toward it, so a draw between equals is worth ~0 RP to both.
     const result = winner === 'white' ? 'a' : winner === 'black' ? 'b' : 'draw'
-    const settled = await settle1v1(
+    const settled = await settleRanked1v1(
       'chess',
       game.white.wallet,
       game.black.wallet,
-      result
+      result,
+      // SAME match id the stats row below uses, so elo_history and
+      // match_results can be joined (the history API needs that to show an
+      // RP delta next to a match). rankService drops anything non-uuid.
+      game.gameId
     )
-    if (settled) newRatings = { white: settled.a, black: settled.b }
+    // publicRating strips `wallet`, `mu` and `sigma` — the hidden skill layer
+    // must never reach a client, and wallets are never leaked to opponents.
+    if (settled) {
+      newRatings = {
+        white: publicRating(settled.a),
+        black: publicRating(settled.b),
+      }
+    }
+
+    // STATS — one row per player, written under the SAME eloSettled guard so
+    // a game can never be double-recorded (and the void path below, which
+    // deliberately skips settlement, records nothing either: a conflicted
+    // result is not a result).
+    //
+    // Chess has no kills/deaths and no score; opponentUsername is the
+    // registered handshake username, which is the only public identifier
+    // (never a wallet). Fire-and-forget: recordResults never throws.
+    const durationMs = Date.now() - game.startedAt
+    void recordResults([
+      {
+        matchId: game.gameId, // queue matchId is a uuid; non-uuids are dropped
+        wallet: game.white.wallet,
+        gameKey: 'chess',
+        mode: '1v1',
+        result: winner === 'white' ? 'win' : winner === 'black' ? 'loss' : 'draw',
+        opponentUsername: game.black.name,
+        durationMs,
+      },
+      {
+        matchId: game.gameId,
+        wallet: game.black.wallet,
+        gameKey: 'chess',
+        mode: '1v1',
+        result: winner === 'black' ? 'win' : winner === 'white' ? 'loss' : 'draw',
+        opponentUsername: game.white.name,
+        durationMs,
+      },
+    ])
   }
 
   // Emit to both players' PRIVATE rooms (their socket ids), not the game
@@ -229,131 +330,121 @@ async function endGame(
 }
 
 // ---------------------------------------------------------------------------
+// Match handoff — called by the shared queue with exactly two connected
+// players, already joined to `match.room` (`chess-${matchId}`).
+//
+// SYNCHRONOUS by design: everything it needs (ratings) was snapshotted at join
+// time, so there is no await between "these two are paired" and "the game is
+// registered + gameStart is out". Throwing here makes the queue put both
+// players back at the FRONT of the line and re-emit their status, so a failure
+// leaves them searching rather than hanging.
+// ---------------------------------------------------------------------------
+function startChessMatch(match: QueueMatch<ChessMeta>): void {
+  const { io, room, matchId, players } = match
+  const [first, second] = players
+
+  const toPlayer = (p: (typeof players)[number]): ChessPlayer => ({
+    socketId: p.socketId,
+    wallet: p.wallet,
+    name: p.username, // canonical handshake username — payloads never trusted
+    avatarUrl: p.meta?.avatarUrl ?? null,
+    rating: p.meta?.rating ?? 0,
+  })
+
+  // Coin-flip colors. whitePlayer.socketId must be the REAL white client's
+  // socket.id — the client derives its own color by comparing it to its own.
+  const firstIsWhite = Math.random() < 0.5
+  const white = toPlayer(firstIsWhite ? first : second)
+  const black = toPlayer(firstIsWhite ? second : first)
+
+  const game: ChessGame = {
+    gameId: matchId, // the queue's matchId IS the gameId (room stays chess-…)
+    room,
+    white,
+    black,
+    fen: START_FEN,
+    moves: [],
+    turn: 'white',
+    status: 'active',
+    eloSettled: false,
+    startedAt: Date.now(),
+    pendingResult: null,
+  }
+  games.set(game.gameId, game)
+  gameBySocket.set(white.socketId, game.gameId)
+  gameBySocket.set(black.socketId, game.gameId)
+
+  io.to(room).emit('gameStart', {
+    mode: 'multiplayer', // literal string is load-bearing client-side
+    gameId: game.gameId,
+    whitePlayer: publicPlayer(white),
+    blackPlayer: publicPlayer(black),
+  })
+}
+
+// ---------------------------------------------------------------------------
 // registerChess — wires all chess events + this module's OWN disconnect
 // ---------------------------------------------------------------------------
 
 export function registerChess(io: Server, socket: Socket): void {
+  // Queue cleanup on disconnect is owned by the shared queue module and is
+  // idempotent — attaching it here means a socket that never queued still gets
+  // swept if it somehow ends up holding a slot.
+  attachQueueCleanup(socket, io)
+
   // ------------------------------------------------------------- findGame
+  //
+  // ALWAYS answers. joinQueue emits `queue:status` (and the legacy `waiting`
+  // ack) on EVERY call — first join, duplicate click, reconnect — which is the
+  // fix for "the 2nd search attempt is met with silence".
   socket.on('findGame', async (payload: unknown) => {
     const parsed = findGameSchema.safeParse(payload ?? {})
     if (!parsed.success) return
 
-    const wallet = socket.data.wallet as string
-    const username = (socket.data.username as string | null) ?? null
-
-    // Games require a REGISTERED account — wallet-only sessions can't queue.
-    if (!username) {
-      socket.emit('gameAuthError', {
-        code: 'no_account',
-        message: 'Finish account setup to play online',
-      })
+    // Already in an active chess game on THIS socket → don't queue it twice.
+    // Still answer (never silent) so an optimistic client that is showing the
+    // searching screen can drop it instead of spinning forever.
+    if (activeGameOf(socket.id)) {
+      emitNotQueued(socket)
       return
     }
 
-    // Already in an active chess game → ignore (stale ended bindings are
-    // cleared by endGame/disconnect, so this only blocks real double-joins).
-    const boundId = gameBySocket.get(socket.id)
-    if (boundId && games.get(boundId)?.status === 'active') return
+    // Snapshot the VISIBLE RP before queueing so the handoff below stays
+    // synchronous (see startChessMatch). This is display only — matchmaking
+    // pairs on HIDDEN skill, which socket/queue.ts snapshots itself from the
+    // '1v1' ladder. Best-effort: play is never gated on the database.
+    const wallet = socket.data.wallet as string | undefined
+    const rating = wallet ? await fetchRating(wallet) : SEASON_START_RP
 
-    // One queue slot per wallet: re-emitting findGame REPLACES the old entry
-    // (covers reconnects and second tabs — the newest socket wins the slot).
-    removeFromQueue((e) => e.wallet === wallet)
-
-    const entry: QueueEntry = {
-      socketId: socket.id,
-      wallet,
-      name: username,
-      avatarUrl: parsed.data.avatarUrl ?? null,
-    }
-
-    // FIFO: take the OLDEST waiting player whose socket is still connected.
-    let opponent: QueueEntry | undefined
-    while (queue.length > 0) {
-      const candidate = queue.shift() as QueueEntry
-      if (io.sockets.sockets.get(candidate.socketId)) {
-        opponent = candidate
-        break
-      }
-      // Stale entry (socket vanished without cleanup) — drop and keep going.
-    }
-
-    if (!opponent) {
-      queue.push(entry)
-      socket.emit('waiting', 'Waiting for opponent...') // client ignores text
+    // The lookup above is async: re-check that a CONCURRENT findGame (double
+    // click / reconnect replay) didn't pair this socket while we waited on the
+    // DB. Without this the socket could sit in the queue *and* in a live game.
+    if (activeGameOf(socket.id)) {
+      emitNotQueued(socket)
       return
     }
 
-    // Snapshot ratings for the start payload (best-effort; 0 without a DB).
-    const [entryRating, opponentRating] = await Promise.all([
-      fetchRating(entry.wallet),
-      fetchRating(opponent.wallet),
-    ])
-
-    // The awaits above opened a window — re-verify both sockets survived it.
-    const opponentSocket = io.sockets.sockets.get(opponent.socketId)
-    if (!opponentSocket) {
-      // Opponent vanished mid-pairing: we become the waiter instead.
-      queue.push(entry)
-      socket.emit('waiting', 'Waiting for opponent...')
-      return
-    }
-    if (socket.disconnected) {
-      // WE vanished: the patient opponent goes back to the FRONT of the line.
-      queue.unshift(opponent)
-      return
-    }
-    if (gameBySocket.has(socket.id)) {
-      // A concurrent findGame from this socket already paired it during the
-      // awaits — never bind one socket to two games; requeue the opponent.
-      queue.unshift(opponent)
-      return
-    }
-
-    // Coin-flip colors. whitePlayer.socketId must be the real white client's
-    // socket.id — the client derives its own color from it.
-    const entryIsWhite = Math.random() < 0.5
-    const whiteEntry = entryIsWhite ? entry : opponent
-    const blackEntry = entryIsWhite ? opponent : entry
-    const ratingOf = (e: QueueEntry) =>
-      e.wallet === entry.wallet ? entryRating : opponentRating
-
-    const gameId = randomUUID()
-    const game: ChessGame = {
-      gameId,
-      room: `chess-${gameId}`,
-      white: { ...whiteEntry, rating: ratingOf(whiteEntry) },
-      black: { ...blackEntry, rating: ratingOf(blackEntry) },
-      fen: START_FEN,
-      moves: [],
-      turn: 'white',
-      status: 'active',
-      eloSettled: false,
-      pendingResult: null,
-    }
-    games.set(gameId, game)
-    gameBySocket.set(game.white.socketId, gameId)
-    gameBySocket.set(game.black.socketId, gameId)
-    // Close the re-entrancy window: a duplicate findGame emitted during the
-    // rating awaits could have re-queued either wallet — sweep both out so
-    // neither paired player also holds a queue slot.
-    removeFromQueue(
-      (e) => e.wallet === entry.wallet || e.wallet === opponent.wallet
-    )
-    socket.join(game.room)
-    opponentSocket.join(game.room)
-
-    io.to(game.room).emit('gameStart', {
-      mode: 'multiplayer', // literal string is load-bearing client-side
-      gameId,
-      whitePlayer: publicPlayer(game.white),
-      blackPlayer: publicPlayer(game.black),
+    await joinQueue<ChessMeta>({
+      socket,
+      io,
+      game: CHESS_GAME,
+      mode: CHESS_MODE,
+      needed: CHESS_PLAYERS_NEEDED,
+      // §5.3: pair on hidden skill from the '1v1' pool, not on arrival order.
+      ladder: '1v1',
+      meta: { avatarUrl: parsed.data.avatarUrl ?? null, rating },
+      // Pre-existing clients still listen for `waiting`; both events go out.
+      legacyAck: { event: 'waiting', payload: 'Waiting for opponent...' },
+      onMatch: startChessMatch,
     })
   })
 
   // ------------------------------------------------------------ leaveQueue
+  // Cancel / unmount / view change. Idempotent and never silent: even a socket
+  // that held no slot gets `queue:status { inQueue: false }` back.
   socket.on('leaveQueue', () => {
     // No payload by contract — nothing to validate.
-    removeFromQueue((e) => e.socketId === socket.id)
+    leaveSharedQueue({ socket, io, game: CHESS_GAME })
   })
 
   // -------------------------------------------------------------- makeMove
@@ -478,8 +569,8 @@ export function registerChess(io: Server, socket: Socket): void {
   // ------------------------------------------------------------ disconnect
   // Per-module cleanup (design contract: no central disconnect loop).
   socket.on('disconnect', () => {
-    removeFromQueue((e) => e.socketId === socket.id)
-
+    // Queue slots are swept by the shared queue's own disconnect listener
+    // (attachQueueCleanup above) — this handler only owns live games.
     const gameId = gameBySocket.get(socket.id)
     if (!gameId) return
     const game = games.get(gameId)

@@ -15,14 +15,21 @@
  *   the reference let clients stack points by re-answering.
  *
  * Matchmaking:
- * - 1v1: FIFO queue (shift, not the ref's LIFO pop); one slot per wallet
+ * - 1v1: SKILL-based queue (nearest hidden mu, with a window that widens as
+ *   you wait so nobody starves — see tryPair1v1); one slot per wallet
  *   (re-emitting findTriviaGame replaces the old entry); room
  *   `trivia-1v1-${gameId}`.
  * - FFA: join an open lobby-state game (< 100 players, inside its 5s fill
- *   window) else create one; the game starts 5s after creation. Joiners
- *   after start (late joiners) get a SOLO triviaGameStart including
+ *   window) else create one; the game starts 5s after creation PROVIDED at
+ *   least FFA_MIN_PLAYERS humans are seated — online never means a solo quiz.
+ *   A short-handed lobby stays open and fires the moment the roster fills.
+ *   Joiners after start (late joiners) get a SOLO triviaGameStart including
  *   `currentQuestionIndex` so they drop in mid-quiz. Room
  *   `trivia-ffa-${gameId}`.
+ * - EVERY join is acknowledged — `waiting` (legacy 1v1 ack) plus
+ *   `queue:status { game:'trivia', mode, inQueue, current, needed }`, which
+ *   also drives the client's live `PLAYERS n / N` counter. Duplicate joins
+ *   and re-joins are acked too; silence is what froze the old lobby.
  *
  * Pacing (server-driven — clients never self-advance in multiplayer):
  * - 3s grace after triviaGameStart (the client runs a local 3s countdown),
@@ -34,9 +41,15 @@
  * `triviaEnded` winner string. Wallets stay server-side (global rule:
  * never leak wallets to opponents).
  *
- * ELO: 1v1 → eloService.settle1v1 (K=32; score tie = draw S=0.5);
- * FFA → eloService.settleFfa (K=16, placement by final score, correct
- * answers stand in for kills per handoff §6).
+ * RANK (Ranked 2.0, rankingLogic.md):
+ * - 1v1 → rankService.settleRanked1v1 on the '1v1' ladder. An exact score tie
+ *   is a real DRAW (TrueSkill's drawn outcome; RP only converges, it does not
+ *   swing).
+ * - FFA → rankService.settleRankedFfa on the 'ffa' ladder, mode label
+ *   'quiz_ffa'. Placements are competition-ranked from the final score, so
+ *   tied scores share a placement and rate as a draw between those players.
+ *   Correct answers ride along in history as `kills` (handoff §6) — they do
+ *   NOT feed the rating, which is outcome-only by design.
  */
 
 import type { Server, Socket } from 'socket.io'
@@ -45,13 +58,29 @@ import {
   generateQuestions,
   type GeneratedQuestion,
 } from '../../services/questionGenerator'
+// RANKED 2.0 — quiz 1v1 rides the '1v1' ladder, quiz FFA rides the 'ffa'
+// ladder (shared with cells/asteroids slayer + lms; one rating pool for
+// every free-for-all in the arcade).
 import {
-  settle1v1,
-  settleFfa,
-  type FfaStanding,
-  type FfaRatingResult,
-  type Settle1v1Result,
-} from '../../services/eloService'
+  getSkill,
+  settleRanked1v1,
+  settleRankedFfa,
+  type RankedStanding,
+} from '../../services/rankService'
+// eloService is now only the wire projection: it strips `wallet`, `mu` and
+// `sigma` so a settlement result can be broadcast to a room.
+import { publicRating, type PublicRating } from '../../services/eloService'
+// Trivia keeps its own 1v1 waiting line (its pairing is entangled with the
+// async question load) but reuses the shared skill-selection maths.
+import {
+  MATCH_RETRY_MS,
+  pickSkillGroup,
+  type SkillQueueEntry,
+} from '../queue'
+// Stats are written wherever the rating settles, guarded by the SAME
+// teardown() (status flips to 'ended' before any await).
+import { recordResults, type RecordResultInput } from '../../services/statsService'
+import { MU_0 } from '../../services/trueskill'
 
 // ---------------------------------------------------------------------------
 // Tunables (design contract "Trivia" section)
@@ -61,8 +90,21 @@ const ROUND_MS = 17_000 // 15s answer + 2s reveal → advance cadence
 const COUNTDOWN_MS = 3_000 // client-side 3s countdown after triviaGameStart
 const FFA_FILL_MS = 5_000 // open-lobby fill window before an FFA game starts
 const FFA_MAX_PLAYERS = 100
+// Online means REAL opponents — never a solo quiz dressed up as a match. The
+// FFA lobby therefore waits for at least this many humans; if the 5s fill
+// window elapses short-handed the lobby simply stays open (and the client
+// keeps showing PLAYERS n / N) until the second player arrives.
+const FFA_MIN_PLAYERS = 2
 const QUESTION_COUNT = 10
 const GAME_KEY = 'trivia' // eloHistory.gameKey for both modes
+
+// HARD CEILING on question generation. The OpenRouter call normally lands in
+// 10-20s, but it has no transport timeout of its own: a hung provider used to
+// leave BOTH matched players staring at the searching screen forever (observed
+// live — the pair matched, `triviaGameStart` never arrived). Generous on
+// purpose so the healthy path is untouched; it only catches a true hang, and
+// the static LAST_RESORT_QUESTIONS set takes over so the match always starts.
+const QUESTION_LOAD_TIMEOUT_MS = 45_000
 
 // Topic pool for random selection — small hardcoded list per the design
 // (mixes the reference server's neon-flavored topics with the lobby's
@@ -186,7 +228,13 @@ const TriviaAnswerSchema = z.object({
 // ---------------------------------------------------------------------------
 // In-memory state (module-scope registries, per matchmaking conventions)
 // ---------------------------------------------------------------------------
-interface QueueEntry {
+/**
+ * A player in the 1v1 waiting line. `mu` (hidden skill) and `joinedAt` are
+ * what the skill matcher pairs on — both are SERVER-ONLY and never emitted.
+ * The FFA path builds one of these too, but only ever reads the identity
+ * fields (an FFA lobby seats whoever shows up; there is nothing to pair).
+ */
+interface QueueEntry extends SkillQueueEntry {
   socket: Socket
   wallet: string
   name: string // socket.data.username — the canonical display name
@@ -223,20 +271,32 @@ interface TriviaGame {
   answered: Set<string> // dedup keys `${wallet}:${questionIndex}`
   createdAt: number
   questionsPromise: Promise<LoadedQuestions> | null // FFA: overlaps fill window
+  // FFA: the 5s fill window has run out. Once true the game starts as soon as
+  // FFA_MIN_PLAYERS are seated (instead of waiting for another timer).
+  fillWindowElapsed: boolean
   startTimer: ReturnType<typeof setTimeout> | null // FFA 5s fill window
   countdownTimer: ReturnType<typeof setTimeout> | null // 3s client countdown
   revealTimer: ReturnType<typeof setTimeout> | null // per-question 15s reveal
   loopTimer: ReturnType<typeof setInterval> | null // 17s advance loop
 }
 
-// What `newRatings` looks like on the wire: 1v1 keeps eloService's shape;
-// FFA entries are wallet-STRIPPED FfaRatingResults; null = unrated game.
-type NewRatings =
-  | Settle1v1Result
-  | Omit<FfaRatingResult, 'wallet'>[]
-  | null
+/**
+ * What `newRatings` looks like on the wire.
+ *   1v1 → `{ a, b }`, the same two-key shape the shipped client already reads
+ *   FFA → one entry per rated player, ordered by placement
+ * Both are `PublicRating`s: wallet/mu/sigma are stripped, and the legacy
+ * `rating`/`change` keys are still there so an un-migrated client renders
+ * unchanged. null = the game was not rated (no DB / not enough players).
+ */
+type NewRatings = { a: PublicRating; b: PublicRating } | PublicRating[] | null
 
-const waiting1v1: QueueEntry[] = [] // FIFO — shift() to pair
+/** The 1v1 waiting line. Pairing is by SKILL (see tryPair1v1), not arrival. */
+const waiting1v1: QueueEntry[] = []
+
+/** Anti-starvation heartbeat for the 1v1 line — the acceptable skill window
+ *  widens with wall-clock time, so an idle-but-mismatched queue needs a tick
+ *  to be re-considered. Unref'd; armed only while 2+ players wait. */
+let retryTimer: ReturnType<typeof setTimeout> | null = null
 const games = new Map<string, TriviaGame>()
 
 // ---------------------------------------------------------------------------
@@ -250,12 +310,22 @@ async function loadQuestions(): Promise<LoadedQuestions> {
     TRIVIA_TOPICS[Math.floor(Math.random() * TRIVIA_TOPICS.length)] ??
     'General Knowledge'
   try {
-    const questions = await generateQuestions({
-      topic,
-      count: QUESTION_COUNT,
-      difficulty: 'mixed',
-    })
-    if (questions.length > 0) return { topic, questions }
+    // Race the generator against QUESTION_LOAD_TIMEOUT_MS. `null` means the
+    // ceiling won: we drop the (possibly still pending) call and start the
+    // match on the static set rather than freezing two matched players.
+    const questions = await Promise.race([
+      generateQuestions({ topic, count: QUESTION_COUNT, difficulty: 'mixed' }),
+      new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), QUESTION_LOAD_TIMEOUT_MS)
+      ),
+    ])
+    if (questions === null) {
+      console.error(
+        `[trivia] question generation exceeded ${QUESTION_LOAD_TIMEOUT_MS}ms — using fallback`
+      )
+    } else if (questions.length > 0) {
+      return { topic, questions }
+    }
   } catch (err) {
     console.error('[trivia] question generation failed — using fallback:', err)
   }
@@ -307,6 +377,56 @@ function teardown(game: TriviaGame) {
   game.status = 'ended'
   clearTimers(game)
   games.delete(game.gameId)
+}
+
+// ---------------------------------------------------------------------------
+// Queue acknowledgement — ALWAYS emitted, never silent
+// ---------------------------------------------------------------------------
+// The client shows SEARCHING FOR ONLINE MATCH the moment it is clicked, so
+// these events are confirmation + the live `PLAYERS n / N` counter, not the
+// trigger. Crucially they are sent on EVERY join, duplicates included: the
+// old "already seated / already queued" paths returned silently, which left a
+// re-joining client with no reply at all.
+
+/** One-shot ack to a single socket (1v1 queue, or a confirmed join). */
+function emitQueueStatusTo(
+  socket: Socket,
+  mode: '1v1' | 'ffa',
+  inQueue: boolean,
+  current: number,
+  needed: number
+) {
+  socket.emit('queue:status', {
+    game: 'trivia',
+    mode,
+    inQueue,
+    current,
+    needed,
+  })
+}
+
+/** "You are out of every trivia queue" — mode-agnostic on purpose: a leave
+ *  can arrive from the 1v1 line or an FFA lobby seat. */
+function emitLeftQueue(socket: Socket) {
+  socket.emit('queue:status', {
+    game: 'trivia',
+    inQueue: false,
+    current: 0,
+    needed: 0,
+  })
+}
+
+/** Roster broadcast for an FFA lobby — every waiting player sees the count
+ *  tick up as others arrive. No-op once the quiz is running. */
+function emitFfaQueueStatus(io: Server, game: TriviaGame) {
+  if (game.status !== 'lobby') return
+  io.to(game.room).emit('queue:status', {
+    game: 'trivia',
+    mode: 'ffa',
+    inQueue: true,
+    current: game.players.length,
+    needed: FFA_MIN_PLAYERS,
+  })
 }
 
 /** Room-wide score refresh — after every accepted answer and on FFA leave.
@@ -371,6 +491,76 @@ function broadcastStart(io: Server, game: TriviaGame) {
 // Game end + settlement
 // ---------------------------------------------------------------------------
 
+/**
+ * STATS helper — one `match_results` row per player of a finished quiz.
+ *
+ * Trivia is NOT a K/D game (the contract's K/D list is pug shooter,
+ * asteroids and cells), so `kills` stays 0 on purpose: correct answers
+ * substitute for kills in eloHistory only. Writing them here would inflate
+ * the player's combined K/D with a game that has no deaths at all.
+ *
+ * `score` is the quiz score; FFA rows also carry a 1-based placement
+ * computed with competition ranking (ties share a place), which is the same
+ * rule rankService uses. Only usernames are stored — never a wallet.
+ */
+function recordTriviaResults(
+  game: TriviaGame,
+  /** Forfeit path: this wallet WON regardless of score (the opponent left);
+   *  everyone else loses. Omitted for a natural end. */
+  forcedWinnerWallet?: string
+): void {
+  const durationMs = Date.now() - game.createdAt
+  const entries = game.players.map((p) => ({
+    player: p,
+    score: game.scores[p.name] ?? 0,
+  }))
+  if (entries.length === 0) return
+
+  // Competition ranking: placement = 1 + (# players with a strictly better
+  // score). 1v1 uses it too, which is what makes a tie a draw for both.
+  const placementOf = (score: number): number =>
+    1 + entries.filter((e) => e.score > score).length
+
+  // A 1v1 (or a 2-player FFA) can name its opponent; a bigger field cannot
+  // be represented by a single username, so it stays null.
+  const opponentOf = (wallet: string): string | null =>
+    entries.length === 2
+      ? (entries.find((e) => e.player.wallet !== wallet)?.player.name ?? null)
+      : null
+
+  const rows: RecordResultInput[] = entries.map(({ player, score }) => {
+    // Forfeit: the survivor wins outright, the leaver takes the loss — the
+    // scoreboard has no say (it mirrors settleRanked1v1(survivor, leaver, 'a')).
+    const isForfeit = forcedWinnerWallet !== undefined
+    const placement = isForfeit
+      ? player.wallet === forcedWinnerWallet
+        ? 1
+        : 2
+      : placementOf(score)
+    // Sharing first place = a draw; otherwise 1st wins and the rest lose.
+    const tiedForFirst =
+      !isForfeit &&
+      placement === 1 &&
+      entries.filter((e) => placementOf(e.score) === 1).length > 1
+    return {
+      // gameId is a uuid, and match_results.matchId is deliberately NOT a
+      // foreign key — it just groups the rows of one quiz together.
+      matchId: game.gameId,
+      wallet: player.wallet,
+      gameKey: GAME_KEY,
+      mode: game.mode, // '1v1' | 'ffa'
+      result: tiedForFirst ? 'draw' : placement === 1 ? 'win' : 'loss',
+      score,
+      // Placement is only meaningful for a field; a 1v1 has win/loss/draw.
+      placement: game.mode === 'ffa' ? placement : null,
+      opponentUsername: opponentOf(player.wallet),
+      durationMs,
+    }
+  })
+
+  void recordResults(rows) // fire-and-forget; never throws
+}
+
 /** Natural end (last question elapsed). Settles ELO and broadcasts
  *  triviaEnded. Torn down BEFORE the async settle so a concurrent
  *  disconnect can't double-settle. */
@@ -390,27 +580,54 @@ async function endGame(io: Server, game: TriviaGame) {
     const [a, b] = game.players
     const scoreA = game.scores[a.name] ?? 0
     const scoreB = game.scores[b.name] ?? 0
-    // Score tie → draw (S=0.5 for both, per contract — never skipped).
+    // Score tie → a genuine DRAW: TrueSkill's drawn update, and RP moves only
+    // toward skill rather than swinging (never skipped, per contract).
     const result = scoreA === scoreB ? 'draw' : scoreA > scoreB ? 'a' : 'b'
-    newRatings = await settle1v1(GAME_KEY, a.wallet, b.wallet, result)
+    // `game.gameId` is the SAME id recordTriviaResults writes, so
+    // elo_history and match_results are joinable (non-uuids are dropped).
+    const settled = await settleRanked1v1(
+      GAME_KEY,
+      a.wallet,
+      b.wallet,
+      result,
+      game.gameId
+    )
+    if (settled) {
+      newRatings = { a: publicRating(settled.a), b: publicRating(settled.b) }
+    }
   } else if (game.mode === 'ffa') {
     // Only still-connected players get rated (leavers forfeit — we no
     // longer hold a live seat for them, but their score stays in results).
-    const standings: FfaStanding[] = game.players.map((p) => ({
+    // Placements are derived from `score` with competition ranking inside
+    // settleRankedFfa, so an exact score tie shares a placement and both
+    // players are rated as having drawn with each other.
+    const standings: RankedStanding[] = game.players.map((p) => ({
       wallet: p.wallet,
       score: game.scores[p.name] ?? 0,
-      kills: p.correctCount, // correct answers substitute kills (handoff §6)
+      kills: p.correctCount, // correct answers stand in for kills in history
     }))
-    const settled = await settleFfa(GAME_KEY, standings)
-    // Strip wallets before the room broadcast (global rule).
-    newRatings = settled
-      ? settled.map((r) => ({
-          name: r.name,
-          rating: r.rating,
-          change: r.change,
-          placement: r.placement,
-        }))
-      : null
+    const settled = await settleRankedFfa(
+      GAME_KEY,
+      standings,
+      game.gameId, // same id as the stats rows -> the two tables join
+      'quiz_ffa'
+    )
+    // publicRating strips wallet AND the hidden mu/sigma before broadcast.
+    newRatings = settled ? settled.map(publicRating) : null
+  }
+
+  // STATS — recorded for exactly the endings that settle (teardown() above
+  // already flipped the status, so this can never run twice for one game).
+  // Note it does NOT depend on settle* succeeding: a quiz played without a
+  // database still deserves its history row when the DB comes back… and when
+  // there is no DB at all, recordResults is a no-op anyway.
+  // The 2-player floor mirrors settleFfa's own "need a field to rate against"
+  // rule, so a lobby that emptied out can't hand its last player a free win.
+  if (
+    (game.mode === '1v1' && game.players.length === 2) ||
+    (game.mode === 'ffa' && game.players.length >= 2)
+  ) {
+    recordTriviaResults(game)
   }
 
   io.to(game.room).emit('triviaEnded', { winner, results, newRatings })
@@ -438,7 +655,19 @@ async function endByOpponentLeft(
 
   let newRatings: NewRatings = null
   if (wasActive && survivor && leaver) {
-    newRatings = await settle1v1(GAME_KEY, survivor.wallet, leaver.wallet, 'a')
+    const settled = await settleRanked1v1(
+      GAME_KEY,
+      survivor.wallet,
+      leaver.wallet,
+      'a', // the survivor wins outright; walking away is a loss
+      game.gameId // same id as the stats rows -> the two tables join
+    )
+    if (settled) {
+      newRatings = { a: publicRating(settled.a), b: publicRating(settled.b) }
+    }
+    // STATS — same condition as settlement: a lobby-phase abort (questions
+    // still generating) is not a played match and records nothing.
+    recordTriviaResults(game, survivor.wallet)
   }
 
   io.to(game.room).emit('triviaEnded', {
@@ -462,6 +691,7 @@ function removeFfaPlayer(io: Server, game: TriviaGame, wallet: string) {
     return
   }
   if (game.status === 'active') emitUpdate(io, game) // refresh leaderboards
+  else emitFfaQueueStatus(io, game) // still filling → counter ticks back down
 }
 
 // ---------------------------------------------------------------------------
@@ -494,6 +724,7 @@ function makeGame(mode: '1v1' | 'ffa'): TriviaGame {
     answered: new Set(),
     createdAt: Date.now(),
     questionsPromise: null,
+    fillWindowElapsed: false,
     startTimer: null,
     countdownTimer: null,
     revealTimer: null,
@@ -513,6 +744,15 @@ async function start1v1(io: Server, first: QueueEntry, second: QueueEntry) {
   first.socket.join(game.room)
   second.socket.join(game.room)
 
+  // The opponent is already locked in, but `triviaGameStart` cannot go out
+  // until the questions exist (10-20s of LLM latency). Tell the clients NOW so
+  // the shared searching screen can say "opponent found — preparing questions"
+  // instead of implying we are still hunting for a human.
+  io.to(game.room).emit('triviaMatched', {
+    mode: game.mode,
+    players: publicPlayers(game),
+  })
+
   const loaded = await loadQuestions()
   // A disconnect during generation ends the game via endByOpponentLeft —
   // don't resurrect it.
@@ -530,25 +770,44 @@ function addFfaPlayer(game: TriviaGame, entry: QueueEntry) {
   entry.socket.join(game.room)
 }
 
+/** Launch an FFA lobby that has enough humans in it. Safe to call more than
+ *  once — every exit path re-checks the lobby is still startable. */
+async function startFfaNow(io: Server, game: TriviaGame) {
+  if (game.status !== 'lobby') return
+  if (game.players.length < FFA_MIN_PLAYERS) return
+  // Roster is final — same "matched, questions loading" signal as 1v1.
+  io.to(game.room).emit('triviaMatched', {
+    mode: game.mode,
+    players: publicPlayers(game),
+  })
+  const loaded = await (game.questionsPromise ?? loadQuestions())
+  // Players may have bailed (or teardown run) while questions loaded.
+  if (games.get(game.gameId) !== game || game.status !== 'lobby') return
+  if (game.players.length < FFA_MIN_PLAYERS) return
+  game.topic = loaded.topic
+  game.questions = loaded.questions
+  broadcastStart(io, game)
+}
+
 /** Create a fresh FFA game: question generation kicks off IMMEDIATELY so
  *  the LLM latency overlaps the 5s fill window instead of adding to it. */
 function createFfa(io: Server, entry: QueueEntry) {
   const game = makeGame('ffa')
   games.set(game.gameId, game)
   addFfaPlayer(game, entry)
+  emitFfaQueueStatus(io, game) // PLAYERS 1 / 2
 
   game.questionsPromise = loadQuestions() // never rejects (falls back)
-  game.startTimer = setTimeout(async () => {
-    const loaded = await game.questionsPromise!
-    // Everyone may have bailed (or teardown ran) during generation.
+  game.startTimer = setTimeout(() => {
     if (games.get(game.gameId) !== game || game.status !== 'lobby') return
+    game.fillWindowElapsed = true
     if (game.players.length === 0) {
-      teardown(game)
+      teardown(game) // nobody waiting — nothing to keep alive
       return
     }
-    game.topic = loaded.topic
-    game.questions = loaded.questions
-    broadcastStart(io, game)
+    // Short-handed (the common case: one player waiting alone)? Stay in the
+    // lobby. joinFfa starts the quiz the moment the roster is big enough.
+    void startFfaNow(io, game)
   }, FFA_FILL_MS)
 }
 
@@ -569,15 +828,25 @@ function joinFfa(io: Server, entry: QueueEntry) {
           ...startPayload(game),
           currentQuestionIndex: game.currentQuestionIndex,
         })
+      } else {
+        // Still filling: re-ack instead of returning silently (this was the
+        // duplicate-join dead end that froze the client on the lobby).
+        emitQueueStatusTo(
+          entry.socket,
+          'ffa',
+          true,
+          game.players.length,
+          FFA_MIN_PLAYERS
+        )
       }
       return
     }
   }
 
-  // Open lobby (fill window still running) → join it. The 5s window is
-  // enforced by the startTimer flipping status to 'active', so checking
-  // status is exactly the "≤ 5s old" rule (stretched only while the
-  // question fallback is still resolving — joining then is harmless).
+  // Open lobby → join it. 'lobby' status means one of two things: the 5s
+  // fill window is still running, OR it ran out while the lobby was short of
+  // FFA_MIN_PLAYERS and is now simply waiting for humans. Both are joinable,
+  // and the second case starts the quiz immediately below.
   for (const game of games.values()) {
     if (
       game.mode === 'ffa' &&
@@ -585,6 +854,10 @@ function joinFfa(io: Server, entry: QueueEntry) {
       game.players.length < FFA_MAX_PLAYERS
     ) {
       addFfaPlayer(game, entry)
+      emitFfaQueueStatus(io, game) // everyone waiting sees PLAYERS n / N tick
+      // The fill window may already have elapsed while this lobby waited
+      // short-handed — in that case the newcomer starts the quiz.
+      if (game.fillWindowElapsed) void startFfaNow(io, game)
       return
     }
   }
@@ -618,12 +891,67 @@ function removeQueueWhere(pred: (e: QueueEntry) => boolean) {
   }
 }
 
+/**
+ * Try to start one 1v1 quiz out of the waiting line — by SKILL, not by
+ * arrival order (rankingLogic.md §5.3).
+ *
+ * `pickSkillGroup` returns the pair with the smallest hidden-skill gap that
+ * BOTH players currently accept; the accepted gap widens the longer someone
+ * waits and is unbounded after ~30s, so a lone high-rated player is never
+ * stranded. The pair comes back in FIFO order, so the longest waiter is still
+ * listed first — which start1v1 uses for the roster order.
+ *
+ * Returns true when a game was started.
+ */
+function tryPair1v1(io: Server, now: number = Date.now()): boolean {
+  // Prune corpses first (disconnect cleanup should already have — defensive).
+  for (let i = waiting1v1.length - 1; i >= 0; i--) {
+    if (!waiting1v1[i].socket.connected) waiting1v1.splice(i, 1)
+  }
+
+  const pair = pickSkillGroup(waiting1v1, 2, now)
+  if (!pair) return false
+
+  const [first, second] = pair
+  if (first.wallet === second.wallet) {
+    // One slot per wallet is enforced on join, so this cannot happen — but a
+    // self-match would be unrateable, so drop the newer entry and bail.
+    removeQueueWhere((e) => e.socket.id === second.socket.id)
+    return false
+  }
+
+  // Commit: both leave the line before anything is emitted.
+  removeQueueWhere(
+    (e) => e.socket.id === first.socket.id || e.socket.id === second.socket.id
+  )
+
+  // Both sides leave the queue here; triviaGameStart follows once the
+  // questions land (start1v1 emits `triviaMatched` in the meantime).
+  emitLeftQueue(first.socket)
+  emitLeftQueue(second.socket)
+  void start1v1(io, first, second) // longest waiter listed first
+  return true
+}
+
+/** Arm the anti-starvation re-check while two or more players are waiting. */
+function scheduleRetry1v1(io: Server): void {
+  if (retryTimer) return
+  if (waiting1v1.length < 2) return
+  const timer = setTimeout(() => {
+    retryTimer = null
+    tryPair1v1(io)
+    scheduleRetry1v1(io)
+  }, MATCH_RETRY_MS)
+  ;(timer as { unref?: () => void }).unref?.()
+  retryTimer = timer
+}
+
 // ---------------------------------------------------------------------------
 // registerTrivia — wires this socket's trivia events + its own disconnect
 // ---------------------------------------------------------------------------
 export function registerTrivia(io: Server, socket: Socket) {
   // findTriviaGame { profile?, config: { mode: '1v1'|'ffa' } }
-  socket.on('findTriviaGame', (raw) => {
+  socket.on('findTriviaGame', async (raw) => {
     const parsed = FindTriviaGameSchema.safeParse(raw)
     if (!parsed.success) return // silently ignore malformed payloads
 
@@ -644,30 +972,74 @@ export function registerTrivia(io: Server, socket: Socket) {
       wallet,
       name: username,
       avatarUrl: parsed.data.profile?.avatarUrl ?? null, // cosmetic only
+      // Filled in below for the 1v1 path (the FFA lobby seats whoever shows
+      // up, so it never pairs and never needs a skill lookup).
+      mu: MU_0,
+      joinedAt: Date.now(),
     }
 
     if (parsed.data.config.mode === '1v1') {
+      // HIDDEN SKILL SNAPSHOT for the matcher. Taken FIRST so that everything
+      // from "pushed into the line" to "paired" stays synchronous — no await
+      // window in which a disconnect could strand a half-built match.
+      // getSkill never throws and always resolves (defaults when there is no
+      // row / no DB), so matchmaking degrades gracefully instead of failing.
+      const skill = await getSkill(wallet, '1v1')
+      if (socket.disconnected) return // gave up during the lookup
+      entry.mu = skill.mu
+      // A re-join replaces the slot but CARRIES THE ORIGINAL WAIT CLOCK
+      // FORWARD — otherwise a client that re-emits findTriviaGame on every
+      // remount would keep resetting its own acceptance window and could
+      // never widen out of a narrow skill band.
+      entry.joinedAt =
+        waiting1v1.find((e) => e.wallet === wallet)?.joinedAt ?? Date.now()
+
+      // ALREADY SEATED IN A LIVE 1v1? Do not queue again — that would build a
+      // SECOND game and orphan the first (its rank and stats would never
+      // settle). Rebind the seat to this socket and resend the state instead,
+      // exactly as joinFfa does for FFA. Re-checked AFTER the await above, so
+      // a concurrent findTriviaGame can't seat us while the lookup ran.
+      //
+      // This is not theoretical: the private-wager start (socket/games/
+      // privateMatch.ts) dispatches `findTriviaGame` on the player's behalf,
+      // and the trivia screen the client then mounts emits its own. Connect
+      // already guarded this case; trivia did not.
+      for (const game of games.values()) {
+        if (game.mode !== '1v1' || game.status === 'ended') continue
+        const seat = game.players.find((p) => p.wallet === wallet)
+        if (!seat) continue
+        seat.socketId = socket.id
+        seat.avatarUrl = parsed.data.profile?.avatarUrl ?? seat.avatarUrl
+        socket.join(game.room)
+        emitLeftQueue(socket) // we are playing, not queuing
+        if (game.status === 'active') {
+          socket.emit('triviaGameStart', {
+            ...startPayload(game),
+            currentQuestionIndex: game.currentQuestionIndex,
+          })
+        }
+        // status 'lobby' = questions are still generating; the normal
+        // triviaGameStart broadcast is already coming to this room.
+        return
+      }
+
       // One queue slot per wallet — re-emitting replaces the old entry.
       removeQueueWhere((e) => e.wallet === wallet)
+      waiting1v1.push(entry)
 
-      // FIFO: shift() the oldest LIVE entry (skip stale disconnected ones
-      // defensively — disconnect cleanup should already have pruned them).
-      let opponent: QueueEntry | undefined
-      while (waiting1v1.length > 0) {
-        const head = waiting1v1.shift()
-        if (!head) break
-        if (head.socket.connected && head.wallet !== wallet) {
-          opponent = head
-          break
-        }
-      }
+      // Pair on SKILL. tryPair1v1 emits the queue-left acks for whoever it
+      // seats, so only a player still WAITING needs the queued ack below.
+      tryPair1v1(io)
 
-      if (opponent) {
-        void start1v1(io, opponent, entry) // first-queued listed first
-      } else {
-        waiting1v1.push(entry)
-        socket.emit('waiting', 'Waiting for opponent...')
+      if (waiting1v1.some((e) => e.socket.id === socket.id)) {
+        // ALWAYS acked — including a re-join that just replaced its own slot,
+        // which is exactly the case the old code answered with silence. (Skill
+        // pairing can also seat two OTHER players and leave this one waiting;
+        // this branch reports that honestly rather than faking a match.)
+        socket.emit('waiting', 'Waiting for opponent...') // legacy ack
+        emitQueueStatusTo(socket, '1v1', true, 1, 2)
       }
+      scheduleRetry1v1(io) // self-guards when fewer than two are left
     } else {
       joinFfa(io, entry)
     }
@@ -746,6 +1118,9 @@ export function registerTrivia(io: Server, socket: Socket) {
         }
       }
     }
+    // Idempotent + always acked: the client fires this from CANCEL and again
+    // from its unmount cleanup, and both must leave us dequeued.
+    emitLeftQueue(socket)
   })
 
   // Disconnect cleanup — OWN handler per module (design: no central loop).

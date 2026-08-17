@@ -740,6 +740,7 @@ function setupMatch(charKey) {
   simRng = mulberry32(0xC0FFEE ^ (difficulty * 7919));
   ai = makeAI(["easy", "normal", "hard"][difficulty], simRng);
   P1.wins = 0; CPU.wins = 0; round = 1;
+  matchStartedAt = Date.now();   // arms the XP report (see reportResult)
   startRound();
 }
 function startRound() {
@@ -1022,6 +1023,30 @@ function showMatchEnd(playerWon) {
   $("endTitle").textContent = playerWon ? STR.youWin : STR.youLose;
   $("endTitle").classList.toggle("lose", !playerWon);
   showScreen("endScr");
+  reportResult(playerWon);
+}
+
+// ---------- progression -----------------------------------------------------------
+// The arcade shell awards XP for every finished game, but this one runs inside an
+// iframe with no server behind it — so the result has to travel outward. ONE message,
+// posted when the match is decided; the parent (components/Golf/NeonGolfClash.tsx)
+// hands it to the stats endpoint, which clamps and daily-caps it because it cannot be
+// verified. Nothing here can affect ranked play.
+//
+// `matchStartedAt` is stamped by setupMatch so the award can see a real duration (a
+// match too short to be real earns nothing) and so each match reports at most once.
+let matchStartedAt = 0;
+function reportResult(playerWon) {
+  if (window.parent === window || !matchStartedAt) return;
+  const startedAt = matchStartedAt;
+  matchStartedAt = 0;              // one report per match, whatever calls us
+  window.parent.postMessage({
+    type: "neon-golf:result",
+    won: !!playerWon,
+    rounds: P1 ? P1.wins : 0,
+    durationMs: Date.now() - startedAt,
+    roundId: String(startedAt),
+  }, window.location.origin);
 }
 
 // menu wiring
@@ -1181,7 +1206,22 @@ function frame(now) {
 // ---------- boot ------------------------------------------------------------------
 fillStatic();
 wireUi();
-setupMenuScene();
+// ---------- embedded autostart ----------------------------------------------------
+// The arcade only mounts this document once the player has ALREADY committed to a
+// round: they pressed PRACTICE, their WAGER MATCH queue found an opponent, or a
+// PRIVATE WAGER lobby finished readying up. Making them press PLAY again is a second
+// menu for a decision already made, so `?autostart=1` boots straight into the match.
+// Nothing is deleted: the menu (and the difficulty picker, which lives only there)
+// is still reachable mid-match from PAUSE -> MAIN MENU.
+//
+// The two branches are EXCLUSIVE on purpose. setupMenuScene() builds a P1/CPU pair
+// for the idle diorama and setupMatch() throws that pair away without disposing its
+// geometries/materials, so running both would leak a full fighter pair on every boot.
+if (new URLSearchParams(location.search).get("autostart") === "1") {
+  setupMatch("ren");
+} else {
+  setupMenuScene();
+}
 function setupMenuScene() {
   // show both fighters idling behind the menu
   P1 = mkFighter("ren", true, -1.6);

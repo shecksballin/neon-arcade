@@ -124,6 +124,8 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
   useEffect(() => {
     if (gameState === 'ended') {
       playEffect(iWon);
+      // NEON BUCKS ARE PRACTICE-ONLY. The online path must never call
+      // wager()/win() — there is no stake of any kind in an online match.
       if (mode === 'computer' && iWon && wagerAmount > 0) {
         win(wagerAmount * 2);
       }
@@ -380,22 +382,36 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
       }
     };
 
-    const handleMouseMove = (e: MouseEvent) => {
+    /**
+     * POINTER events, not mouse events. `pointermove` fires for a mouse, a
+     * finger and a stylus alike, so this one handler makes the paddle work on
+     * a phone — before, the paddle listened only for `mousemove` and touching
+     * the screen did literally nothing, which is what made Volley unplayable
+     * on mobile.
+     */
+    const handlePointerMove = (e: PointerEvent) => {
       if (gameState !== 'playing') return;
       const canvas = canvasRef.current;
       if (!canvas) return;
-      
+
       let newY: number;
-      
+
       // Use Pointer Lock relative movement if available
       if (document.pointerLockElement === canvas) {
         newY = (isP1.current ? paddle1Y.current : paddle2Y.current) + e.movementY;
       } else {
         const rect = canvas.getBoundingClientRect();
-        const mouseY = e.clientY - rect.top;
-        newY = mouseY - PADDLE_HEIGHT / 2;
+        // SCALE from CSS pixels into canvas space. The canvas is 500 units
+        // tall but is laid out at whatever height the stage gives it, so
+        // subtracting rect.top alone put the paddle at the wrong place
+        // wherever the two differ — the taller the display, the further the
+        // paddle lagged behind the finger. Guard against a zero-height rect
+        // (possible for one frame during fullscreen transitions).
+        const scale = rect.height > 0 ? CANVAS_HEIGHT / rect.height : 1;
+        const pointerY = (e.clientY - rect.top) * scale;
+        newY = pointerY - PADDLE_HEIGHT / 2;
       }
-      
+
       const limitedY = Math.max(BORDER_OFFSET, Math.min(CANVAS_HEIGHT - PADDLE_HEIGHT - BORDER_OFFSET, newY));
       
       if (isP1.current) {
@@ -415,9 +431,20 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
       }
     };
 
+    /**
+     * Pointer lock is a mouse-only idea — it hides the cursor and reports
+     * relative movement. On a touchscreen there is no cursor to lock, the
+     * request rejects (an unhandled promise rejection in some browsers), and
+     * if it somehow succeeded it would break absolute finger tracking, which
+     * is the ONLY way to aim a paddle with a thumb. So: pointer devices only.
+     */
+    const canLockPointer =
+      typeof window !== 'undefined' &&
+      window.matchMedia('(pointer: fine)').matches;
+
     const handleCanvasClick = () => {
-      if (gameState === 'playing' && canvasRef.current) {
-        canvasRef.current.requestPointerLock();
+      if (canLockPointer && gameState === 'playing' && canvasRef.current) {
+        void canvasRef.current.requestPointerLock();
       }
     };
 
@@ -426,16 +453,20 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
       canvas.addEventListener('click', handleCanvasClick);
     }
 
-    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('pointermove', handlePointerMove);
+    // A finger that lands and holds without moving should still place the
+    // paddle — pointermove alone would wait for the first drag pixel.
+    window.addEventListener('pointerdown', handlePointerMove);
     window.addEventListener('keydown', handleKeyDown);
-    
+
     // Automatically try to lock when game starts
-    if (gameState === 'playing' && canvas) {
-      canvas.requestPointerLock();
+    if (canLockPointer && gameState === 'playing' && canvas) {
+      void canvas.requestPointerLock();
     }
 
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerdown', handlePointerMove);
       window.removeEventListener('keydown', handleKeyDown);
       if (canvas) {
         canvas.removeEventListener('click', handleCanvasClick);
@@ -527,14 +558,33 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
     }
   }, [mode, gameState, gameData, socket]);
 
+  /**
+   * Leaving the screen. ONLINE only: tell the server we're gone, otherwise the
+   * opponent keeps rallying against a frozen paddle until they reach the
+   * regulation score (the socket itself stays connected, so the server's
+   * disconnect cleanup never fires). Practice mode is untouched — it just
+   * exits, exactly as before.
+   */
+  const handleExitMatch = useCallback(() => {
+    if (mode === 'multiplayer' && gameState !== 'ended' && gameData?.gameId) {
+      socket.emit('volleyResign', gameData.gameId);
+    }
+    onExit();
+  }, [mode, gameState, gameData, socket, onExit]);
+
   return (
     <div 
       ref={gameContainerRef}
-      className={`flex flex-col items-center justify-center h-screen w-screen bg-[#081616] font-body relative overflow-hidden ${gameState === 'playing' ? 'cursor-none' : ''}`}
+      /* h-[100dvh]: `h-screen` is 100vh, which on mobile browsers measures the
+         viewport with the URL bar hidden — so the bottom-anchored controls
+         and the exit button sat underneath the browser chrome until the user
+         scrolled, which this container forbids. touch-none stops the whole
+         stage from being treated as a scrollable page during a rally. */
+      className={`flex flex-col items-center justify-center h-[100dvh] w-screen bg-[#081616] font-body relative overflow-hidden touch-none ${gameState === 'playing' ? 'cursor-none' : ''}`}
     >
       {/* HUD - Redesigned to be more immersive and centered */}
       {!settings.minimalistMode && (
-        <div className={`absolute top-0 left-0 right-0 z-20 p-8 flex justify-between items-start pointer-events-none transition-opacity duration-500 ${settings.ghostMode ? 'opacity-0 hover:opacity-100' : 'opacity-100'}`}>
+        <div className={`absolute top-0 left-0 right-0 z-20 p-4 sm:p-8 pt-[max(1rem,env(safe-area-inset-top))] flex justify-between items-start gap-2 pointer-events-none transition-opacity duration-500 ${settings.ghostMode ? 'opacity-0 hover:opacity-100' : 'opacity-100'}`}>
           {/* Player 1 - Left */}
           {!settings.ghostMode && (
             <div className="flex items-center gap-4">
@@ -550,13 +600,13 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
           {/* Centered Score */}
           <div className="flex flex-col items-center mx-auto translate-x-[-50%] absolute left-1/2">
               {!settings.ghostMode && (
-                <div className="text-[10px] font-mono tracking-[0.5em] uppercase text-[#00FFD1] mb-2 font-bold opacity-60 text-center w-64">
+                <div className="text-[8px] sm:text-[10px] font-mono tracking-[0.3em] sm:tracking-[0.5em] uppercase text-[#00FFD1] mb-2 font-bold opacity-60 text-center w-40 sm:w-64">
                   {playerData.matchMode === 'classic' ? 'Match to 11' : playerData.matchMode === 'bestof3' ? 'Best of Three' : 'Sudden Death'}
                 </div>
               )}
               <div className="flex items-center gap-10">
                 <div className="flex flex-col items-center">
-                    <span className="text-7xl font-black text-white italic drop-shadow-[0_0_30px_rgba(255,255,255,0.4)] leading-none">{score.p1}</span>
+                    <span className="text-4xl sm:text-6xl md:text-7xl font-black text-white italic drop-shadow-[0_0_30px_rgba(255,255,255,0.4)] leading-none">{score.p1}</span>
                     <div className="flex gap-2 mt-4 items-center w-full">
                         {[...Array(playerData.matchMode === 'bestof3' ? 3 : WINNING_SCORE)].map((_, i) => (
                           <div 
@@ -572,7 +622,7 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
                 </div>
                 <span className="text-2xl text-[#00FFD1] font-black italic opacity-40">/</span>
                 <div className="flex flex-col items-center">
-                    <span className="text-7xl font-black text-white italic drop-shadow-[0_0_30px_rgba(255,255,255,0.4)] leading-none">{score.p2}</span>
+                    <span className="text-4xl sm:text-6xl md:text-7xl font-black text-white italic drop-shadow-[0_0_30px_rgba(255,255,255,0.4)] leading-none">{score.p2}</span>
                     <div className="flex gap-2 mt-4 items-center w-full flex-row-reverse">
                         {[...Array(playerData.matchMode === 'bestof3' ? 3 : WINNING_SCORE)].map((_, i) => (
                           <div 
@@ -610,11 +660,26 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
       {/* Game Stage */}
       <div className="relative w-full h-full flex items-center justify-center bg-radial-gradient">
           <div className="absolute inset-0 bg-[#00FFD1]/5 opacity-20" style={{ backgroundImage: 'radial-gradient(circle at center, #00FFD1 0%, transparent 70%)' }} />
-          <canvas 
-            ref={canvasRef} 
-            width={CANVAS_WIDTH} 
-            height={CANVAS_HEIGHT} 
-            className="bg-[#0b1a1a] shadow-[0_0_100px_rgba(0,255,209,0.3)] relative z-10 cursor-none w-full h-full object-fill border-[#00FFD1]/20"
+          {/*
+            aspect-[2/1] + object-contain, NOT `w-full h-full object-fill`.
+            The play field is 1000x500; stretching it to fill a 390x844
+            portrait viewport squashed it to roughly 1:2, so the ball moved
+            visibly faster horizontally than vertically and the paddle covered
+            a different fraction of the court than the physics thought it did.
+            Letterboxing preserves the 2:1 court on every screen, and because
+            the pointer handler scales through getBoundingClientRect it stays
+            in sync automatically.
+
+            touch-none (touch-action: none) is what makes dragging actually
+            control the paddle: without it the browser claims the gesture as a
+            page scroll / pull-to-refresh and the pointermove stream stops
+            after a few pixels.
+          */}
+          <canvas
+            ref={canvasRef}
+            width={CANVAS_WIDTH}
+            height={CANVAS_HEIGHT}
+            className="bg-[#0b1a1a] shadow-[0_0_100px_rgba(0,255,209,0.3)] relative z-10 cursor-none w-full h-auto max-h-full aspect-[2/1] object-contain touch-none select-none border-[#00FFD1]/20"
           />
 
           {/* Countdown Overlay */}
@@ -639,25 +704,33 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
             {gameState === 'ended' && (
               <ResultsScreen
                 won={iWon}
+                // NO MONEY ONLINE: stake/winnings are practice-mode Neon Bucks
+                // only — the online path never wagers, so both read zero.
                 stake={mode === 'computer' ? wagerAmount : 0}
                 winnings={mode === 'computer' ? (iWon ? wagerAmount * 2 : 0) : 0}
                 gameMode={mode === 'computer' ? 'Practice' : 'Online'}
+                // Online stakes nothing — hide the Wagered/Payout rows.
+                moneyless={mode !== 'computer'}
                 onRematch={handleRematchRequest}
-                onExit={onExit}
+                onExit={handleExitMatch}
               />
             )}
          </AnimatePresence>
       </div>
 
       {!settings.minimalistMode && (
-        <p className="fixed bottom-8 left-1/2 -translate-x-1/2 text-[#00FFD1]/40 font-mono text-[10px] tracking-[0.4em] uppercase z-20 pointer-events-none">
-           USE MOUSE FOR VERTICAL DEFLECTION
+        <p className="fixed bottom-24 sm:bottom-8 left-1/2 -translate-x-1/2 w-full px-4 text-center text-[#00FFD1]/40 font-mono text-[9px] sm:text-[10px] tracking-[0.3em] sm:tracking-[0.4em] uppercase z-20 pointer-events-none">
+           {/* Keyed on POINTER TYPE, not width — telling a phone user to "use
+               mouse" is worse than saying nothing, and a narrow desktop
+               window still has a mouse. */}
+           <span className="pointer-coarse:hidden">Use mouse for vertical deflection</span>
+           <span className="hidden pointer-coarse:inline">Drag to move your paddle</span>
         </p>
       )}
 
       {/* Floating Controls - Styled like Asteroids */}
-      <GameBackButton onClick={onExit} title="Exit Game" positionClassName="absolute bottom-8 left-8 z-[60] pointer-events-auto" />
-      <div className="absolute bottom-8 right-8 flex gap-3 pointer-events-auto z-[60]">
+      <GameBackButton onClick={handleExitMatch} title="Exit Game" positionClassName="absolute bottom-4 sm:bottom-8 left-4 sm:left-8 mb-[env(safe-area-inset-bottom)] z-[60] pointer-events-auto" />
+      <div className="absolute bottom-4 sm:bottom-8 right-4 sm:right-8 mb-[env(safe-area-inset-bottom)] flex gap-3 pointer-events-auto z-[60]">
         <button 
           onClick={toggleFullscreen}
           className="p-4 bg-white/5 border border-white/10 rounded-2xl text-[#00FFD1] hover:bg-[#00FFD1]/10 transition-all shadow-2xl active:scale-95"

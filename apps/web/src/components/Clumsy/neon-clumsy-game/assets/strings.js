@@ -29,6 +29,10 @@ export const STR = {
 
   playersLeft: "PLAYERS LEFT",
   layerLabel: "LAYER",
+  // HUD chips are a micro-label over a value now (see index.html), so the
+  // timer and the control hint need names of their own.
+  timerLabel: "TIME",
+  hudHintLabel: "CONTROLS",
   hudHint: "SHIFT sprint - SPACE jump - SPACE x2 dive",
 
   elimFeed: "{name} took a slime bath",

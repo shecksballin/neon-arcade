@@ -1,9 +1,12 @@
-import React from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import GameBackButton from '../common/GameBackButton';
+import { reportGameSession } from '../../lib/sessionXp';
 
 interface ClumsyPlayProps {
   /** Return to the Clumsy lobby (unmounts the iframe, stopping the game). */
   onExit: () => void;
+  /** Arcade profile name — becomes the in-game nickname (feed + end screen). */
+  playerName?: string | null;
 }
 
 /**
@@ -15,14 +18,68 @@ interface ClumsyPlayProps {
  * This module is loaded via React.lazy (see ClumsyGame), so the ~4MB three +
  * Rapier vendor bundle and the character glb only download when a player
  * actually starts a match — keeping the arcade's initial load fast.
+ *
+ * `?autostart=1` SKIPS THE GAME'S OWN PLAY MENU. This component only mounts
+ * once the player has already committed to a round — they pressed PRACTICE,
+ * their WAGER MATCH queue found an opponent, or a PRIVATE WAGER lobby finished
+ * readying up — so the in-iframe PLAY button (and its nickname prompt) asked
+ * for a decision that had already been made. `&name=` supplies the nickname
+ * the arcade already knows.
  */
-export default function ClumsyPlay({ onExit }: ClumsyPlayProps) {
+export default function ClumsyPlay({ onExit, playerName }: ClumsyPlayProps) {
+  const frameRef = useRef<HTMLIFrameElement>(null);
+
+  /**
+   * PROGRESSION. The round runs entirely inside the iframe, so the only way
+   * this game can pay XP like every other game is for it to tell us how the
+   * round went — `neon-clumsy:result`, posted once when the end screen shows.
+   * See lib/sessionXp.ts for what the server does with an unverifiable
+   * result (short version: clamps it, caps it daily, never touches RP).
+   */
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      // Same-origin only — the game is served from our own /public.
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type !== 'neon-clumsy:result') return;
+
+      const r = event.data;
+      void reportGameSession(
+        {
+          gameKey: 'clumsy',
+          // A battle-royale round against bots: many players, one winner.
+          mode: 'ffa',
+          result: r.won ? 'win' : 'loss',
+          // Tiles claimed is the game's own score; bumps are not kills (there
+          // is no kill in Clumsy), so kills/deaths stay at zero.
+          score: r.tiles,
+          placement: r.place ?? null,
+          durationMs: r.durationMs ?? null,
+        },
+        `clumsy:${r.roundId ?? r.durationMs ?? ''}`
+      );
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  const src = useMemo(() => {
+    const params = new URLSearchParams({ autostart: '1' });
+    const name = playerName?.trim();
+    if (name) params.set('name', name.slice(0, 14));
+    return `/neon-clumsy-game/index.html?${params.toString()}`;
+  }, [playerName]);
+
   return (
     <div className="absolute inset-0 w-full h-full bg-[#0d0824]">
       <iframe
-        src="/neon-clumsy-game/index.html"
+        ref={frameRef}
+        src={src}
         title="Neon Clumsy"
         className="block w-full h-full border-0"
+        // The round starts on its own now, and the game reads keyboard/mouse
+        // off its OWN window — without handing it focus the player's first
+        // inputs would go to the arcade shell instead.
+        onLoad={() => frameRef.current?.focus()}
         allow="pointer-lock; fullscreen; gamepad; autoplay; accelerometer; gyroscope"
       />
       {/* Back-to-lobby overlay (press Esc first if the pointer is locked). */}

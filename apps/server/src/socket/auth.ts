@@ -42,6 +42,7 @@ export async function socketAuth(
   }
 
   let wallet: string
+  let issuedAt: unknown
   try {
     // verify() throws on a bad signature OR an expired `exp` claim —
     // exactly the same call requireAuth.ts makes for HTTP routes.
@@ -51,6 +52,7 @@ export async function socketAuth(
       throw new Error('token payload missing wallet')
     }
     wallet = claim
+    issuedAt = payload.iat
   } catch {
     return next(new Error('unauthorized'))
   }
@@ -61,18 +63,36 @@ export async function socketAuth(
   // otherwise-valid token; the player just looks unregistered until the
   // next reconnect (game handlers will refuse matchmaking with
   // 'no_account'). When db is null (no DATABASE_URL) the same applies.
+  //
+  // The revocation stamp rides along in the SAME query, so honouring
+  // sign-out here costs nothing extra. A socket is a long-lived
+  // credential — leaving one connected after the account signed out would
+  // undo the whole point of revoking the token, since matchmaking, chat
+  // and free-play all flow over it.
   socket.data.username = null
+  let revokedAt: number | null = null
   if (db) {
     try {
       const [row] = await db
-        .select({ username: users.username })
+        .select({ username: users.username, validFrom: users.sessionsValidFrom })
         .from(users)
         .where(eq(users.wallet, wallet))
         .limit(1)
       socket.data.username = row?.username ?? null
+      revokedAt = row?.validFrom ?? null
     } catch (err) {
       console.error('[socket] username lookup failed:', err)
     }
+  }
+
+  // Same comparison (and the same fail-open posture) as
+  // lib/sessionRevocation.ts: a lookup that never ran leaves revokedAt
+  // null and the connection proceeds.
+  if (
+    revokedAt !== null &&
+    (typeof issuedAt !== 'number' || !Number.isFinite(issuedAt) || issuedAt < revokedAt)
+  ) {
+    return next(new Error('unauthorized'))
   }
 
   next()

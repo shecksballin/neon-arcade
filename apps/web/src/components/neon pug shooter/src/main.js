@@ -16,6 +16,9 @@ import { DIFFICULTIES, DEFAULT_DIFFICULTY } from './difficulty.js';
 // The match to boot into arrives on the query string, and quitting posts a message back
 // to the parent frame, which unmounts the iframe and returns to the lobby.
 const EXIT_MESSAGE = 'neon-pug-shooter:exit';
+// Match results ride out the same way, so a game the server never sees still earns the
+// arcade's XP (see reportResult below).
+const RESULT_MESSAGE = 'neon-pug-shooter:result';
 const query = new URLSearchParams(location.search);
 const pick = (value, table, fallback) => (value && table[value] ? value : fallback);
 const initialMatch = {
@@ -69,6 +72,7 @@ let pendingCam = null;   // a killcam waiting out the post-kill capture window (
 let simTime = 0;         // one clock for the recorder and the killcam, ticked by step()
 let lastKill = null;     // { killer, victim, headshot, time } — the seed for the final cam
 let pendingResult = null; // match result, held back until the final killcam finishes
+let matchStartedAt = 0;  // stamped by startMatch; arms the one XP report (reportResult)
 
 const clock = new THREE.Clock();
 
@@ -338,8 +342,36 @@ function endKillcam() {
 function showResults() {
   if (!pendingResult) return;
   ui.showMatchOver(true, pendingResult.title, pendingResult.detail, match?.scoreboardModel());
+  reportResult(pendingResult);
   pendingResult = null;
   document.exitPointerLock?.();
+}
+
+// The arcade awards XP for every finished game, but this one runs inside an iframe with
+// no server simulating it — so the result has to travel outward. ONE message per match,
+// which the parent (components/PugShooter/PugShooterPlay.tsx) hands to the stats
+// endpoint; that endpoint clamps and daily-caps it, because a result nobody simulated
+// cannot be verified. It buys XP only — never rank.
+//
+// `matchStartedAt` is stamped by startMatch and cleared here, so a match reports once.
+function reportResult(result) {
+  if (window.parent === window || !matchStartedAt) return;
+  const startedAt = matchStartedAt;
+  matchStartedAt = 0;
+  const rows = match?.scoreboardRows?.() ?? [];
+  const mine = rows.find((r) => r.isPlayer);
+  window.parent.postMessage({
+    type: RESULT_MESSAGE,
+    won: !!result?.won,
+    kills: mine?.kills ?? 0,
+    deaths: mine?.deaths ?? 0,
+    score: mine?.score ?? 0,
+    // The scoreboard is already sorted best-first, so the player's index in it
+    // IS their placement.
+    placement: mine ? rows.indexOf(mine) + 1 : null,
+    durationMs: Date.now() - startedAt,
+    roundId: String(startedAt),
+  }, window.location.origin);
 }
 
 async function startMatch(mode, mapId = world.mapId, difficulty = DEFAULT_DIFFICULTY) {
@@ -365,6 +397,7 @@ async function startMatch(mode, mapId = world.mapId, difficulty = DEFAULT_DIFFIC
   pendingCam = null;
   lastKill = null;
   pendingResult = null;
+  matchStartedAt = Date.now();
   replay.clear();
   ui.showKillcam(false);
   ui.dismissOptions();

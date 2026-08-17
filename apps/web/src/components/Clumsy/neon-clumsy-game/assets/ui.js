@@ -15,8 +15,15 @@ export class UI {
       menu: $("menu"), menuLogo: $("menuLogo"), menuSub: $("menuSub"),
       nick: $("nick"), playBtn: $("playBtn"), controlsTitle: $("controlsTitle"),
       controlsRows: $("controlsRows"), versionLine: $("versionLine"),
+      // HUD chips are label + value pairs (Asteroids-style), so the live
+      // numbers go into the `*V` spans — never onto the chip itself, which
+      // also holds the icon and the static `*K` label.
       hud: $("hud"), playersLeft: $("playersLeft"), layerMeter: $("layerMeter"),
       timer: $("timer"), hudHint: $("hudHint"), feed: $("feed"),
+      playersLeftK: $("playersLeftK"), playersLeftV: $("playersLeftV"),
+      layerMeterK: $("layerMeterK"), layerMeterV: $("layerMeterV"),
+      timerK: $("timerK"), timerV: $("timerV"),
+      hudHintK: $("hudHintK"), hudHintText: $("hudHintText"),
       countdown: $("countdown"), countNum: $("countNum"),
       lockOverlay: $("lockOverlay"), lockText: $("lockText"),
       pause: $("pause"), pauseWord: $("pauseWord"), resumeBtn: $("resumeBtn"),
@@ -56,7 +63,11 @@ export class UI {
     this.els.btnJump.textContent = "JUMP";
     this.els.btnDive.textContent = "DIVE";
     this.els.btnSprint.textContent = "SPRINT";
-    this.els.hudHint.textContent = STR.hudHint;
+    this.els.playersLeftK.textContent = STR.playersLeft;
+    this.els.layerMeterK.textContent = STR.layerLabel;
+    this.els.timerK.textContent = STR.timerLabel;
+    this.els.hudHintK.textContent = STR.hudHintLabel;
+    this.els.hudHintText.textContent = STR.hudHint;
   }
 
   show(name, on = true) { this.els[name].classList.toggle("hidden", !on); }
@@ -94,11 +105,11 @@ export class UI {
     }
   }
 
-  setPlayersLeft(n) { this.els.playersLeft.textContent = `${STR.playersLeft}: ${n}`; }
-  setLayer(n, total) { this.els.layerMeter.textContent = `${STR.layerLabel} ${n}/${total}`; }
+  setPlayersLeft(n) { this.els.playersLeftV.textContent = `${n}`; }
+  setLayer(n, total) { this.els.layerMeterV.textContent = `${n} / ${total}`; }
   setTimer(t) {
     const m = Math.floor(t / 60), s = Math.floor(t % 60);
-    this.els.timer.textContent = `${m}:${String(s).padStart(2, "0")}`;
+    this.els.timerV.textContent = `${m}:${String(s).padStart(2, "0")}`;
   }
 
   feed(name) {

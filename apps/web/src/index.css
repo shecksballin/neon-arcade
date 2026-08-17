@@ -1,9 +1,19 @@
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700;800;900&display=swap');
+/* Space Grotesk is requested from index.html, NOT with an @import here.
+   A CSS @import chains: the browser must download this stylesheet, parse the
+   first line, and only THEN discover the font request — serialising two
+   round-trips before anything can paint. It also duplicated the request
+   index.html already makes. The weight range lives in that one <link>. */
 @import "tailwindcss";
 
 @theme {
   --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+
+  /* Tailwind's smallest built-in breakpoint is sm (640px), which is no help
+     when the difference that matters is between a 360px Android and a 430px
+     iPhone Pro Max. `xs` is where the nav wordmark and other second-tier
+     labels come back in. */
+  --breakpoint-xs: 420px;
 }
 
 /* ── Privy modal theming (see pivyWalletDesign.txt) ──
@@ -49,6 +59,49 @@ body {
   * {
     -ms-overflow-style: none;
     scrollbar-width: none;
+  }
+
+  /* ── MOBILE BASELINE ────────────────────────────────────────────────────
+     Four things every screen needs, set once here rather than per component. */
+
+  html,
+  body {
+    /* Stops the whole page rubber-banding / pull-to-refreshing when a gesture
+       runs past the end of a scroll area. In a game that reads drags as
+       input, a stray downward swipe reloading the page is a lost match. */
+    overscroll-behavior: none;
+  }
+
+  body {
+    /* Rotating a phone makes iOS "helpfully" rescale text, which throws off
+       layouts tuned in fixed pixels — the chess board and the Connect grid
+       most of all. */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  /* iOS Safari zooms the whole viewport when a field smaller than 16px takes
+     focus, and offers no way back — the user is left on a zoomed, sideways-
+     scrolling page. 16px is the threshold, so this is the fix; it applies
+     only on touch devices, leaving desktop's smaller inputs alone. */
+  @media (pointer: coarse) {
+    input:not([type='range']):not([type='checkbox']):not([type='radio']),
+    select,
+    textarea {
+      font-size: max(16px, 1em);
+    }
+  }
+
+  /* Kill the translucent grey box Android paints over a tapped control — it
+     reads as a rendering glitch against the neon palette. (Tap-target SIZE is
+     set per component, where the layout is known; a blanket min-height here
+     would stretch inline controls that are deliberately small.) */
+  @media (pointer: coarse) {
+    button,
+    [role='button'],
+    a[href] {
+      -webkit-tap-highlight-color: transparent;
+    }
   }
 }
 

@@ -44,6 +44,26 @@
     0 0 25px rgba(0, 255, 209, 0.05);
 }
 
+/*
+  TOUCH DEVICES GET A REAL BORDER.
+  The ring above is drawn from `--glow-intensity`, which starts at 0 and is
+  raised only by the mouse-tracking JS in MagicGameTile.tsx / GlobalSpotlight.
+  With no mouse, that variable never leaves 0 — so on a phone the gradient was
+  fully transparent and every game tile rendered as an edgeless dark rectangle
+  floating on a dark background, with nothing to show where one tile stopped
+  and the next began. A static border restores the boundary without pretending
+  there is a cursor to follow.
+*/
+@media (pointer: coarse) {
+  .magic-bento-card {
+    border: 1px solid rgba(0, 255, 209, 0.3);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  }
+  .magic-bento-card:active {
+    border-color: rgba(0, 255, 209, 0.75);
+  }
+}
+
 .particle-container {
   position: relative;
   overflow: hidden;

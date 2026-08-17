@@ -7,3 +7,6 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Cloudflare quick-tunnel run state (pids, logs, captured URLs)
+.tunnel/

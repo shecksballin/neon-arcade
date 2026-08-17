@@ -9,6 +9,14 @@ interface ResultsScreenProps {
   gameMode: string;
   kills?: number;
   questionsRight?: number;
+  /**
+   * NO MONEY ONLINE (design contract): online matches stake nothing, so the
+   * "Wagered" and "Payout" rows are meaningless there — passing 0/0 still
+   * rendered a money UI on a free match. Set this on ONLINE result screens to
+   * hide both rows entirely. Defaults to false, so every practice / local /
+   * computer / Self-Wager screen keeps its Neon Bucks rows unchanged.
+   */
+  moneyless?: boolean;
   onRematch: () => void;
   onExit: () => void;
 }
@@ -20,10 +28,11 @@ export function ResultsScreen({
   gameMode,
   kills,
   questionsRight,
+  moneyless = false,
   onRematch,
   onExit
 }: ResultsScreenProps) {
-  const isDraw = !won && winnings === stake; // For quiz ties or snake draw? Actually quiz returns same if draw? Let's just pass won.
+  const isDraw = !won && winnings === stake; // for quiz ties or lms draw? Actually quiz returns same if draw? Let's just pass won.
 
   return (
     <motion.div
@@ -60,12 +69,15 @@ export function ResultsScreen({
               <span className="text-white font-bold">{gameMode}</span>
             </div>
             
-            <div className="flex justify-between items-center border-b border-[#00FFD1]/10 pb-2">
-              <span>{gameMode === 'Self-Wager' ? 'Per-Question Stake' : 'Wagered'}</span>
-              <span className="text-white font-bold flex items-center gap-0">
-                <img src="/neon-bucks-icon.png" alt="NB" referrerPolicy="no-referrer" className="h-4.5 w-auto -mr-0.5" /> {stake}
-              </span>
-            </div>
+            {/* Money rows — hidden entirely on the online path (moneyless). */}
+            {!moneyless && (
+              <div className="flex justify-between items-center border-b border-[#00FFD1]/10 pb-2">
+                <span>{gameMode === 'Self-Wager' ? 'Per-Question Stake' : 'Wagered'}</span>
+                <span className="text-white font-bold flex items-center gap-0">
+                  <img src="/neon-bucks-icon.png" alt="NB" referrerPolicy="no-referrer" className="h-4.5 w-auto -mr-0.5" /> {stake}
+                </span>
+              </div>
+            )}
 
             {kills !== undefined && (
               <div className="flex justify-between items-center border-b border-[#00FFD1]/10 pb-2">
@@ -81,12 +93,14 @@ export function ResultsScreen({
               </div>
             )}
 
-            <div className="flex justify-between items-center pt-2">
-              <span>{gameMode === 'Self-Wager' ? 'Total Payout' : 'Payout'}</span>
-              <span className={`text-xl font-black flex items-center gap-0 ${winnings > 0 ? "text-[#00FFD1]" : (winnings < 0 ? "text-red-500" : "text-white/50")}`}>
-                {winnings > 0 ? '+' : ''} <img src="/neon-bucks-icon.png" alt="NB" referrerPolicy="no-referrer" className="h-6 w-auto -mr-1" /> {winnings}
-              </span>
-            </div>
+            {!moneyless && (
+              <div className="flex justify-between items-center pt-2">
+                <span>{gameMode === 'Self-Wager' ? 'Total Payout' : 'Payout'}</span>
+                <span className={`text-xl font-black flex items-center gap-0 ${winnings > 0 ? "text-[#00FFD1]" : (winnings < 0 ? "text-red-500" : "text-white/50")}`}>
+                  {winnings > 0 ? '+' : ''} <img src="/neon-bucks-icon.png" alt="NB" referrerPolicy="no-referrer" className="h-6 w-auto -mr-1" /> {winnings}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </motion.div>

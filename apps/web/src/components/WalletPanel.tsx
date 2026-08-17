@@ -26,10 +26,11 @@ import {
   KeyRound,
   ShieldCheck,
 } from 'lucide-react';
-import { useExportWallet, useWallets } from '@privy-io/react-auth/solana';
+import { useAuth } from '../auth';
 import { useWalletAddress, isEmbeddedWallet, pickPrimaryWallet } from '../hooks/useWalletAddress';
 import { useSolBalance } from '../hooks/useSolBalance';
 import { explorerAddressUrl, SOLANA_CLUSTER } from '../lib/solana';
+import { useCurrency } from '../CurrencyStore';
 
 interface WalletPanelProps {
   profile: { name: string; avatarUrl: string } | null;
@@ -41,11 +42,24 @@ const GUEST_AVATAR = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAA
 
 export const WalletPanel: React.FC<WalletPanelProps> = ({ profile, onClose, onDisconnect }) => {
   const { address } = useWalletAddress();
-  const { wallets } = useWallets();
-  const { exportWallet } = useExportWallet();
+  const { wallets, exportWallet } = useAuth();
   const { balance, loading, error, refresh } = useSolBalance(address);
+  const { currency, fromSol, formatSolAs, isNative } = useCurrency();
 
   const [copied, setCopied] = useState(false);
+
+  // Same rule as the sidebar's wallet card: the balance is READ in SOL and
+  // only DISPLAYED in the player's currency, and no rate means no guess —
+  // it stays in SOL. Probing with 1 SOL (rather than the balance, which may
+  // still be null) keeps the unit label steady while the RPC call is out.
+  const canConvert = !isNative && fromSol(1) !== null;
+  const amountText = error
+    ? '—'
+    : balance === null
+      ? '…'
+      : canConvert
+        ? formatSolAs(balance, { bare: true })
+        : balance.toLocaleString(undefined, { maximumFractionDigits: 4 });
 
   // Export is only meaningful for the Privy embedded wallet — you can't
   // export the private key of an external wallet (Phantom etc.).
@@ -64,7 +78,10 @@ export const WalletPanel: React.FC<WalletPanelProps> = ({ profile, onClose, onDi
   };
 
   const handleExport = async () => {
-    if (!address) return;
+    // exportWallet is null until the lazy auth chunk lands. Unreachable in
+    // practice — this panel only opens for an authenticated user, which
+    // implies a loaded SDK — but the type is honestly nullable, so honour it.
+    if (!address || !exportWallet) return;
     try {
       await exportWallet({ address });
     } catch (e) {
@@ -143,10 +160,18 @@ export const WalletPanel: React.FC<WalletPanelProps> = ({ profile, onClose, onDi
             </div>
             <div className="flex items-baseline gap-2">
               <span className="text-4xl font-black tracking-tighter text-white tabular-nums">
-                {error ? '—' : balance === null ? '…' : balance.toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                {amountText}
               </span>
-              <span className="text-sm font-bold text-[#00FFD1] uppercase">SOL</span>
+              <span className="text-sm font-bold text-[#00FFD1] uppercase">
+                {canConvert ? currency.code : 'SOL'}
+              </span>
             </div>
+            {/* What you actually hold, kept on screen under the conversion. */}
+            {canConvert && !error && balance !== null && (
+              <p className="mt-1 font-mono text-[11px] tracking-wider text-white/40 tabular-nums">
+                ◎{balance.toLocaleString(undefined, { maximumFractionDigits: 4 })} SOL
+              </p>
+            )}
             {error && <p className="text-red-400/80 text-[10px] font-mono mt-2 italic">* {error} — try refresh</p>}
           </div>
 

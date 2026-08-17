@@ -2,7 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import VolleyLobby from './VolleyLobby';
 import PingPongGame from './PingPongGame';
+// PRACTICE-ONLY: Neon Bucks wagering happens before a COMPUTER match. The
+// online path never stakes anything — no SOL, no Neon Bucks.
 import { WagerMenu } from '../NeonBucks/WagerMenu';
+// Shared matchmaking screen — identical copy/look in every online game.
+import SearchingForMatch from '../common/SearchingForMatch';
 // Shared authed game socket — connects lazily when matchmaking starts, never
 // at module import.
 import { connectGameSocket, getSocket } from '../../hooks/useGameSocket';
@@ -19,6 +23,8 @@ const VolleyGame = ({ onExit, profile, onGameStatusChange }: VolleyGameProps) =>
   const [playerInfo, setPlayerInfo] = useState<{ name: string; avatarUrl: string; difficulty?: number; matchMode: 'classic' | 'bestof3' | 'sudden' } | null>(null);
   const [gameData, setGameData] = useState<any>(null);
   const [settings, setSettings] = useState({ ghostMode: false, minimalistMode: false });
+  // Live queue occupancy from `queue:status`, shown while searching.
+  const [queueCount, setQueueCount] = useState<{ current: number; needed: number } | null>(null);
   const [wagerAmount, setWagerAmount] = useState<number>(0);
 
   // Singleton — stable across renders, NOT connected until connectGameSocket().
@@ -28,10 +34,39 @@ const VolleyGame = ({ onExit, profile, onGameStatusChange }: VolleyGameProps) =>
     onGameStatusChange?.(gameState !== 'lobby');
   }, [gameState, onGameStatusChange]);
 
+  // Last findVolleyGame payload — replayed if the socket reconnects while we
+  // are still searching (a reconnect gives a new socket.id, so the server's
+  // queue slot for the old id is stale).
+  const findPayloadRef = useRef<{ matchMode: 'classic' | 'bestof3' | 'sudden' } | null>(null);
+  // Mirror of gameState for listeners/cleanups that must not re-subscribe.
+  const gameStateRef = useRef(gameState);
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
+
   useEffect(() => {
     // Named handlers + handler-specific socket.off — the socket is shared
     // with the other games, so blanket .off('event') would strip theirs.
-    const onWaiting = () => setGameState('waiting');
+    // Legacy ack. The searching screen is already up (set optimistically on
+    // click), so this only confirms — it must never overwrite a live game.
+    const onWaiting = () => setGameState((s) => (s === 'lobby' ? 'waiting' : s));
+    // Authoritative, never-silent queue state from the shared server queue.
+    const onQueueStatus = (data: any) => {
+      if (data?.game !== 'volley') return; // shared socket — ignore other games
+      if (data.inQueue) {
+        // Still searching — surface how many are queuing alongside you.
+        setQueueCount({ current: data.current ?? 1, needed: data.needed ?? 2 });
+        return;
+      }
+      // inQueue:false means "not queued AND no match started" (a started match
+      // arrives as volleyGameStart) — so drop the searching screen.
+      setGameState((s) => (s === 'waiting' ? 'lobby' : s));
+    };
+    const onConnect = () => {
+      if (gameStateRef.current === 'waiting' && findPayloadRef.current) {
+        socket.emit('findVolleyGame', findPayloadRef.current);
+      }
+    };
     const onVolleyGameStart = (data: any) => {
       setGameData(data);
       setGameMode('multiplayer');
@@ -58,6 +93,8 @@ const VolleyGame = ({ onExit, profile, onGameStatusChange }: VolleyGameProps) =>
     };
 
     socket.on('waiting', onWaiting);
+    socket.on('queue:status', onQueueStatus);
+    socket.on('connect', onConnect);
     socket.on('volleyGameStart', onVolleyGameStart);
     socket.on('opponentDisconnected', onOpponentDisconnected);
     socket.on('connect_error', onConnectError);
@@ -65,6 +102,8 @@ const VolleyGame = ({ onExit, profile, onGameStatusChange }: VolleyGameProps) =>
 
     return () => {
       socket.off('waiting', onWaiting);
+      socket.off('queue:status', onQueueStatus);
+      socket.off('connect', onConnect);
       socket.off('volleyGameStart', onVolleyGameStart);
       socket.off('opponentDisconnected', onOpponentDisconnected);
       socket.off('connect_error', onConnectError);
@@ -72,12 +111,9 @@ const VolleyGame = ({ onExit, profile, onGameStatusChange }: VolleyGameProps) =>
     };
   }, [gameState, socket]);
 
-  // Free our queue slot if the whole component unmounts mid-search (the
-  // Abort button below covers the in-app path).
-  const gameStateRef = useRef(gameState);
-  useEffect(() => {
-    gameStateRef.current = gameState;
-  }, [gameState]);
+  // Free our queue slot if the whole screen goes away mid-search (route
+  // change, arcade exit, hot reload). Cancel covers the in-app path and the
+  // server also sweeps queue slots on disconnect.
   useEffect(() => {
     return () => {
       if (gameStateRef.current === 'waiting') socket.emit('leaveVolleyQueue');
@@ -92,9 +128,29 @@ const VolleyGame = ({ onExit, profile, onGameStatusChange }: VolleyGameProps) =>
       avatarUrl: profile?.avatarUrl || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix'
     };
     setPlayerInfo(fullPlayerInfo);
+    findPayloadRef.current = { matchMode: player.matchMode };
+
+    // OPTIMISTIC: the SEARCHING FOR ONLINE MATCH screen goes up on THIS click,
+    // never on the server's ack — a dropped/absent reply used to leave the UI
+    // frozen on the lobby. Online play stakes nothing (no SOL, no Neon Bucks).
+    setGameState('waiting');
+    gameStateRef.current = 'waiting'; // eager: listeners/cleanup read the ref
+    setGameMode('multiplayer');
+    setGameData(null);
+
     // Lazy connect: only touches the network when entering online mode.
-    connectGameSocket();
-    socket.emit('findVolleyGame', fullPlayerInfo);
+    const s = connectGameSocket();
+    // Emits are buffered by socket.io until the connection is up.
+    s.emit('findVolleyGame', fullPlayerInfo);
+
+    if (!s.connected && !s.active) {
+      // Not connected and not even trying (no auth token stored) — the queue
+      // can never be joined, so don't spin on a screen that can't resolve.
+      console.warn('[volley] game socket is not connecting — sign in to play online');
+      setGameState('lobby');
+      gameStateRef.current = 'lobby';
+      setGameMode(null);
+    }
   };
 
   const handlePlayComputer = (player: { difficulty: number; matchMode: 'classic' | 'bestof3' | 'sudden' }) => {
@@ -152,37 +208,37 @@ const VolleyGame = ({ onExit, profile, onGameStatusChange }: VolleyGameProps) =>
         )}
 
         {gameState === 'waiting' && (
-          <motion.div key="waiting" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-full w-full flex flex-col items-center justify-center p-6 text-center">
-            <div className="relative mb-12">
-              <div className="w-32 h-32 border-4 border-[#00FFD1]/20 rounded-full"></div>
-              <div className="absolute top-0 left-0 w-32 h-32 border-4 border-[#00FFD1] border-t-transparent rounded-full animate-spin"></div>
-              <div className="absolute inset-0 flex items-center justify-center">
-                <span className="material-symbols-outlined text-4xl text-[#00FFD1] animate-pulse">radar</span>
-              </div>
-            </div>
-            <h2 className="text-4xl font-black text-white italic uppercase tracking-tighter mb-4">Searching Global Mesh...</h2>
-            <button
-              onClick={() => {
+          <motion.div key="waiting" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-full w-full">
+            {/* Shared matchmaking screen — same copy and look in every game.
+                The PLAYERS n/N line shows how many are queuing alongside you. */}
+            <SearchingForMatch
+              playersInQueue={queueCount?.current}
+              playersNeeded={queueCount?.needed}
+              onCancel={() => {
                 // Tell the server to drop our queue entry — without this the
-                // 'aborted' player could still get yanked into a match.
+                // cancelled player could still get yanked into a match.
                 socket.emit('leaveVolleyQueue');
                 setGameState('lobby');
+                gameStateRef.current = 'lobby'; // unmount cleanup must not re-emit
+                setGameMode(null);
+                findPayloadRef.current = null; // stop the reconnect replay
               }}
-              className="px-8 py-3 border border-[#00FFD1] text-[#00FFD1] rounded-xl font-mono text-xs uppercase tracking-widest"
-            >Abort Uplink</button>
+            />
           </motion.div>
         )}
 
         {gameState === 'playing' && playerInfo && (
           <motion.div key="playing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="h-full w-full">
-            <PingPongGame 
+            <PingPongGame
                socket={socket}
                mode={gameMode!}
                playerData={playerInfo}
                gameData={gameData}
                onExit={onExit}
                settings={settings}
-               wagerAmount={wagerAmount}
+               // NO MONEY ONLINE: the stake only ever belongs to a practice
+               // (computer) match, so it is hard-zeroed on the online path.
+               wagerAmount={gameMode === 'computer' ? wagerAmount : 0}
             />
           </motion.div>
         )}

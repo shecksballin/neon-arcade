@@ -8,10 +8,12 @@
  *
  * Client contract (NeonConnect/NeonConnectGame.tsx):
  *
- *   C→S  neonconnect_join { profile }     — enter the FIFO queue
+ *   C→S  neonconnect_join { profile }     — enter the skill-based queue
  *   C→S  leaveConnectQueue                — NEW: leave the queue (no payload)
  *   C→S  neonconnect_move { col }         — drop a disc in column 0..6
  *   C→S  neonconnect_reset                — request a rematch (handshake)
+ *   S→C  queue:status { game, mode, inQueue, current, needed } — ALWAYS sent
+ *        on every join/leave, including duplicate joins (see below)
  *   S→C  neonconnect_match { opponent, turn, playerId } — per-player payload
  *   S→C  neonconnect_opponent_move { col }              — opponent only
  *   S→C  neonconnect_ended { winner: 1|2|'draw', reason:'connect4'|'draw' }
@@ -30,7 +32,20 @@
 import { randomUUID } from 'node:crypto'
 import type { Server, Socket } from 'socket.io'
 import { z } from 'zod'
-import { settle1v1 } from '../../services/eloService'
+// RANKED 2.0 — TrueSkill + RP. Connect 4 is on the '1v1' ladder and DOES
+// have draws (a full board), which the model handles natively.
+import { getSkill, settleRanked1v1 } from '../../services/rankService'
+// Stats ride along with the rating settle inside settleOnce(), so both are
+// covered by the same exactly-once guard (`eloSettled`).
+import { recordResults } from '../../services/statsService'
+// Connect keeps its OWN queue (its per-player `neonconnect_match` payload
+// doesn't fit the shared handoff), but it reuses the shared skill-selection
+// maths so every 1v1 in the arcade pairs by the same rule.
+import {
+  MATCH_RETRY_MS,
+  pickSkillGroup,
+  type SkillQueueEntry,
+} from '../queue'
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,6 +54,9 @@ import { settle1v1 } from '../../services/eloService'
 const ROWS = 6
 const COLS = 7
 const CELLS = ROWS * COLS // 42
+
+// Matchmaking is 1v1 — two humans, no bots, no stake of any kind.
+const NEEDED_PLAYERS = 2
 
 // The four line directions that cover every possible 4-in-a-row once we
 // scan from every cell: right, down, down-right, down-left. (Left/up runs
@@ -59,9 +77,16 @@ type ConnectWinner = PlayerId | 'draw'
 
 interface ConnectPlayer {
   socketId: string
-  wallet: string // NEVER emitted — pairing rules + ELO only
+  wallet: string // NEVER emitted — pairing rules + rating only
   name: string // canonical: socket.data.username
 }
+
+/**
+ * A player waiting in the queue. Carries the HIDDEN skill snapshot (mu) taken
+ * at join time plus the wait clock, which is everything `pickSkillGroup`
+ * needs. Both are SERVER-ONLY and never appear in any emitted payload.
+ */
+interface ConnectQueueEntry extends ConnectPlayer, SkillQueueEntry {}
 
 interface ConnectGame {
   gameId: string
@@ -73,14 +98,29 @@ interface ConnectGame {
   status: 'active' | 'ended'
   winner: ConnectWinner | null // last finished game's result (drives rematch)
   resetRequested: Record<PlayerId, boolean> // rematch handshake flags
-  eloSettled: boolean // exactly-once guard around eloService.settle1v1
+  /** Exactly-once guard around rankService.settleRanked1v1 + the stats write.
+   *  Cleared on a rematch so the NEW game settles on its own. */
+  eloSettled: boolean
+  /** Wall-clock start of the CURRENT game (re-stamped on a rematch) — feeds
+   *  match_results.durationMs. Stats only; no gameplay depends on it. */
+  startedAt: number
 }
 
-// FIFO queue (shift(), not the reference server's LIFO pop()).
-const queue: ConnectPlayer[] = []
+/** Waiting room. Pairing is by SKILL (nearest mu, widening window), not by
+ *  arrival order — see tryPair() below. */
+const queue: ConnectQueueEntry[] = []
 // gameId → game, plus a socket.id → gameId index for O(1) lookups.
 const games = new Map<string, ConnectGame>()
 const gameBySocket = new Map<string, string>()
+
+/**
+ * Anti-starvation heartbeat. Pairing normally runs on a join, but the skill
+ * window that decides "is this opponent close enough" widens with WALL-CLOCK
+ * TIME — so two mismatched players sitting in an otherwise idle queue would
+ * never be re-considered without a tick. Unref'd: it never holds the process
+ * open, and it is only armed while two or more people are actually waiting.
+ */
+let retryTimer: ReturnType<typeof setTimeout> | null = null
 
 // ---------------------------------------------------------------------------
 // Zod schemas — every inbound payload is safeParse'd; bad shapes are ignored
@@ -106,10 +146,29 @@ const moveSchema = z.object({
 // ---------------------------------------------------------------------------
 
 /** Remove every queue entry matching the predicate (splice in place). */
-function removeFromQueue(match: (entry: ConnectPlayer) => boolean): void {
+function removeFromQueue(match: (entry: ConnectQueueEntry) => boolean): void {
   for (let i = queue.length - 1; i >= 0; i--) {
     if (match(queue[i])) queue.splice(i, 1)
   }
+}
+
+/**
+ * Uniform, ALWAYS-SENT queue acknowledgement.
+ *
+ * The old code answered a join with silence whenever the caller was already
+ * queued (the "one slot per wallet, replace" path) or already bound to a
+ * game — so a client that re-sent `neonconnect_join` (a remount, a reconnect,
+ * a stale entry from a previous visit) got nothing back and hung forever.
+ * Every join/leave path below ends in one of these, duplicates included.
+ */
+function emitQueueStatus(socket: Socket, inQueue: boolean): void {
+  socket.emit('queue:status', {
+    game: 'connect',
+    mode: '1v1',
+    inQueue,
+    current: inQueue ? 1 : 0, // this client's own slot; 1v1 needs no roster
+    needed: NEEDED_PLAYERS,
+  })
 }
 
 /** The game a socket is bound to, or null. */
@@ -152,15 +211,56 @@ function isDraw(board: number[]): boolean {
 }
 
 /**
- * Settle ELO for a finished game exactly once. Fire-and-forget: eloService
- * never throws and returns null without a DB — the game outcome events are
- * emitted regardless (games still play when ratings can't persist).
+ * Settle RANK (TrueSkill + RP) **and stats** for a finished game exactly
+ * once. Fire-and-forget: neither service throws and both return early without
+ * a DB — the game outcome events are emitted regardless (games still play
+ * when nothing can persist).
+ *
+ * A DRAW (full board) is settled as a real drawn outcome, not skipped: the
+ * hidden skill update treats it as "these two are equal", and RP only drifts
+ * toward skill by the gap — so a draw between evenly-rated players costs and
+ * pays nothing, while a draw against someone far above you still nudges you
+ * up. That is the whole point of the RP-chases-skill layer.
+ *
+ * Every ending funnels through here (win, draw, forfeit on leave, forfeit on
+ * disconnect), so this single guard is what makes a Connect 4 result
+ * un-double-recordable — including across a rematch, which deliberately
+ * clears the flag so the NEW game settles on its own.
  */
 function settleOnce(game: ConnectGame, winner: ConnectWinner): void {
   if (game.eloSettled) return
   game.eloSettled = true
   const result = winner === 'draw' ? 'draw' : winner === 1 ? 'a' : 'b'
-  void settle1v1('connect', game.p1.wallet, game.p2.wallet, result)
+  // Nothing is broadcast from here (Connect's `neonconnect_ended` payload has
+  // no ratings field in the client contract), so there is no wire projection
+  // to do — the result is persisted and read back by the profile/rank API.
+  // `game.gameId` is the SAME id the stats row below uses, so elo_history and
+  // match_results are joinable (rankService drops anything non-uuid).
+  void settleRanked1v1('connect', game.p1.wallet, game.p2.wallet, result, game.gameId)
+
+  // STATS — one row per player. Connect 4 has no kills/deaths/score, and the
+  // opponent field carries the registered username only (never a wallet).
+  const durationMs = Date.now() - game.startedAt
+  void recordResults([
+    {
+      matchId: game.gameId, // randomUUID above — a valid uuid for the row
+      wallet: game.p1.wallet,
+      gameKey: 'connect',
+      mode: '1v1',
+      result: winner === 'draw' ? 'draw' : winner === 1 ? 'win' : 'loss',
+      opponentUsername: game.p2.name,
+      durationMs,
+    },
+    {
+      matchId: game.gameId,
+      wallet: game.p2.wallet,
+      gameKey: 'connect',
+      mode: '1v1',
+      result: winner === 'draw' ? 'draw' : winner === 2 ? 'win' : 'loss',
+      opponentUsername: game.p1.name,
+      durationMs,
+    },
+  ])
 }
 
 /**
@@ -213,12 +313,106 @@ function abandonEndedGame(
 }
 
 // ---------------------------------------------------------------------------
+// MATCHMAKING — skill-based (rankingLogic.md §5.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Try to start one game out of the waiting room.
+ *
+ * `pickSkillGroup` (socket/queue.ts) picks the pair with the smallest gap in
+ * hidden skill that BOTH players are currently willing to accept — and the
+ * width of "willing to accept" grows the longer you have waited, becoming
+ * unbounded after ~30 seconds, so nobody is ever stuck waiting for a perfect
+ * opponent who never arrives. Null means "no acceptable pair right now";
+ * the caller keeps the players queued and the heartbeat re-checks.
+ *
+ * The pair comes back in FIFO order, which preserves the client contract:
+ * the longest waiter is playerId 1 and moves first.
+ *
+ * Returns true when a game was started.
+ */
+function tryPair(io: Server, now: number = Date.now()): boolean {
+  // Prune corpses first — a socket that vanished without a disconnect sweep
+  // must not be picked as somebody's "closest opponent".
+  removeFromQueue((e) => {
+    const s = io.sockets.sockets.get(e.socketId)
+    return s === undefined || s.disconnected
+  })
+
+  const pair = pickSkillGroup(queue, NEEDED_PLAYERS, now)
+  if (!pair) return false
+
+  const [first, second] = pair
+  const firstSocket = io.sockets.sockets.get(first.socketId)
+  const secondSocket = io.sockets.sockets.get(second.socketId)
+  if (!firstSocket || !secondSocket) return false // pruned above; belt-and-braces
+
+  // Commit: both leave the queue before anything is emitted.
+  removeFromQueue(
+    (e) => e.socketId === first.socketId || e.socketId === second.socketId
+  )
+
+  // First-queued = playerId 1 and moves first (client contract).
+  const gameId = randomUUID()
+  const game: ConnectGame = {
+    gameId,
+    room: `connect-${gameId}`,
+    p1: { socketId: first.socketId, wallet: first.wallet, name: first.name },
+    p2: { socketId: second.socketId, wallet: second.wallet, name: second.name },
+    board: new Array<number>(CELLS).fill(0),
+    turn: 1,
+    status: 'active',
+    winner: null,
+    resetRequested: { 1: false, 2: false },
+    eloSettled: false,
+    startedAt: Date.now(),
+  }
+  games.set(gameId, game)
+  gameBySocket.set(game.p1.socketId, gameId)
+  gameBySocket.set(game.p2.socketId, gameId)
+  firstSocket.join(game.room)
+  secondSocket.join(game.room)
+
+  // Both players leave the queue at this instant — tell them so before the
+  // match payload lands (the searching screens close on the match event).
+  emitQueueStatus(firstSocket, false)
+  emitQueueStatus(secondSocket, false)
+
+  // Per-player payloads: each side learns its seat and whether it opens.
+  // Names only — never wallets, and never the hidden skill we paired on.
+  io.to(game.p1.socketId).emit('neonconnect_match', {
+    opponent: game.p2.name,
+    turn: true,
+    playerId: 1,
+  })
+  io.to(game.p2.socketId).emit('neonconnect_match', {
+    opponent: game.p1.name,
+    turn: false,
+    playerId: 2,
+  })
+  return true
+}
+
+/** Arm the anti-starvation re-check while two or more players are waiting. */
+function scheduleRetry(io: Server): void {
+  if (retryTimer) return
+  if (queue.length < NEEDED_PLAYERS) return
+  const timer = setTimeout(() => {
+    retryTimer = null
+    tryPair(io)
+    scheduleRetry(io) // re-arm while a pairing is still theoretically possible
+  }, MATCH_RETRY_MS)
+  ;(timer as { unref?: () => void }).unref?.()
+  retryTimer = timer
+}
+
+// ---------------------------------------------------------------------------
 // registerConnect — wires all events + this module's OWN disconnect
 // ---------------------------------------------------------------------------
 
 export function registerConnect(io: Server, socket: Socket): void {
   // ----------------------------------------------------- neonconnect_join
-  socket.on('neonconnect_join', (payload: unknown) => {
+  socket.on('neonconnect_join', async (payload: unknown) => {
     const parsed = joinSchema.safeParse(payload ?? {})
     if (!parsed.success) return
 
@@ -234,76 +428,85 @@ export function registerConnect(io: Server, socket: Socket): void {
       return
     }
 
-    // Already bound to a game? Active → ignore the join (guards against the
-    // client's known effect-loop re-join bug). Ended → the player abandoned
-    // the rematch screen; release the old game, then queue them normally.
+    // Already bound to a game? Active → we do NOT re-queue them (that would
+    // orphan a live match), but we must not answer with silence either: the
+    // client is sitting on its optimistic "searching" screen, so resend the
+    // seat it already owns and let it drop straight back into the board.
+    // Ended → the player abandoned the rematch screen; release the old game,
+    // then queue them normally.
     const bound = gameOf(socket.id)
     if (bound) {
-      if (bound.status === 'active') return
+      if (bound.status === 'active') {
+        const seat = idOf(bound, socket.id)
+        emitQueueStatus(socket, false) // not queued — already playing
+        if (seat) {
+          const opponent = seat === 1 ? bound.p2 : bound.p1
+          socket.emit('neonconnect_match', {
+            opponent: opponent.name,
+            turn: bound.turn === seat,
+            playerId: seat,
+          })
+        }
+        return
+      }
       abandonEndedGame(io, bound, socket.id)
     }
 
-    // One queue slot per wallet: re-emitting join REPLACES the old entry.
-    removeFromQueue((e) => e.wallet === wallet)
+    // HIDDEN SKILL SNAPSHOT — taken before the entry exists so that
+    // everything from "queued" to "paired" below stays synchronous (no await
+    // window in which a disconnect could strand a half-built game). getSkill
+    // never throws and always resolves: {MU_0, SIGMA_0} when there is no
+    // users row or no database, so pairing degrades gracefully to "everyone
+    // looks average" rather than failing.
+    const skill = await getSkill(wallet, '1v1')
+    if (socket.disconnected) return // gave up during the lookup — nobody to ack
 
-    // FIFO: take the OLDEST waiting player whose socket is still connected.
-    let opponent: ConnectPlayer | undefined
-    while (queue.length > 0) {
-      const candidate = queue.shift() as ConnectPlayer
-      if (io.sockets.sockets.get(candidate.socketId)) {
-        opponent = candidate
-        break
-      }
-      // Stale entry — drop it and keep scanning.
-    }
-
-    if (!opponent) {
-      // No waiting event in the neonconnect protocol — the client renders
-      // its own "searching" state until neonconnect_match arrives.
-      queue.push({ socketId: socket.id, wallet, name: username })
+    // The lookup was async: re-check that a CONCURRENT join (double click /
+    // reconnect replay) didn't seat this socket in a live game while we
+    // waited on the DB. Without this it could sit in the queue AND a game.
+    const boundNow = gameOf(socket.id)
+    if (boundNow && boundNow.status === 'active') {
+      emitQueueStatus(socket, false)
       return
     }
 
-    const opponentSocket = io.sockets.sockets.get(opponent.socketId) as Socket
+    // One queue slot per wallet: re-emitting join REPLACES the old entry —
+    // but it CARRIES THE ORIGINAL WAIT CLOCK FORWARD. A client that re-emits
+    // neonconnect_join on every remount would otherwise keep resetting its
+    // own acceptance window and could never widen out of a narrow skill band.
+    const waitingSince =
+      queue.find((e) => e.wallet === wallet)?.joinedAt ?? Date.now()
+    removeFromQueue((e) => e.wallet === wallet)
+    queue.push({
+      socketId: socket.id,
+      wallet,
+      name: username,
+      mu: skill.mu,
+      joinedAt: waitingSince,
+    })
 
-    // First-queued = playerId 1 and moves first (client contract).
-    const gameId = randomUUID()
-    const game: ConnectGame = {
-      gameId,
-      room: `connect-${gameId}`,
-      p1: opponent,
-      p2: { socketId: socket.id, wallet, name: username },
-      board: new Array<number>(CELLS).fill(0),
-      turn: 1,
-      status: 'active',
-      winner: null,
-      resetRequested: { 1: false, 2: false },
-      eloSettled: false,
+    // Pair on SKILL, not arrival order. tryPair emits the match payloads (and
+    // the inQueue:false status) itself for whoever it seats.
+    tryPair(io)
+
+    // Still waiting? Then ack the queue. The client already shows SEARCHING
+    // FOR ONLINE MATCH on click, so this is confirmation rather than a
+    // trigger — but it is sent EVERY time, re-joins included, so the UI can
+    // never be left guessing. (Skill pairing can seat two OTHER players and
+    // leave this one waiting, which this branch reports honestly.)
+    if (queue.some((e) => e.socketId === socket.id)) {
+      emitQueueStatus(socket, true)
     }
-    games.set(gameId, game)
-    gameBySocket.set(game.p1.socketId, gameId)
-    gameBySocket.set(game.p2.socketId, gameId)
-    opponentSocket.join(game.room)
-    socket.join(game.room)
-
-    // Per-player payloads: each side learns its seat and whether it opens.
-    // Names only — never wallets.
-    io.to(game.p1.socketId).emit('neonconnect_match', {
-      opponent: game.p2.name,
-      turn: true,
-      playerId: 1,
-    })
-    io.to(game.p2.socketId).emit('neonconnect_match', {
-      opponent: game.p1.name,
-      turn: false,
-      playerId: 2,
-    })
+    scheduleRetry(io) // self-guards when fewer than two are left waiting
   })
 
   // ----------------------------------------------------- leaveConnectQueue
   socket.on('leaveConnectQueue', () => {
-    // No payload by contract — nothing to validate.
+    // No payload by contract — nothing to validate. Idempotent: the client
+    // fires this from the CANCEL button and again from its unmount cleanup,
+    // and both must leave the wallet dequeued and acknowledged.
     removeFromQueue((e) => e.socketId === socket.id)
+    emitQueueStatus(socket, false)
   })
 
   // ----------------------------------------------------- neonconnect_move
@@ -369,7 +572,8 @@ export function registerConnect(io: Server, socket: Socket): void {
     game.winner = null
     game.resetRequested[1] = false
     game.resetRequested[2] = false
-    game.eloSettled = false // the rematch settles its own result
+    game.eloSettled = false // the rematch settles (and records) its own result
+    game.startedAt = Date.now() // duration is per-game, not per-pairing
 
     // ROOM broadcast — BOTH clients clear their boards (requester included).
     // `turn` = the playerId that opens the rematch. `firstPlayer` is the SAME

@@ -1,10 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { User, ShieldCheck, Copy, Check, ArrowRight, Loader2, Smartphone, RefreshCw } from 'lucide-react';
-import { useWallets } from '@privy-io/react-auth/solana';
+import { User, ShieldCheck, Copy, Check, ArrowRight, Loader2, Smartphone, RefreshCw, LogIn } from 'lucide-react';
+import { useAuth } from '../auth';
 import { AVATAR_LIST } from '../lib/avatars';
-import { profileApi, NETWORK_ERROR_MESSAGE } from '../lib/api';
-import { useBackendAuth, AUTH_TOKEN_KEY } from '../hooks/useBackendAuth';
+import { ApiError, profileApi, NETWORK_ERROR_MESSAGE } from '../lib/api';
+import { useBackendAuth, abandonSignIn, AUTH_TOKEN_KEY } from '../hooks/useBackendAuth';
 import { USERNAME_REGEX, USERNAME_RULES, PIN_REGEX, TOTP_CODE_REGEX } from '@neon/types';
 
 /**
@@ -21,13 +21,39 @@ import { USERNAME_REGEX, USERNAME_RULES, PIN_REGEX, TOTP_CODE_REGEX } from '@neo
  *     the PIN and mints the TOTP secret — nothing sensitive here).
  *   Step 2 "authenticator": scan the server-rendered QR with an
  *     authenticator app and prove one 6-digit code to finish.
+ *
+ * MOST PEOPLE WHO LAND HERE ALREADY HAVE AN ACCOUNT.
+ * -------------------------------------------------
+ * That is why the connect phase says "signing you in" rather than
+ * "create account": by the time it resolves, the common case is a
+ * returning player, and it dismisses itself without them reading a word.
+ * The server does the recognising — a sign-in presents the Privy identity
+ * as well as the wallet signature, so a player whose Privy login handed
+ * them a NEW wallet still resolves to the account they already own
+ * instead of being walked into making a second one.
+ *
+ * The "sign-in" step is the backstop for what that cannot reach: a Privy
+ * login with no verifiable link to the existing account. Rather than a
+ * duplicate account, the player proves the account is theirs with the PIN
+ * and authenticator code they set up here, and the server attaches this
+ * login to it so the wallet path works unaided from then on. It is
+ * reachable from the identity step, and opened automatically when the
+ * server says the account already exists.
  */
 
 interface AccountSetupProps {
   onComplete: (profile: { name: string; avatarUrl: string }) => void;
 }
 
-type Step = 'connect' | 'identity' | 'authenticator';
+type Step = 'connect' | 'identity' | 'authenticator' | 'login';
+
+/**
+ * How long to wait for a wallet to appear after login before admitting
+ * that one is not coming. Embedded wallets normally land within a couple
+ * of seconds; 20 is generous enough that a slow connection never trips it
+ * and short enough that a misconfigured app is caught rather than endured.
+ */
+const WALLET_WAIT_MS = 20_000;
 
 const AVATARS = AVATAR_LIST;
 
@@ -37,11 +63,16 @@ export const AccountSetup: React.FC<AccountSetupProps> = ({ onComplete }) => {
   const [error, setError] = useState<string | null>(null);
 
   // connect-phase state
-  const { wallets } = useWallets();
-  const { signIn } = useBackendAuth();
+  const { wallets } = useAuth();
+  const { signIn, loginWithCredentials } = useBackendAuth();
   const [connectLabel, setConnectLabel] = useState('Preparing your wallet…');
   const [connectError, setConnectError] = useState<string | null>(null);
   const connectStarted = useRef(false);
+
+  // sign-in step state (existing account, PIN + authenticator)
+  const [loginName, setLoginName] = useState('');
+  const [loginPin, setLoginPin] = useState('');
+  const [loginCode, setLoginCode] = useState('');
 
   // step 1 state
   const [selectedAvatar, setSelectedAvatar] = useState(AVATARS[0]);
@@ -67,8 +98,16 @@ export const AccountSetup: React.FC<AccountSetupProps> = ({ onComplete }) => {
 
     const attemptConnect = async () => {
       const freshSignIn = async () => {
-        setConnectLabel('Confirm the signature request from your wallet…');
-        await signIn();
+        // Two labels, because these are two different waits and only the
+        // second one is the player's to act on. Announcing "confirm the
+        // request in your wallet" up front meant a stalled nonce round
+        // trip looked exactly like a wallet prompt nobody was clicking —
+        // people sat waiting for a popup that had not been asked for yet.
+        setConnectLabel('Preparing your sign-in request…');
+        await signIn({
+          onAwaitingSignature: () =>
+            setConnectLabel('Confirm the signature request from your wallet…'),
+        });
         setConnectLabel('Checking account…');
       };
 
@@ -134,6 +173,53 @@ export const AccountSetup: React.FC<AccountSetupProps> = ({ onComplete }) => {
     runConnect();
   }, [wallets, runConnect]);
 
+  /**
+   * THE WAIT ABOVE USED TO HAVE NO END.
+   *
+   * Waiting for a wallet is right — embedded ones appear a beat after
+   * login. Waiting FOREVER is not, and that is what happened to anyone
+   * whose Privy login produced no wallet at all: the effect returned on
+   * every render, `runConnect` never ran, `signIn()` was never called, and
+   * so the wallet's signature prompt could never open. The panel just span
+   * on "Preparing your wallet…" with no error and nothing to click. A
+   * silent hang is the worst possible failure here, because the player
+   * cannot tell it apart from slowness.
+   *
+   * The usual cause is configuration rather than the browser: a Privy app
+   * with embedded-wallet creation switched off hands email/Google users no
+   * wallet, and existing players never notice because they already have
+   * one. Hence the console line — it names the thing to go and check,
+   * which the player-facing message deliberately does not.
+   */
+  useEffect(() => {
+    if (connectStarted.current) return;
+    // Not waiting on a wallet: a stored token means no signature is needed.
+    if (localStorage.getItem(AUTH_TOKEN_KEY)) return;
+    // Already arrived — the effect above is taking it from here.
+    if (wallets.length > 0) return;
+
+    const timer = window.setTimeout(() => {
+      if (connectStarted.current) return;
+      console.error(
+        `[auth] No Solana wallet appeared for this Privy login after ${
+          WALLET_WAIT_MS / 1000
+        }s, so there is nothing to sign in with. If this happens for every ` +
+          'NEW player but not for existing ones, check the Privy dashboard: ' +
+          'embedded-wallet creation for Solana must be enabled (create-on-login), ' +
+          'or external Solana wallet login must be available. The client asks ' +
+          'for embedded wallets in auth/privyRuntime.tsx, but the dashboard ' +
+          'setting is what the SDK actually follows.'
+      );
+      setConnectError(
+        'No wallet is attached to this login yet, and your account needs one to sign in.'
+      );
+    }, WALLET_WAIT_MS);
+
+    return () => window.clearTimeout(timer);
+    // Re-armed whenever the wallet list changes, and cancelled the moment
+    // one shows up.
+  }, [wallets]);
+
   const digitsOnly = (value: string, length: number) =>
     value.replace(/\D/g, '').slice(0, length);
 
@@ -162,7 +248,55 @@ export const AccountSetup: React.FC<AccountSetupProps> = ({ onComplete }) => {
       setCode('');
       setStep('authenticator');
     } catch (err) {
+      // The server recognised this person as somebody who already has an
+      // account. Creating a second one is exactly what must not happen —
+      // send them to the sign-in step instead, with the name filled in.
+      if (err instanceof ApiError && err.code === 'account_exists') {
+        setError(null);
+        setLoginName(username);
+        setLoginPin('');
+        setLoginCode('');
+        setStep('login');
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Registration failed — try again');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Sign in to an account that already exists, using the PIN and the
+  // authenticator app that scanned the QR during setup. On success the
+  // server also links this Privy login to the account, so the ordinary
+  // wallet sign-in finds it on its own next time.
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!USERNAME_REGEX.test(loginName)) {
+      setError('Enter the username on your account');
+      return;
+    }
+    if (!PIN_REGEX.test(loginPin)) {
+      setError('PIN must be exactly 4 digits');
+      return;
+    }
+    if (!TOTP_CODE_REGEX.test(loginCode)) {
+      setError('Enter the 6-digit code from your authenticator app');
+      return;
+    }
+
+    setBusy(true);
+    setError(null);
+    try {
+      const account = await loginWithCredentials(loginName, loginPin, loginCode);
+      onComplete({
+        name: account.username ?? loginName,
+        avatarUrl: selectedAvatar,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sign-in failed — try again');
+      // The code is single-use and 30 seconds old at best; make them read a
+      // fresh one rather than resubmitting a burnt one.
+      setLoginCode('');
     } finally {
       setBusy(false);
     }
@@ -213,8 +347,13 @@ export const AccountSetup: React.FC<AccountSetupProps> = ({ onComplete }) => {
               <div className="inline-flex p-3 bg-[#00FFD1]/10 rounded-2xl mb-4">
                 <User className="w-8 h-8 text-[#00FFD1]" />
               </div>
+              {/* Not "Create Account": at this point we do not yet know
+                  whether this person has one, and the common case is that
+                  they do — the panel dismisses itself for them a moment
+                  later. Promising account creation to a returning player
+                  is what made the app feel like it kept forgetting them. */}
               <h1 className="text-3xl font-black text-white italic uppercase tracking-tighter">
-                Create Account
+                Signing You In
               </h1>
             </div>
 
@@ -230,22 +369,51 @@ export const AccountSetup: React.FC<AccountSetupProps> = ({ onComplete }) => {
                 <p className="text-red-400 text-xs font-mono italic text-center px-4">
                   * {connectError}
                 </p>
-                {/* Signature hint only when signing is what failed — a
-                    connection problem or unconfigured server is not the
-                    user's to fix */}
+                {/* Hint only when there is something the player can do — a
+                    connection problem or unconfigured server is not theirs
+                    to fix. "No wallet" and "signature refused" are
+                    different problems, so they get different advice:
+                    telling someone a signature is required when no wallet
+                    exists to sign with just sends them round the loop
+                    again. */}
                 {connectError !== NETWORK_ERROR_MESSAGE && !/configured/i.test(connectError) && (
                   <p className="text-white/40 text-[10px] font-mono uppercase tracking-widest text-center px-4 leading-relaxed">
-                    A wallet signature is required to secure your account
+                    {/wallet is attached|no wallet/i.test(connectError)
+                      ? 'Connect a Solana wallet to this login, then try again'
+                      : 'A wallet signature is required to secure your account'}
                   </p>
                 )}
                 <button
                   type="button"
-                  onClick={() => runConnect()}
+                  onClick={() => {
+                    // Drop any sign-in still pending from the last go.
+                    // Without this the retry joined the SAME promise —
+                    // so a stuck attempt made this button do nothing at
+                    // all, forever, and only a reload got out of it.
+                    abandonSignIn();
+                    runConnect();
+                  }}
                   className="flex items-center gap-2 bg-[#00FFD1] hover:bg-[#00E5BC] text-black font-black py-3.5 px-8 rounded-2xl transition-all uppercase italic tracking-tighter"
                 >
                   <RefreshCw className="w-4 h-4" />
                   Try again
                 </button>
+                {/* A refused or broken signature must not lock an existing
+                    player out of their own account: the PIN + authenticator
+                    login needs no wallet at all. Hidden when the server is
+                    simply unreachable, since that path would fail too. */}
+                {connectError !== NETWORK_ERROR_MESSAGE && !/configured/i.test(connectError) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setError(null);
+                      setStep('login');
+                    }}
+                    className="text-white/40 hover:text-[#00FFD1] font-mono text-[10px] uppercase tracking-widest transition-colors"
+                  >
+                    Already have an account? Sign in
+                  </button>
+                )}
               </div>
             )}
           </>
@@ -271,7 +439,7 @@ export const AccountSetup: React.FC<AccountSetupProps> = ({ onComplete }) => {
                   Choose your avatar
                 </label>
                 {/* one tidy row — AVATAR_LIST ships 7 */}
-                <div className="grid grid-cols-7 gap-2">
+                <div className="grid grid-cols-4 xs:grid-cols-5 sm:grid-cols-7 gap-2">
                   {AVATARS.map((url) => (
                     <button
                       key={url}
@@ -361,6 +529,123 @@ export const AccountSetup: React.FC<AccountSetupProps> = ({ onComplete }) => {
                     <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
                   </>
                 )}
+              </button>
+
+              {/* The way out for anyone who already has an account and
+                  arrived here anyway — a Privy login the server could not
+                  tie back to them. Making a second account would cost them
+                  their username, rank and friends; this reunites them. */}
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setStep('login');
+                }}
+                className="w-full text-white/40 hover:text-[#00FFD1] font-mono text-[10px] uppercase tracking-widest py-1 transition-colors"
+              >
+                Already have an account? Sign in
+              </button>
+            </form>
+          </>
+        )}
+
+        {step === 'login' && (
+          <>
+            <div className="text-center mb-4">
+              <div className="inline-flex p-2.5 bg-[#00FFD1]/10 rounded-2xl mb-3">
+                <LogIn className="w-7 h-7 text-[#00FFD1]" />
+              </div>
+              <h1 className="text-2xl font-black text-white italic uppercase tracking-tighter">
+                Sign In
+              </h1>
+              <p className="text-white/40 text-xs mt-1.5 font-mono uppercase tracking-widest">
+                Your PIN · Your authenticator
+              </p>
+            </div>
+
+            <div className="flex gap-3 p-3 rounded-2xl bg-[#00FFD1]/5 border border-[#00FFD1]/20 mb-4">
+              <Smartphone className="w-5 h-5 text-[#00FFD1] shrink-0 mt-0.5" />
+              <p className="text-[10px] leading-relaxed text-white/60 font-mono uppercase tracking-wide">
+                Open the authenticator app you scanned the QR code with and enter its current
+                6-digit code. This wallet is linked to your account afterwards, so next time you
+                just walk straight in.
+              </p>
+            </div>
+
+            <form onSubmit={handleLogin} className="space-y-3">
+              <div className="space-y-1.5">
+                <label className="block text-xs font-mono uppercase tracking-[2px] text-[#00FFD1]/60 px-2">
+                  Username
+                </label>
+                <input
+                  type="text"
+                  value={loginName}
+                  onChange={(e) => setLoginName(e.target.value)}
+                  placeholder="YOUR NAME..."
+                  maxLength={20}
+                  autoComplete="username"
+                  className="w-full bg-white/5 border border-white/10 rounded-2xl py-3 px-6 text-white placeholder-white/20 focus:outline-none focus:border-[#00FFD1]/50 focus:bg-white/[0.07] transition-all font-bold tracking-tight text-lg"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-mono uppercase tracking-[2px] text-[#00FFD1]/60 px-2">
+                    4-digit PIN
+                  </label>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={loginPin}
+                    onChange={(e) => setLoginPin(digitsOnly(e.target.value, 4))}
+                    placeholder="••••"
+                    autoComplete="current-password"
+                    className="w-full bg-white/5 border border-white/10 rounded-2xl py-2.5 px-4 text-white placeholder-white/20 focus:outline-none focus:border-[#00FFD1]/50 transition-all font-bold text-center text-xl tracking-[0.4em]"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-mono uppercase tracking-[2px] text-[#00FFD1]/60 px-2">
+                    6-digit code
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={loginCode}
+                    onChange={(e) => setLoginCode(digitsOnly(e.target.value, 6))}
+                    placeholder="000000"
+                    autoComplete="one-time-code"
+                    className="w-full bg-white/5 border border-white/10 rounded-2xl py-2.5 px-4 text-white placeholder-white/15 focus:outline-none focus:border-[#00FFD1]/50 transition-all font-bold text-center text-xl tracking-[0.2em]"
+                  />
+                </div>
+              </div>
+
+              {error && (
+                <motion.p
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  className="text-red-400 text-xs font-mono px-2 italic text-center"
+                >
+                  * {error}
+                </motion.p>
+              )}
+
+              <button
+                type="submit"
+                disabled={busy || loginCode.length !== 6 || loginPin.length !== 4}
+                className="w-full bg-[#00FFD1] hover:bg-[#00E5BC] disabled:opacity-40 text-black font-black py-4 rounded-2xl transition-all duration-300 flex items-center justify-center gap-3 uppercase italic tracking-tighter text-lg"
+              >
+                {busy ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Sign In'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setStep('identity');
+                }}
+                className="w-full text-white/40 hover:text-white/80 font-mono text-xs uppercase tracking-widest py-1.5 transition-colors"
+              >
+                No account yet? Create one
               </button>
             </form>
           </>

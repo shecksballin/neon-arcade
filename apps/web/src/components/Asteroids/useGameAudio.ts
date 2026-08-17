@@ -1,4 +1,4 @@
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback, useEffect } from 'react';
 import { Howl } from 'howler';
 
 const deathSound = new Howl({
@@ -19,6 +19,20 @@ export function useGameAudio() {
     }
     return ctxRef.current;
   };
+
+  // Hand the AudioContext back when the game unmounts. Browsers cap how many a
+  // page may hold open (Chrome allows ~6), and this one was created lazily and
+  // never closed — so the seventh time a player entered Asteroids, constructing
+  // it threw and the game went silent for the rest of the session. Closing also
+  // releases the audio thread the context keeps running.
+  useEffect(
+    () => () => {
+      const ctx = ctxRef.current;
+      ctxRef.current = null;
+      if (ctx && ctx.state !== 'closed') void ctx.close().catch(() => {});
+    },
+    [],
+  );
 
   const playHitmarker = useCallback(() => {
     if (localStorage.getItem('gameMuted') === 'true') return;

@@ -16,18 +16,24 @@ import { ChevronLeft,
   Award,
   MessageSquare,
   Undo2,
-  Plus, CircleDollarSign } from 'lucide-react';
+  Swords,
+  Plus } from 'lucide-react';
 import GameBackButton from '../common/GameBackButton';
+import PrivateWagerRoom from "../social/PrivateWagerRoom";
+import { usePrivateWagerStarted } from "../social/PrivateWagerInvite";
 // Shared authed game socket — connects lazily when entering online mode,
 // never at import (the old per-effect bare io() reconnected on every
 // myPlayerId/gameStatus change and re-queued freshly-matched players).
 import { connectGameSocket, getSocket } from "../../hooks/useGameSocket";
+// The one matchmaking screen every online game shows while queued.
+import { SearchingForMatch } from "../common/SearchingForMatch";
 import { LibraryBlob } from "../glass/LibraryBlob";
 import { WagerMenu } from "../NeonBucks/WagerMenu";
 import { ResultsScreen } from "../NeonBucks/ResultsScreen";
 import { useNeonBucks } from "../../NeonBucksStore";
 import { ParticleCard, GlobalSpotlight } from "../glass/MagicGameTile";
 import { DifficultySelector } from "../common/DifficultySelector";
+import LobbyModeTiles from "../common/LobbyModeTiles";
 import {
   CONNECT_DIFFICULTIES,
   CONNECT_DEFAULT_DIFFICULTY,
@@ -132,7 +138,7 @@ function ConnectNavSidebar({
   profile: { name: string; avatarUrl: string } | null;
 }) {
   return (
-    <div className="w-64 border-r border-[#00FFD1]/20 bg-[#040b0b] flex flex-col h-screen sticky top-0 overflow-hidden shrink-0 z-50">
+    <div className="hidden lg:flex w-64 border-r border-[#00FFD1]/20 bg-[#040b0b] flex-col h-[100dvh] sticky top-0 overflow-hidden shrink-0 z-50">
       <div className="flex items-center justify-between p-4 border-b border-[#00ffd1]/20 bg-gradient-to-r from-[#00ffd1]/10 to-transparent">
         <h2 className="text-lg font-black text-[#00ffd1] uppercase tracking-[0.2em]">{gameTitle} Menu</h2>
       </div>
@@ -261,6 +267,8 @@ function GameMenuPanel({
         >
           {(gameMode === 'multiplayer' || gameMode === 'online') && <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>}
           <Globe className={`w-5 h-5 shrink-0 ${gameMode === 'multiplayer' || gameMode === 'online' ? '' : 'text-zinc-400 group-hover:rotate-12 transition-transform block'}`} />
+          {/* NO WAGER ONLINE: this used to read "Wager Match". Online play has
+              no stake of any kind — the click goes straight to matchmaking. */}
           <div className="text-center">
             <span className="block font-black text-[10px] uppercase tracking-tighter italic leading-none">Wager Match</span>
           </div>
@@ -363,7 +371,29 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
   const [animatingColumn, setAnimatingColumn] = useState<number | null>(null);
   const [canPlay, setCanPlay] = useState(true);
   const [onlineOpponent, setOnlineOpponent] = useState<string | null>(null);
+  // OPTIMISTIC MATCHMAKING FLAG. Set the instant an online mode is CLICKED —
+  // never from a server ack — so a dropped/absent reply can't leave the player
+  // staring at a dead board. Cleared only by `neonconnect_match` (or cancel).
+  const [searching, setSearching] = useState(false);
+  // Bumped on every online entry. It is part of the socket effect's deps so
+  // that re-entering online play FROM online play (clicking Online Match in
+  // the sidebar after a finished game, where `mode` never changes) still
+  // tears the old game down and sends a fresh `neonconnect_join` — otherwise
+  // the searching screen would sit on a queue we never actually joined.
+  const [searchNonce, setSearchNonce] = useState(0);
+  // PRIVATE WAGER: invite-only 1v1 against a friend. Its card REPLACED the old
+  // LOCAL CO-OP card in the lobby grid (design contract); pass & play itself is
+  // untouched and still reachable from the link under the grid.
+  const [showPrivateWager, setShowPrivateWager] = useState(false);
   const [myTurn, setMyTurn] = useState<boolean>(true);
+  // Live queue occupancy from the server's `queue:status`, shown on the
+  // SEARCHING screen. The design contract asks for `PLAYERS: n / N` wherever
+  // the server reports a count — Connect emits one on every join/leave, it
+  // just was not being read.
+  const [queueCount, setQueueCount] = useState<{
+    current: number;
+    needed: number;
+  } | null>(null);
   const [myPlayerId, setMyPlayerId] = useState<number>(HUMAN);
   const [wagerAmount, setWagerAmount] = useState<number>(0);
   // Computer-opponent strength (see connectDifficulty.ts). Persists across
@@ -743,6 +773,41 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
     applyLocalReset();
   };
 
+  // ==================== Online entry / exit ====================
+
+  // The ONE way into online play. There is NO wager, stake or entry fee: the
+  // click goes straight to matchmaking and the SEARCHING FOR ONLINE MATCH
+  // screen renders on this very render pass (optimistic — see `searching`).
+  const enterOnlineMatchmaking = useCallback(() => {
+    applyLocalReset();
+    setOnlineOpponent(null);
+    setMyTurn(false); // nothing is playable until the server seats us
+    setSearching(true);
+    setSearchNonce((n) => n + 1); // force a fresh join even if already online
+    setMode("online");
+  }, [applyLocalReset]);
+
+  /**
+   * A private match started from a room this component did NOT open — the
+   * invitee accepted from the nav-bar bell, a pop-up, or a friend's row, and
+   * the app navigated here so this component would be mounted and listening.
+   * Neon Connect only mounts its online screen on demand, so this is the same
+   * handoff `onStarted` performs for the room the lobby opens itself.
+   */
+  usePrivateWagerStarted("connect", () => {
+    enterOnlineMatchmaking();
+  });
+
+  // Cancel while queued. Emitting here (as well as in the effect cleanup that
+  // fires on the mode change) guarantees the server frees our slot even if the
+  // unmount path is ever short-circuited — leaveConnectQueue is idempotent.
+  const cancelOnlineSearch = useCallback(() => {
+    socket.emit("leaveConnectQueue");
+    setSearching(false);
+    applyLocalReset();
+    setMode("lobby");
+  }, [socket, applyLocalReset]);
+
   // ==================== Socket.io Integration ====================
 
   // Keyed ONLY on mode==='online' — mutable state (myPlayerId, gameStatus,
@@ -759,11 +824,15 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
     // defaults to true for local modes).
     setMyTurn(false);
     setOnlineOpponent(null);
+    // Belt and braces: the click handler already flipped this on, but any
+    // other route into online mode must show the queue screen too.
+    setSearching(true);
 
     s.emit("neonconnect_join", { profile: profileRef.current });
 
     const onMatch = (data: { opponent: string; turn: boolean; playerId: number }) => {
       matchedRef.current = true;
+      setSearching(false); // paired — swap the queue screen for the board
       setOnlineOpponent(data.opponent);
       setMyTurn(data.turn);
       setMyPlayerId(data.playerId);
@@ -829,6 +898,27 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
       setMyTurn(myPlayerIdRef.current === first);
     };
 
+    // The shared queue acknowledgement. Connect's server sends this on every
+    // join AND every leave (duplicates included), so it is also how we learn
+    // a re-queue actually took. Guarded on `game` because the socket is
+    // shared with every other game's queue.
+    const onQueueStatus = (data: {
+      game?: string;
+      inQueue?: boolean;
+      current?: number;
+      needed?: number;
+    }) => {
+      if (data?.game !== "connect") return;
+      if (!data.inQueue) {
+        setQueueCount(null);
+        return;
+      }
+      setQueueCount({
+        current: typeof data.current === "number" ? data.current : 1,
+        needed: typeof data.needed === "number" ? data.needed : 2,
+      });
+    };
+
     const onOpponentQuit = () => {
       setGameStatus("won");
       setWinner(myPlayerIdRef.current);
@@ -839,16 +929,21 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
     const onGameAuthError = (data: any) => {
       // Server refused matchmaking (e.g. account setup unfinished).
       console.warn("[connect] cannot play online:", data?.message ?? data?.code);
+      setSearching(false);
       setMode("lobby");
     };
 
     const onConnectError = (err: Error) => {
       if (err.message === "unauthorized" || err.message === "auth_unavailable") {
         console.warn("[connect] socket auth failed:", err.message);
-        if (!matchedRef.current) setMode("lobby");
+        if (!matchedRef.current) {
+          setSearching(false);
+          setMode("lobby");
+        }
       }
     };
 
+    s.on("queue:status", onQueueStatus);
     s.on("neonconnect_match", onMatch);
     s.on("neonconnect_opponent_move", onOpponentMove);
     s.on("neonconnect_ended", onEnded);
@@ -864,6 +959,7 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
       // opponent until our tab closed (active game = forfeit server-side).
       if (!matchedRef.current) s.emit("leaveConnectQueue");
       else s.emit("neonconnect_leave");
+      s.off("queue:status", onQueueStatus);
       s.off("neonconnect_match", onMatch);
       s.off("neonconnect_opponent_move", onOpponentMove);
       s.off("neonconnect_ended", onEnded);
@@ -872,11 +968,16 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
       s.off("gameAuthError", onGameAuthError);
       s.off("connect_error", onConnectError);
     };
-  }, [mode, applyLocalReset]);
+    // searchNonce: re-entering online from online must re-queue (see above).
+  }, [mode, applyLocalReset, searchNonce]);
 
   if (mode === "lobby" || mode === "practice_wager") {
     return (
-      <div className="min-h-screen bg-[#081616] flex flex-col items-center justify-center p-6 relative overflow-hidden">
+      // Scrollable, top-aligned on phones. `justify-center` inside an
+    // `overflow-hidden` box taller than the viewport put the top of the
+    // lobby ABOVE the visible area with no way to scroll to it — the mode
+    // cards were simply unreachable on a phone.
+    <div className="min-h-[100dvh] max-h-[100dvh] bg-[#081616] flex flex-col items-center justify-start md:justify-center px-4 py-24 md:p-6 relative overflow-y-auto overflow-x-hidden">
         <GameBackButton onClick={onExit} title="Back to arcade" positionClassName="absolute top-6 left-6 z-50" />
         {mode === "practice_wager" && (
           <WagerMenu 
@@ -912,17 +1013,16 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
           </motion.div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full text-left">
+            {/* ONLINE ENTRY — no wager, no stake, no browser dialogs.
+                This card used to open a wager-amount input followed by a
+                "not implemented" alert, so online play could never even
+                start. It now goes straight to matchmaking. */}
             <ParticleCard
-              onClick={() => {
-                const wager = prompt("Enter wager amount:", "10");
-                if (wager) {
-                  alert("Wager mode not fully implemented in template.");
-                }
-              }}
+              onClick={enterOnlineMatchmaking}
               className="magic-bento-card magic-bento-card--border-glow px-4 py-6 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl hover:shadow-[0_0_50px_rgba(0,255,209,0.3)] hover:scale-[1.02] active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
             >
               <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>
-              <CircleDollarSign className="w-8 h-8 group-hover:rotate-12 transition-transform" />
+              <Globe className="w-8 h-8 group-hover:rotate-12 transition-transform" />
               <div className="text-center">
                 <span className="block font-black text-lg md:text-xl uppercase tracking-tighter italic leading-none">
                   Wager Match
@@ -933,20 +1033,21 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
               </div>
             </ParticleCard>
 
+            {/* PRIVATE WAGER — replaces the old LOCAL CO-OP card (design
+                contract). Invite an online friend, both press READY, 3-2-1,
+                and the normal online Connect match starts between the two of
+                you. Free: "wager" is a name, nothing is staked. */}
             <ParticleCard
-              onClick={() => {
-                applyLocalReset();
-                setMode("local_coop");
-              }}
+              onClick={() => setShowPrivateWager(true)}
               className="magic-bento-card magic-bento-card--border-glow px-4 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer hover:border-[#00FFD1]"
             >
-              <Users className="w-8 h-8 text-zinc-400 group-hover:rotate-12 transition-transform group-hover:text-[#00FFD1]" />
+              <Swords className="w-8 h-8 text-zinc-400 group-hover:rotate-12 transition-transform group-hover:text-[#00FFD1]" />
               <div className="text-center">
                 <span className="block font-black text-lg md:text-xl uppercase tracking-tighter italic leading-none">
-                  Local Co-Op
+                  Private Wager
                 </span>
                 <span className="block text-[8px] text-white/40 font-bold tracking-widest mt-2 uppercase">
-                  PASS & PLAY
+                  INVITE A FRIEND
                 </span>
               </div>
             </ParticleCard>
@@ -967,6 +1068,22 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
             </ParticleCard>
           </div>
 
+          {/* LOCAL CO-OP kept reachable. The contract replaced its CARD with
+              Private Wager, but pass & play itself must keep working exactly
+              as today — so it lives on as this secondary link. Delete this
+              block if the mode should disappear from the UI entirely. */}
+          <button
+            type="button"
+            onClick={() => {
+              applyLocalReset();
+              setMode("local_coop");
+            }}
+            className="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-[#00FFD1]/25 text-[9px] font-mono font-bold uppercase tracking-[0.25em] text-[#B1C5FF]/50 hover:text-[#B1C5FF] hover:border-[#00FFD1]/60 transition-all cursor-pointer"
+          >
+            <Users className="w-3.5 h-3.5" />
+            Local Co-Op · Pass &amp; Play
+          </button>
+
           {/* Practice difficulty — applies to the Practice (Computer) match */}
           <div className="w-full max-w-xl mx-auto px-6 py-5 rounded-2xl border border-[#00FFD1]/25 bg-[#041010]/80">
             <DifficultySelector
@@ -978,39 +1095,69 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
             />
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-12">
-            <ParticleCard className="magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-default border-[#00FFD1]/40">
-              <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
-                videogame_asset
-              </div>
-              <p className="text-[10px] font-mono tracking-widest uppercase text-[#B1C5FF]/70">
-                Practice
-              </p>
-            </ParticleCard>
-            <ParticleCard className="magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-default border-[#00FFD1]/40">
-              <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
-                smart_toy
-              </div>
-              <p className="text-[10px] font-mono tracking-widest uppercase text-[#B1C5FF]/70">
-                Online
-              </p>
-            </ParticleCard>
-            <ParticleCard className="magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-default border-[#00FFD1]/40">
-              <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
-                trending_up
-              </div>
-              <p className="text-[10px] font-mono tracking-widest uppercase text-[#B1C5FF]/70">
-                Wager
-              </p>
-            </ParticleCard>
-          </div>
+          {/* Shared lobby footer — see common/LobbyModeTiles. */}
+          <LobbyModeTiles />
+        </div>
+
+        {/* Private-wager waiting room.
+            Connect's socket listeners are keyed on `mode === "online"`, so
+            they are NOT mounted while the lobby is showing. When the server
+            starts the private match we therefore hand off through the SAME
+            entry point the WAGER MATCH card uses — that mounts the online
+            screen and its `neonconnect_match` listener. */}
+        {showPrivateWager && (
+          <PrivateWagerRoom
+            gameKey="connect"
+            mode="1v1"
+            onClose={() => setShowPrivateWager(false)}
+            onStarted={enterOnlineMatchmaking}
+          />
+        )}
+      </div>
+    );
+  }
+
+  // ==================== ONLINE MATCHMAKING SCREEN ====================
+  // Rendered from the moment the player clicks an online mode until the server
+  // seats them (`neonconnect_match`). It does NOT wait for any ack to appear —
+  // that dependency was the "refuses to search" bug. Same component, same copy
+  // as every other online game.
+  if (mode === "online" && searching) {
+    return (
+      // Scrollable, top-aligned on phones. `justify-center` inside an
+    // `overflow-hidden` box taller than the viewport put the top of the
+    // lobby ABOVE the visible area with no way to scroll to it — the mode
+    // cards were simply unreachable on a phone.
+    <div className="min-h-[100dvh] max-h-[100dvh] bg-[#081616] flex flex-col items-center justify-start md:justify-center px-4 py-24 md:p-6 relative overflow-y-auto overflow-x-hidden">
+        <GameBackButton
+          onClick={cancelOnlineSearch}
+          title="Back to lobby"
+          positionClassName="absolute top-6 left-6 z-50"
+        />
+
+        {/* Same ambient glow as the lobby so the transition feels continuous. */}
+        <div className="absolute inset-0 opacity-20 pointer-events-none">
+          <div className="absolute top-20 left-20 w-96 h-96 bg-[#00FFD1] rounded-full blur-[120px] opacity-20 animate-pulse" />
+          <div
+            className="absolute bottom-20 right-20 w-96 h-96 bg-[#FF0080] rounded-full blur-[120px] opacity-20 animate-pulse"
+            style={{ animationDelay: "1s" }}
+          />
+        </div>
+
+        <div className="relative z-10 w-full max-w-2xl">
+          {/* 1v1: no playersNeeded → the PLAYERS n/N counter stays hidden. */}
+          <SearchingForMatch
+            playersInQueue={queueCount?.current}
+            playersNeeded={queueCount?.needed}
+            onCancel={cancelOnlineSearch}
+          />
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex bg-[#081616] overflow-hidden">
+    <div className="min-h-[100dvh] flex flex-col lg:flex-row bg-[#081616] overflow-hidden">
       <style>{`
         @keyframes drop {
           from { transform: translateY(-${ROWS * 80}px); opacity: 0; }
@@ -1039,21 +1186,24 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
         onReturn={() => { applyLocalReset(); setMode("lobby"); }}
         onExit={onExit}
         gameMode={mode}
-        onPlayOnline={() => { applyLocalReset(); setMode("online"); }}
+        onPlayOnline={enterOnlineMatchmaking}
         onPlayComputer={() => { applyLocalReset(); setMode("local"); }}
         onPlayLocal={() => { applyLocalReset(); setMode("local_coop"); }}
         profile={profile}
       />
 
-      <div className="flex-1 overflow-y-auto h-screen relative">
-        <div className="flex justify-center items-center py-10 min-h-full gap-8 max-w-[1200px] mx-auto">
+      <div className="flex-1 overflow-y-auto h-[100dvh] relative">
+        {/* STACKED below lg. The side panel is a fixed 280px and the board is
+            ~310px at phone width — side by side they need 620px+, so the
+            board was simply cut off. Board first (order-1), menu after it. */}
+        <div className="flex flex-col lg:flex-row justify-start lg:justify-center items-center py-6 lg:py-10 min-h-full gap-6 lg:gap-8 max-w-[1200px] mx-auto px-3 lg:px-0">
           {/* Game Selection */}
-          <div className="w-[280px] h-[652px] flex-shrink-0 mt-[40px]">
+          <div className="order-2 lg:order-1 w-full max-w-[340px] lg:w-[280px] h-auto lg:h-[652px] flex-shrink-0 mt-0 lg:mt-[40px]">
              <GameMenuPanel
                onReturn={() => { applyLocalReset(); setMode("lobby"); }}
                onExit={onExit}
                gameMode={mode}
-               onPlayOnline={() => { applyLocalReset(); setMode("online"); }}
+               onPlayOnline={enterOnlineMatchmaking}
                onPlayComputer={() => { applyLocalReset(); setMode("practice_wager"); }} // Practice in Connect
                onPlayLocal={() => { applyLocalReset(); setMode("local_coop"); }}
                profile={profile}
@@ -1061,7 +1211,7 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
           </div>
 
           {/* Game Board Area */}
-          <div className="flex-none flex flex-col items-center justify-center min-h-0 mt-[40px]">
+          <div className="order-1 lg:order-2 flex-none flex flex-col items-center justify-center min-h-0 mt-14 lg:mt-[40px]">
             <div className="w-fit flex flex-col relative">
               <div className="absolute -top-12 right-2 flex items-center justify-end w-full">
                 <div className="flex items-center gap-4">
@@ -1079,14 +1229,14 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
               </div>
             </div>
 
-            <div className="relative bg-black/40 rounded-3xl p-6 md:p-8 border-2 border-[#00FFD1]/30 shadow-[0_0_50px_rgba(0,255,209,0.1),inset_0_0_30px_rgba(0,255,209,0.05)]">
+            <div className="relative bg-black/40 rounded-2xl sm:rounded-3xl p-2 sm:p-6 md:p-8 border-2 border-[#00FFD1]/30 shadow-[0_0_50px_rgba(0,255,209,0.1),inset_0_0_30px_rgba(0,255,209,0.05)]">
               {/* Visual Grid */}
-              <div className="grid grid-cols-7 gap-3 md:gap-4 p-4 rounded-2xl relative">
+              <div className="grid grid-cols-7 gap-1.5 xs:gap-2 sm:gap-3 md:gap-4 p-1.5 xs:p-2 sm:p-4 rounded-2xl relative touch-manipulation">
                 {/* Ghost Header (Indicators) */}
                 {Array.from({ length: COLS }).map((_, col) => (
                   <div
                     key={`ind-${col}`}
-                    className="flex justify-center h-12 md:h-16 mb-2"
+                    className="flex justify-center h-9 xs:h-11 sm:h-12 md:h-16 mb-1 sm:mb-2"
                   >
                     <div
                       className={`w-3 h-3 rounded-full transition-all duration-300 ${animatingColumn === col ? "bg-[#00FFD1] scale-150" : "bg-[#00FFD1]/20"}`}
@@ -1102,7 +1252,7 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
                     return (
                       <div
                         key={`cell-${row}-${col}`}
-                        className="w-12 h-12 md:w-16 md:h-16 rounded-full border-2 border-white/5 bg-black/20 shadow-[inset_0_0_15px_rgba(0,255,209,0.03)] flex items-center justify-center overflow-hidden"
+                        className="w-9 h-9 xs:w-11 xs:h-11 sm:w-12 sm:h-12 md:w-16 md:h-16 rounded-full border-2 border-white/5 bg-black/20 shadow-[inset_0_0_15px_rgba(0,255,209,0.03)] flex items-center justify-center overflow-hidden"
                       >
                         <AnimatePresence>
                           {piece !== EMPTY && (
@@ -1115,7 +1265,7 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
                                 damping: 18,
                                 stiffness: 120,
                               }}
-                              className={`w-10 h-10 md:w-12 md:h-12 rounded-full ${piece === HUMAN ? "piece-cyan" : "piece-dark"}`}
+                              className={`w-7 h-7 xs:w-9 xs:h-9 sm:w-10 sm:h-10 md:w-12 md:h-12 rounded-full ${piece === HUMAN ? "piece-cyan" : "piece-dark"}`}
                             />
                           )}
                         </AnimatePresence>
@@ -1125,7 +1275,7 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
                 )}
 
                 {/* Interaction Overlay (The Clickable Columns) */}
-                <div className="absolute inset-0 grid grid-cols-7 gap-3 md:gap-4 p-4 pointer-events-none">
+                <div className="absolute inset-0 grid grid-cols-7 gap-1.5 xs:gap-2 sm:gap-3 md:gap-4 p-1.5 xs:p-2 sm:p-4 pointer-events-none">
                   {Array.from({ length: COLS }).map((_, col) => (
                     <button
                       key={`col-btn-${col}`}
@@ -1153,6 +1303,8 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
                           : 0
                       }
                       gameMode={mode === "local" ? "Practice" : (mode === "online" ? "Online" : "Local")}
+                      // Online stakes nothing — hide the Wagered/Payout rows.
+                      moneyless={mode === "online"}
                       onRematch={resetGame}
                       onExit={() => {
                         applyLocalReset();

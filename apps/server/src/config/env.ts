@@ -42,6 +42,20 @@ const envSchema = z.object({
   // API can run without a database; DB-backed routes 503 until it exists.
   DATABASE_URL: z.string().url().optional(),
 
+  // The Privy app id — the SAME 25-character value the browser bundle
+  // uses as VITE_PRIVY_APP_ID. It is PUBLIC (it identifies the app, it
+  // does not authorize anything), and the server needs it to verify the
+  // Privy tokens the client presents at sign-in: it is the expected `aud`
+  // claim and it addresses the JWKS endpoint the signature is checked
+  // against. See lib/privyIdentity.ts.
+  //
+  // Optional at boot. Without it the server cannot tell two wallets
+  // belonging to the same person apart, so accounts are deduplicated by
+  // wallet ALONE — set it in Doppler as PRIVY_APP_ID for the real thing.
+  PRIVY_APP_ID: z.string().length(25, {
+    message: 'PRIVY_APP_ID must be the 25-character app id from dashboard.privy.io',
+  }).optional(),
+
   // Encrypts TOTP secrets at rest (AES-256-GCM) so a database leak alone
   // can't clone authenticator codes. Exactly 64 hex chars = 32 bytes.
   // Generate with `openssl rand -hex 32` and set it in Doppler as

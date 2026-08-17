@@ -1087,6 +1087,30 @@ export function SplashCursor({
       window.removeEventListener('touchstart', handleTouchStart);
       window.removeEventListener('touchmove', handleTouchMove);
       window.removeEventListener('touchend', handleTouchEnd);
+
+      /**
+       * RELEASE THE WEBGL CONTEXT. Stopping the render loop is not the
+       * same as giving the GPU resources back: a browser allows only a
+       * handful of live contexts per page (Chrome around 16), and dropping
+       * the canvas does not reliably free one — the driver may hold it
+       * until GC, which can be a long time.
+       *
+       * This simulation mounts on the landing page, so every visit to the
+       * landing page and back leaked one. Once the cap is hit the browser
+       * force-reclaims the OLDEST context, which is how an unrelated
+       * screen suddenly logs "THREE.WebGLRenderer: Context Lost" and the
+       * page stops repainting — the frozen UI that made the account
+       * screen look permanently stuck.
+       *
+       * Asking for the context back explicitly makes teardown
+       * deterministic. Wrapped because the extension is optional and a
+       * failure here must not break unmounting.
+       */
+      try {
+        gl.getExtension('WEBGL_lose_context')?.loseContext();
+      } catch {
+        /* extension unavailable — nothing more we can do */
+      }
     };
   }, [
     SIM_RESOLUTION,

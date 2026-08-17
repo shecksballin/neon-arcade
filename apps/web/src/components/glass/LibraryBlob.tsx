@@ -7,6 +7,19 @@
 
 import { Ferrofluid } from './Ferrofluid'
 
+/**
+ * MODULE SCOPE ON PURPOSE — do not inline this back into the JSX.
+ *
+ * `colors` is in Ferrofluid's effect dependency list, and an inline array
+ * literal is a new object on every render. LibraryBlob is in every game lobby,
+ * and lobbies re-render on ordinary state changes (picking a mode, opening the
+ * difficulty drill-down, a matchmaking error arriving) — so an inline literal
+ * made Ferrofluid tear down and rebuild its whole OGL renderer, shader program
+ * and WebGL context on each of those. A frozen module constant keeps the
+ * identity stable, so the effect runs exactly once per mount.
+ */
+const BLOB_COLORS = ['#89ffea', '#00ffd1', '#00735e']
+
 export function LibraryBlob() {
   return (
     <div
@@ -14,7 +27,7 @@ export function LibraryBlob() {
       className="absolute inset-0 z-0 overflow-hidden pointer-events-none w-full h-full"
     >
       <Ferrofluid
-        colors={['#89ffea', '#00ffd1', '#00735e']}
+        colors={BLOB_COLORS}
         speed={0.4}
         scale={1}
         turbulence={1}

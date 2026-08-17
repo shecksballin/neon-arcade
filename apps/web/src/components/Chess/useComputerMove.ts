@@ -13,9 +13,16 @@ import { stockfish } from './stockfishEngine';
  */
 export function useComputerMove() {
   // Warm the engine on mount so the first move isn't delayed by the WASM
-  // download/compile. The engine is kept alive across games.
+  // download/compile, and hand the worker back when chess is left.
+  //
+  // The engine stays alive across GAMES because this hook is mounted by
+  // ChessGame — the top-level chess view — which survives lobby → practice →
+  // lobby. It only unmounts when the player exits to the arcade, and at that
+  // point a Stockfish WASM worker is tens of MB of RAM and a live thread doing
+  // nothing for a game nobody is playing.
   useEffect(() => {
     stockfish.warmup();
+    return () => stockfish.dispose();
   }, []);
 
   const getBestMove = useCallback(

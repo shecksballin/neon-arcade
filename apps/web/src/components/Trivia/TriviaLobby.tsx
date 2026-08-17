@@ -26,6 +26,9 @@ import { motion, AnimatePresence } from "motion/react";
 import { LibraryBlob } from "../glass/LibraryBlob";
 import { ParticleCard, GlobalSpotlight } from "../glass/MagicGameTile";
 import { generateQuestions as fetchQuizQuestions } from "./neonQuizApi";
+import PrivateWagerRoom from "../social/PrivateWagerRoom";
+import { usePrivateWagerStarted } from "../social/PrivateWagerInvite";
+import LobbyModeTiles from "../common/LobbyModeTiles";
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3002';
 
@@ -72,6 +75,22 @@ const TriviaLobby = ({
   onExit,
 }: TriviaLobbyProps) => {
   const [onlineMode, setOnlineMode] = useState<"1v1" | "ffa">("1v1");
+  // PRIVATE WAGER: invite-only quiz against friends, in the configuration
+  // selected above (Dual Link seats 2 and gets the diagonal duel layout;
+  // Neural Storm seats up to 8 and shows only the players actually present).
+  const [showPrivateWager, setShowPrivateWager] = useState(false);
+
+  /**
+   * A private match started from a room this lobby did NOT open — the invitee
+   * accepted from the nav-bar bell, a pop-up, or a friend's row, and the app
+   * navigated here so this component would be mounted and listening. Neon Quiz
+   * only mounts its online screen on demand, so we hand off through the SAME
+   * entry point the WAGER MATCH card uses — with the mode from the INVITE, not
+   * from this lobby's picker.
+   */
+  usePrivateWagerStarted("trivia", (mode) => {
+    if (mode === "1v1" || mode === "ffa") onFindGame({ mode });
+  });
   const [view, setView] = useState<"main" | "library">("main");
   const [topics, setTopics] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -261,7 +280,7 @@ const TriviaLobby = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 w-full text-left">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full text-left">
                 <ParticleCard
                   onClick={() => onFindGame({ mode: onlineMode })}
                   className="magic-bento-card magic-bento-card--border-glow px-8 py-6 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl hover:shadow-[0_0_50px_rgba(0,255,209,0.3)] hover:scale-[1.02] active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
@@ -272,10 +291,31 @@ const TriviaLobby = ({
                   ) : (
                     <Users className="w-8 h-8 group-hover:rotate-12 transition-transform" />
                   )}
+                  {/* NO MONEY ONLINE: this card used to read "Wager Match".
+                      Online quizzes stake nothing — real opponents, free entry
+                      — so the copy says that. Clicking goes straight to
+                      matchmaking; there is no wager step on this path. */}
                   <div className="text-center">
                     <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">Wager Match</span>
                     <span className="block text-[8px] opacity-60 font-bold tracking-widest mt-1">
                       GLOBAL WAGER ARENA
+                    </span>
+                  </div>
+                </ParticleCard>
+
+                {/* PRIVATE WAGER — new card (this lobby has no local co-op to
+                    replace), styled exactly like Practice per the contract. */}
+                <ParticleCard
+                  onClick={() => setShowPrivateWager(true)}
+                  className="magic-bento-card magic-bento-card--border-glow px-8 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer hover:border-[#00FFD1]"
+                >
+                  <Swords className="w-8 h-8 text-zinc-400 group-hover:rotate-12 transition-transform group-hover:text-[#00FFD1]" />
+                  <div className="text-center">
+                    <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">
+                      Private Wager
+                    </span>
+                    <span className="block text-[8px] text-white/40 font-bold tracking-widest mt-1">
+                      INVITE A FRIEND
                     </span>
                   </div>
                 </ParticleCard>
@@ -295,32 +335,8 @@ const TriviaLobby = ({
                   </div>
                 </ParticleCard>
               </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-12">
-            <ParticleCard className="magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-default border-[#00FFD1]/40">
-              <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
-                videogame_asset
-              </div>
-              <p className="text-[10px] font-mono tracking-widest uppercase text-[#B1C5FF]/70">
-                Practice
-              </p>
-            </ParticleCard>
-            <ParticleCard className="magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-default border-[#00FFD1]/40">
-              <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
-                smart_toy
-              </div>
-              <p className="text-[10px] font-mono tracking-widest uppercase text-[#B1C5FF]/70">
-                Online
-              </p>
-            </ParticleCard>
-            <ParticleCard className="magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-default border-[#00FFD1]/40">
-              <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
-                trending_up
-              </div>
-              <p className="text-[10px] font-mono tracking-widest uppercase text-[#B1C5FF]/70">
-                Wager
-              </p>
-            </ParticleCard>
-          </div>
+          {/* Shared lobby footer — see common/LobbyModeTiles. */}
+          <LobbyModeTiles />
             </motion.div>
           ) : (
             <motion.div
@@ -412,6 +428,22 @@ const TriviaLobby = ({
           <Maximize2 className="w-6 h-6" />
         </button>
       </div>
+
+      {/* Private-wager waiting room.
+          Unlike Chess/Volley/Golf, TriviaCore only mounts TriviaGame (and with
+          it the `triviaGameStart` listener) once the player is in online mode
+          — so when the server starts the private match we hand off through the
+          SAME entry point the WAGER MATCH card uses. TriviaGame then re-sends
+          `findTriviaGame`, which the server treats as a rebind/re-queue for a
+          wallet it already seated. */}
+      {showPrivateWager && (
+        <PrivateWagerRoom
+          gameKey="trivia"
+          mode={onlineMode}
+          onClose={() => setShowPrivateWager(false)}
+          onStarted={() => onFindGame({ mode: onlineMode })}
+        />
+      )}
     </div>
   );
 };

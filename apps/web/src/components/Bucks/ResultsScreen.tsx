@@ -23,7 +23,7 @@ export function ResultsScreen({
   onRematch,
   onExit
 }: ResultsScreenProps) {
-  const isDraw = !won && winnings === stake; // For quiz ties or snake draw? Actually quiz returns same if draw? Let's just pass won.
+  const isDraw = !won && winnings === stake; // for quiz ties or lms draw? Actually quiz returns same if draw? Let's just pass won.
 
   return (
     <motion.div

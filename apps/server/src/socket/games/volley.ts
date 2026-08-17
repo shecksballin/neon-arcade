@@ -10,7 +10,8 @@
  *
  * Flow:
  *   findVolleyGame { matchMode, avatarUrl? }
- *     → per-matchMode FIFO queue → 'waiting'
+ *     → shared per-matchMode SKILL queue (socket/queue.ts) → ALWAYS answers
+ *       with 'queue:status' + the legacy 'waiting' ack, duplicates included
  *     → on pair: room `volley-${gameId}` + 'volleyGameStart' to both,
  *       physics starts after a 3000ms grace (client runs a local 3s
  *       countdown before it renders the rally)
@@ -19,20 +20,39 @@
  *   volleyRequestRematch(gameId)     — two-sided handshake → volleyGameReset
  *   leaveVolleyQueue                 — no payload, drops all queue slots
  *
+ * Matchmaking lives in socket/queue.ts now. The old local per-mode queues went
+ * SILENT whenever a wallet that was already queued re-sent findVolleyGame (the
+ * "one slot per wallet, replace" path just returned), so every search after the
+ * first produced no server reply at all and the client froze on the lobby.
+ *
  * Identity: ALWAYS socket.data.wallet / socket.data.username (handshake
  * auth). Payload names are ignored; avatarUrl is cosmetic passthrough.
  * Wallets are NEVER included in anything emitted to the room.
  *
- * ELO: eloService.settle1v1('volley', ...) exactly once per finished game,
- * funneled through endGame() (status flip guards double-settlement — the
- * reference server's central disconnect loop double-applied ELO; each
- * module now owns its own disconnect cleanup instead).
+ * RANK: rankService.settleRanked1v1('volley', ...) exactly once per finished
+ * game on the '1v1' ladder, funneled through endGame() (status flip guards
+ * double-settlement — the reference server's central disconnect loop
+ * double-applied ELO; each module now owns its own disconnect cleanup).
+ * Matchmaking pairs on HIDDEN skill (see the `ladder` option below), so a
+ * rally is between two players the model thinks are evenly matched.
  */
 
-import { randomUUID } from 'node:crypto'
 import type { Server, Socket } from 'socket.io'
 import { z } from 'zod'
-import { settle1v1 } from '../../services/eloService'
+import { settleRanked1v1 } from '../../services/rankService'
+// eloService is now just the wire projection (strips wallet/mu/sigma).
+import { publicRating, type PublicRating } from '../../services/eloService'
+// Stats are written from the same endGame() funnel, under the same
+// `eloSettled` guard, so a rally can only ever be recorded once.
+import { recordResults } from '../../services/statsService'
+// Shared, idempotent, never-silent matchmaking queue.
+import {
+  joinQueue,
+  leaveQueue as leaveSharedQueue,
+  attachQueueCleanup,
+  QUEUE_STATUS_EVENT,
+  type QueueMatch,
+} from '../queue'
 
 // ---------------------------------------------------------------------------
 // Physics constants — MUST match the client (PingPongGame.tsx:19-28).
@@ -65,6 +85,11 @@ const RESET_GRACE_MS = 500 // volleyGameReset jumps straight to 'playing'
 // First-to-N per regulation (client computes the same locally).
 const WIN_SCORES = { classic: 11, bestof3: 2, sudden: 1 } as const
 type MatchMode = keyof typeof WIN_SCORES
+
+// Queue coordinates: one sub-queue per regulation, but only ONE slot per
+// wallet across all of them (enforced inside socket/queue.ts).
+const VOLLEY_GAME = 'volley'
+const VOLLEY_PLAYERS_NEEDED = 2
 
 // ---------------------------------------------------------------------------
 // Types + module state
@@ -109,16 +134,22 @@ interface VolleyGame {
   /** THE interval handle lives on the game object (design rule) so it can
    *  always be cleared before a new loop starts — no stacked intervals. */
   interval: ReturnType<typeof setInterval> | null
-  /** Guards eloService.settle1v1 to exactly one call per finished game. */
+  /** Guards rankService.settleRanked1v1 AND the stats write to exactly one
+   *  call per finished game (a rematch clears it — the new game settles its
+   *  own). Name kept for continuity; it now guards an RP settlement. */
   eloSettled: boolean
+  /** Wall-clock start of the CURRENT game, for match_results.durationMs. */
+  startedAt: number
   rematchRequested: { p1: boolean; p2: boolean }
 }
 
-// One FIFO queue per matchMode (design: volley queues are per-mode).
-const queues = new Map<MatchMode, VolleyPlayer[]>()
-
 // All live volley games, keyed by gameId (the uuid the client echoes back).
 const games = new Map<string, VolleyGame>()
+
+/** Extras carried through the shared queue (cosmetic only). */
+interface VolleyMeta {
+  avatarUrl: string
+}
 
 // ---------------------------------------------------------------------------
 // Zod payload schemas — EVERY event payload is safeParse'd (global rule);
@@ -172,15 +203,14 @@ function publicGameState(game: VolleyGame) {
   }
 }
 
-/** Remove every queue entry belonging to `wallet` (a wallet may hold at most
- *  ONE volley queue slot across all modes — re-queueing replaces it). */
-function removeFromQueues(wallet: string) {
-  for (const [mode, queue] of queues) {
-    queues.set(
-      mode,
-      queue.filter((entry) => entry.wallet !== wallet)
-    )
+/** Is this socket currently a player in a LIVE volley game? Guards against a
+ *  duplicate findVolleyGame putting an in-match socket back into the queue. */
+function isPlayingVolley(socketId: string): boolean {
+  for (const game of games.values()) {
+    if (game.status !== 'active') continue
+    if (game.p1.socketId === socketId || game.p2.socketId === socketId) return true
   }
+  return false
 }
 
 /** Center the ball and serve in a random diagonal — mirrors the client's
@@ -309,22 +339,55 @@ async function endGame(
     game.interval = null
   }
 
-  // Settle ratings ONCE. settle1v1 returns null when there is no DB (games
-  // still play, ratings just don't move) — the payload carries null then.
-  let newRatings: {
-    p1: { name: string; rating: number; change: number }
-    p2: { name: string; rating: number; change: number }
-  } | null = null
+  // Settle ratings ONCE. settleRanked1v1 returns null when there is no DB
+  // (games still play, ratings just don't move) — the payload carries null.
+  let newRatings: { p1: PublicRating; p2: PublicRating } | null = null
   if (!game.eloSettled) {
     game.eloSettled = true
     // p1 is always passed as "a", p2 as "b" — keep the mapping in one place.
-    const settled = await settle1v1(
+    // Volley has no draw: a rally always reaches the regulation score, and a
+    // resignation/disconnect is a decisive loss for the player who left.
+    const settled = await settleRanked1v1(
       'volley',
       game.p1.wallet,
       game.p2.wallet,
-      winnerSide === 'p1' ? 'a' : 'b'
+      winnerSide === 'p1' ? 'a' : 'b',
+      // SAME match id as the stats rows below → elo_history and
+      // match_results are joinable. Non-uuids are dropped by rankService.
+      game.gameId
     )
-    if (settled) newRatings = { p1: settled.a, p2: settled.b }
+    // publicRating drops wallet/mu/sigma before this ever touches the room.
+    if (settled) {
+      newRatings = { p1: publicRating(settled.a), p2: publicRating(settled.b) }
+    }
+
+    // STATS — one row per player. Volley has no kills/deaths; `score` is the
+    // player's own rally score, and `mode` is the regulation (classic /
+    // bestof3 / sudden) so per-mode win rates stay separable. The opponent
+    // field is the registered username only (never a wallet).
+    const durationMs = Date.now() - game.startedAt
+    void recordResults([
+      {
+        matchId: game.gameId, // queue matchId (uuid); non-uuids are dropped
+        wallet: game.p1.wallet,
+        gameKey: 'volley',
+        mode: game.matchMode,
+        result: winnerSide === 'p1' ? 'win' : 'loss',
+        score: game.score.p1,
+        opponentUsername: game.p2.name,
+        durationMs,
+      },
+      {
+        matchId: game.gameId,
+        wallet: game.p2.wallet,
+        gameKey: 'volley',
+        mode: game.matchMode,
+        result: winnerSide === 'p2' ? 'win' : 'loss',
+        score: game.score.p2,
+        opponentUsername: game.p1.name,
+        durationMs,
+      },
+    ])
   }
 
   const winner = winnerSide === 'p1' ? game.p1 : game.p2
@@ -341,6 +404,66 @@ async function endGame(
 }
 
 // ---------------------------------------------------------------------------
+// Match handoff — the shared queue calls this with exactly two CONNECTED
+// players that are already joined to `match.room` (`volley-${matchId}`).
+// Fully synchronous: no await can open a window between "paired" and "the game
+// exists", so a disconnect during setup is impossible.
+// ---------------------------------------------------------------------------
+function startVolleyMatch(match: QueueMatch<VolleyMeta>): void {
+  const { io, room, matchId, players, mode } = match
+  // `mode` is the queue key, which for volley IS the regulation. It came from
+  // a zod-validated payload, but re-narrow defensively before indexing.
+  const matchMode: MatchMode = mode in WIN_SCORES ? (mode as MatchMode) : 'classic'
+
+  const toVolleyPlayer = (p: (typeof players)[number]): VolleyPlayer => ({
+    socketId: p.socketId,
+    wallet: p.wallet,
+    name: p.username, // canonical handshake username — payloads never trusted
+    avatarUrl:
+      p.meta?.avatarUrl ??
+      `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(p.username)}`,
+  })
+
+  // FIFO: players[0] waited the longest → p1 → LEFT paddle (unchanged rule).
+  const game: VolleyGame = {
+    gameId: matchId,
+    room,
+    matchMode,
+    status: 'active',
+    p1: toVolleyPlayer(players[0]),
+    p2: toVolleyPlayer(players[1]),
+    score: { p1: 0, p2: 0 },
+    ballPos: { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 }, // center 500,250
+    ballVel: { x: START_SPEED, y: START_SPEED * 0.8 }, // randomized below
+    paddle1Y: CANVAS_HEIGHT / 2 - PADDLE_HEIGHT / 2, // 220, client default
+    paddle2Y: CANVAS_HEIGHT / 2 - PADDLE_HEIGHT / 2,
+    physicsResumeAt: Date.now() + START_GRACE_MS, // client's 3s countdown
+    interval: null,
+    eloSettled: false,
+    startedAt: Date.now(),
+    rematchRequested: { p1: false, p2: false },
+  }
+  resetBall(game) // randomize the opening serve direction
+  games.set(game.gameId, game)
+
+  // Client contract: both players get the same start payload and derive their
+  // side from p1.socketId === socket.id. No wallets in here.
+  io.to(room).emit('volleyGameStart', {
+    gameId: game.gameId,
+    p1: toPublic(game.p1),
+    p2: toPublic(game.p2),
+    matchMode: game.matchMode,
+    score: game.score,
+    ballPos: game.ballPos,
+    ballVel: game.ballVel,
+    paddle1Y: game.paddle1Y,
+    paddle2Y: game.paddle2Y,
+  })
+
+  startPhysicsLoop(io, game)
+}
+
+// ---------------------------------------------------------------------------
 // registerVolley — wires this socket's volley events + its own disconnect
 // cleanup (no central disconnect loop; see socket/index.ts header).
 // ---------------------------------------------------------------------------
@@ -348,113 +471,57 @@ export function registerVolley(io: Server, socket: Socket) {
   // -------------------------------------------------------------------------
   // Matchmaking
   // -------------------------------------------------------------------------
-  socket.on('findVolleyGame', (payload) => {
+  // Queue cleanup on disconnect is owned by the shared queue module (safe to
+  // attach more than once — it de-dupes per socket).
+  attachQueueCleanup(socket, io)
+
+  // ALWAYS answers: joinQueue emits `queue:status` + the legacy `waiting` ack
+  // on EVERY call, including a re-search from a wallet that is already queued.
+  socket.on('findVolleyGame', async (payload) => {
     const parsed = findVolleyGameSchema.safeParse(payload)
     if (!parsed.success) return // silently ignore malformed payloads
 
-    // Games require a registered account (username) — the wallet alone is
-    // not enough (design: gameAuthError { code: 'no_account' }).
-    const wallet: string | undefined = socket.data.wallet
+    const { matchMode } = parsed.data
     const username: string | null | undefined = socket.data.username
-    if (!wallet) return // can't happen behind socketAuth, but never trust it
-    if (!username) {
-      socket.emit('gameAuthError', {
-        code: 'no_account',
-        message: 'Finish account setup to play online',
+
+    // Already rallying → don't queue this socket a second time. Answer anyway
+    // (never silent) so an optimistic client can drop a stray spinner.
+    if (isPlayingVolley(socket.id)) {
+      socket.emit(QUEUE_STATUS_EVENT, {
+        game: VOLLEY_GAME,
+        mode: matchMode,
+        inQueue: false,
+        current: 0,
+        needed: VOLLEY_PLAYERS_NEEDED,
       })
       return
     }
 
-    const { matchMode } = parsed.data
-    const player: VolleyPlayer = {
-      socketId: socket.id,
-      wallet,
-      name: username, // canonical name — payload names are ignored
-      avatarUrl:
-        parsed.data.avatarUrl ??
-        `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(username)}`,
-    }
-
-    // One queue slot per wallet across ALL volley modes — re-emitting
-    // findVolleyGame (any mode) replaces the old entry.
-    removeFromQueues(wallet)
-
-    let queue = queues.get(matchMode)
-    if (!queue) {
-      queue = []
-      queues.set(matchMode, queue)
-    }
-
-    // FIFO: pair with the LONGEST-waiting player (shift, not the ref's pop).
-    // Skip entries whose socket has vanished (stale disconnects).
-    let opponent: VolleyPlayer | undefined
-    let opponentSocket: Socket | undefined
-    while (queue.length > 0) {
-      const candidate = queue.shift()!
-      const candidateSocket = io.sockets.sockets.get(candidate.socketId)
-      if (candidateSocket) {
-        opponent = candidate
-        opponentSocket = candidateSocket
-        break
-      }
-    }
-
-    if (!opponent || !opponentSocket) {
-      // Nobody waiting — take the slot and hold.
-      queue.push(player)
-      socket.emit('waiting', 'Scanning for volley signal...')
-      return
-    }
-
-    // ------------------------------------------------------------------
-    // Pair found — build the game. p1 = first-queued = LEFT paddle.
-    // ------------------------------------------------------------------
-    const gameId = randomUUID()
-    const room = `volley-${gameId}`
-    const game: VolleyGame = {
-      gameId,
-      room,
-      matchMode,
-      status: 'active',
-      p1: opponent,
-      p2: player,
-      score: { p1: 0, p2: 0 },
-      ballPos: { x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 }, // center 500,250
-      ballVel: { x: START_SPEED, y: START_SPEED * 0.8 }, // randomized below
-      paddle1Y: CANVAS_HEIGHT / 2 - PADDLE_HEIGHT / 2, // 220, client default
-      paddle2Y: CANVAS_HEIGHT / 2 - PADDLE_HEIGHT / 2,
-      physicsResumeAt: Date.now() + START_GRACE_MS, // client's 3s countdown
-      interval: null,
-      eloSettled: false,
-      rematchRequested: { p1: false, p2: false },
-    }
-    resetBall(game) // randomize the opening serve direction
-    games.set(gameId, game)
-
-    socket.join(room)
-    opponentSocket.join(room)
-
-    // Client contract: both players get the same start payload and derive
-    // their side from p1.socketId === socket.id. No wallets in here.
-    io.to(room).emit('volleyGameStart', {
-      gameId,
-      p1: toPublic(game.p1),
-      p2: toPublic(game.p2),
-      matchMode: game.matchMode,
-      score: game.score,
-      ballPos: game.ballPos,
-      ballVel: game.ballVel,
-      paddle1Y: game.paddle1Y,
-      paddle2Y: game.paddle2Y,
+    await joinQueue<VolleyMeta>({
+      socket,
+      io,
+      game: VOLLEY_GAME,
+      // One sub-queue per regulation; one slot per wallet across all of them.
+      mode: matchMode,
+      needed: VOLLEY_PLAYERS_NEEDED,
+      // §5.3: pair on hidden skill from the '1v1' pool. Every regulation
+      // shares that pool — a rally is a rally, whatever the target score.
+      ladder: '1v1',
+      meta: {
+        avatarUrl:
+          parsed.data.avatarUrl ??
+          `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(username ?? 'Player')}`,
+      },
+      // Pre-existing clients still key off `waiting`; both events go out.
+      legacyAck: { event: 'waiting', payload: 'Searching for online match...' },
+      onMatch: startVolleyMatch,
     })
-
-    startPhysicsLoop(io, game)
   })
 
-  // Explicit queue exit ("Abort Uplink") — no payload.
+  // Explicit queue exit ("Cancel" / unmount / view change) — no payload.
+  // Idempotent and never silent, so cancel always resolves the client's UI.
   socket.on('leaveVolleyQueue', () => {
-    const wallet: string | undefined = socket.data.wallet
-    if (wallet) removeFromQueues(wallet)
+    leaveSharedQueue({ socket, io, game: VOLLEY_GAME }) // every regulation
   })
 
   // -------------------------------------------------------------------------
@@ -523,7 +590,8 @@ export function registerVolley(io: Server, socket: Socket) {
     game.paddle1Y = CANVAS_HEIGHT / 2 - PADDLE_HEIGHT / 2
     game.paddle2Y = CANVAS_HEIGHT / 2 - PADDLE_HEIGHT / 2
     game.rematchRequested = { p1: false, p2: false }
-    game.eloSettled = false // the NEW game gets its own settlement
+    game.eloSettled = false // the NEW game gets its own settlement + stats row
+    game.startedAt = Date.now() // duration is per-game, not per-pairing
     game.physicsResumeAt = Date.now() + RESET_GRACE_MS
     resetBall(game)
 
@@ -536,15 +604,9 @@ export function registerVolley(io: Server, socket: Socket) {
   // Disconnect cleanup — this module's OWN games/queues only.
   // -------------------------------------------------------------------------
   socket.on('disconnect', () => {
-    // Drop any queue slots held by this socket. Keyed by socketId (not
-    // wallet) so a second live session of the same wallet isn't evicted by
-    // an old tab closing.
-    for (const [mode, queue] of queues) {
-      queues.set(
-        mode,
-        queue.filter((entry) => entry.socketId !== socket.id)
-      )
-    }
+    // Queue slots are dropped by the shared queue's own disconnect listener
+    // (keyed by socket.id, so an old tab closing can't evict a live second
+    // session of the same wallet). This handler only owns live games.
 
     // Sweep games this socket was playing in.
     for (const [gameId, game] of games) {

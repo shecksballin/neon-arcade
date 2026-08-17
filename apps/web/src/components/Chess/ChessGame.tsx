@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Globe, Cpu, LogOut, Users, Trophy, TrendingUp, Settings, Award, MessageSquare, History } from 'lucide-react';
 import { ParticleCard } from '../glass/MagicGameTile';
+// Shared matchmaking screen — identical copy/look in every online game.
+import SearchingForMatch from '../common/SearchingForMatch';
 import GameLobby from './GameLobby';
 import ComputerGame from './ComputerGame';
 import OnlineGame from './OnlineGame';
@@ -44,7 +46,7 @@ function ChessNavSidebar({
   profile: { name: string; avatarUrl: string } | null;
 }) {
   return (
-    <div className="w-64 border-r border-[#00FFD1]/20 bg-[#040b0b] flex flex-col h-screen sticky top-0 overflow-hidden shrink-0 z-50">
+    <div className="hidden lg:flex w-64 border-r border-[#00FFD1]/20 bg-[#040b0b] flex-col h-[100dvh] sticky top-0 overflow-hidden shrink-0 z-50">
       <div className="flex items-center justify-between p-4 border-b border-[#00ffd1]/20 bg-gradient-to-r from-[#00ffd1]/10 to-transparent">
         <h2 className="text-lg font-black text-[#00ffd1] uppercase tracking-[0.2em]">{gameTitle} Menu</h2>
       </div>
@@ -174,9 +176,7 @@ function GameMenuPanel({
           {gameMode === 'multiplayer' && <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>}
           <Globe className={`w-5 h-5 shrink-0 ${gameMode === 'multiplayer' ? '' : 'text-zinc-400 group-hover:rotate-12 transition-transform block'}`} />
           <div className="text-center">
-            <span className="block font-black text-[10px] uppercase tracking-tighter italic leading-none">
-              Online Match
-            </span>
+            <span className="block font-black text-[10px] uppercase tracking-tighter italic leading-none">Wager Match</span>
           </div>
         </ParticleCard>
 
@@ -244,8 +244,9 @@ function GameMenuPanel({
   );
 }
 
+// PRACTICE-ONLY: the Neon Bucks wager menu is shown before a COMPUTER game.
+// The online path never stakes anything — no SOL, no Neon Bucks.
 import { WagerMenu } from '../NeonBucks/WagerMenu';
-import { useNeonBucks } from '../../NeonBucksStore';
 
 export default function ChessGame({ onExit, profile, onGameStatusChange }: ChessGameProps) {
   const [gameState, setGameState] = useState<'lobby' | 'waiting' | 'playing' | 'ended' | 'practice_wager'>('lobby');
@@ -263,11 +264,21 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
   // Rendered by OnlineGame's end overlay — local chess.js detection alone
   // can't see the opponent resigning or dropping.
   const [serverGameEnd, setServerGameEnd] = useState<ServerGameEnd | null>(null);
+  // Live queue occupancy from `queue:status`, shown while searching.
+  const [queueCount, setQueueCount] = useState<{ current: number; needed: number } | null>(null);
 
   // Singleton — stable across renders, NOT connected until connectGameSocket().
   const socket = getSocket();
 
   const { getBestMove } = useComputerMove();
+
+  // Mirrors of state for listeners/cleanups that must not re-subscribe on
+  // every render (the socket handlers below are bound exactly once).
+  const gameStateRef = useRef(gameState);
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
+  const findPayloadRef = useRef<{ name: string; avatarUrl: string } | null>(null);
 
   useEffect(() => {
     if (onGameStatusChange) {
@@ -279,7 +290,15 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
     // Named handlers + handler-specific socket.off: the socket is SHARED with
     // the other games, so blanket socket.off('event') would strip their
     // listeners (and the global connect_error logger) too.
-    const onConnect = () => setConnectionStatus('connected');
+    const onConnect = () => {
+      setConnectionStatus('connected');
+      // A reconnect hands us a BRAND NEW socket.id, so any queue slot the
+      // server still holds for the old id is stale. Re-enter the queue if we
+      // are still searching — findGame is idempotent server-side.
+      if (gameStateRef.current === 'waiting' && findPayloadRef.current) {
+        socket.emit('findGame', findPayloadRef.current);
+      }
+    };
     const onDisconnect = () => setConnectionStatus('disconnected');
     const onConnectError = (err: Error) => {
       // 'unauthorized' / 'auth_unavailable' — token missing/expired or the
@@ -288,10 +307,28 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
         console.warn('[chess] socket auth failed:', err.message);
       }
       setConnectionStatus('disconnected');
+      // Never strand the player on the searching screen when the socket can't
+      // even connect — there is nothing to search with.
+      setGameState((s) => (s === 'waiting' ? 'lobby' : s));
     };
+    // Legacy ack. The searching screen is already up (set optimistically on
+    // click), so this only confirms — it must never overwrite a live game.
     const onWaiting = () => {
-      setGameState('waiting');
+      setGameState((s) => (s === 'lobby' ? 'waiting' : s));
       setConnectionStatus('waiting');
+    };
+    // Authoritative, never-silent queue state from the shared server queue.
+    const onQueueStatus = (data: any) => {
+      if (data?.game !== 'chess') return; // shared socket — ignore other games
+      if (data.inQueue) {
+        setConnectionStatus('waiting');
+        // How many are waiting with you — shown on the searching screen.
+        setQueueCount({ current: data.current ?? 1, needed: data.needed ?? 2 });
+        return;
+      }
+      // inQueue:false means "not queued AND no match started" (a started match
+      // is announced by gameStart instead) — so drop the searching screen.
+      setGameState((s) => (s === 'waiting' ? 'lobby' : s));
     };
     const onGameStart = (data: any) => {
       setGameState('playing');
@@ -326,6 +363,7 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
     socket.on('disconnect', onDisconnect);
     socket.on('connect_error', onConnectError);
     socket.on('waiting', onWaiting);
+    socket.on('queue:status', onQueueStatus);
     socket.on('gameStart', onGameStart);
     socket.on('gameEnded', onGameEnded);
     socket.on('opponentDisconnected', onOpponentDisconnected);
@@ -337,11 +375,21 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
       socket.off('disconnect', onDisconnect);
       socket.off('connect_error', onConnectError);
       socket.off('waiting', onWaiting);
+      socket.off('queue:status', onQueueStatus);
       socket.off('gameStart', onGameStart);
       socket.off('gameEnded', onGameEnded);
       socket.off('opponentDisconnected', onOpponentDisconnected);
       socket.off('moveMade', onMoveMade);
       socket.off('gameAuthError', onGameAuthError);
+    };
+  }, [socket]);
+
+  // Leave the queue if this whole screen goes away mid-search (route change,
+  // arcade exit, hot reload). The in-app paths — Cancel, Return to lobby, Exit
+  // — emit leaveQueue themselves; the server also sweeps on disconnect.
+  useEffect(() => {
+    return () => {
+      if (gameStateRef.current === 'waiting') socket.emit('leaveQueue');
     };
   }, [socket]);
 
@@ -351,10 +399,32 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
       avatarUrl: profile?.avatarUrl || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix'
     };
     setPlayerData(fullPlayer);
+    findPayloadRef.current = fullPlayer;
+
+    // OPTIMISTIC: the SEARCHING FOR ONLINE MATCH screen goes up on THIS click.
+    // It is never gated on the server's ack — a dropped or absent reply used
+    // to leave the UI frozen on the lobby, which is what made online look
+    // broken. No wager, no stake: the online path costs nothing.
+    setGameState('waiting');
+    gameStateRef.current = 'waiting'; // eager: listeners/cleanup read the ref
+    setConnectionStatus('connecting');
+    setServerGameEnd(null);
+    setExternalMove(null);
+
     // Lazy connect: only touches the network when entering online mode.
-    connectGameSocket();
-    if (!socket.connected) setConnectionStatus('connecting');
-    socket.emit('findGame', fullPlayer);
+    const s = connectGameSocket();
+    // Emits are buffered by socket.io until the connection is up.
+    s.emit('findGame', fullPlayer);
+    if (s.connected) setConnectionStatus('connected');
+
+    if (!s.connected && !s.active) {
+      // Not connected and not even trying (no auth token stored) — the queue
+      // can never be joined, so don't spin on a screen that will never resolve.
+      console.warn('[chess] game socket is not connecting — sign in to play online');
+      setGameState('lobby');
+      gameStateRef.current = 'lobby';
+      setConnectionStatus('disconnected');
+    }
   };
 
   const handlePlayComputer = () => {
@@ -372,8 +442,11 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
   };
 
   const handleExitApp = () => {
+    // Always free the queue slot on the way out — a leaked entry is what
+    // yanks an absent player into a match nobody is playing.
     if (gameState === 'waiting') {
       socket.emit('leaveQueue');
+      gameStateRef.current = 'lobby'; // the unmount cleanup must not re-emit
     }
     if (gameMode === 'multiplayer' && gameState === 'playing' && gameData?.gameId) {
       socket.emit('resign', gameData.gameId);
@@ -381,6 +454,7 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
     onExit();
   };
 
+  // Also the Cancel button on the SEARCHING FOR ONLINE MATCH screen.
   const handleReturnToLobby = () => {
     if (gameState === 'waiting') {
       socket.emit('leaveQueue');
@@ -389,6 +463,8 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
       socket.emit('resign', gameData.gameId);
     }
     setGameState('lobby');
+    gameStateRef.current = 'lobby';
+    findPayloadRef.current = null; // stop the reconnect replay
     setGameData(null);
     setGameMode(null);
     setPlayerData(null);
@@ -425,7 +501,7 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
   }
 
   return (
-    <div className="min-h-screen flex bg-[#081616] overflow-hidden">
+    <div className="min-h-[100dvh] flex bg-[#081616] overflow-hidden">
       {/* Permanent Left Sidebar (Nav & Actions) */}
       <ChessNavSidebar 
         gameTitle="Neon Chess" 
@@ -439,29 +515,25 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
       />
 
       {/* Main Content Area */}
-      <div className="flex-1 overflow-y-auto h-screen relative">
+      <div className="flex-1 overflow-y-auto h-[100dvh] relative">
         {gameState === 'waiting' ? (
-          <div className="min-h-screen flex items-center justify-center p-6">
-            <div className="text-center space-y-8 max-w-md w-full">
-              <h1 className="text-4xl font-black text-[#FFFFFD] neon-text-glow uppercase italic">Searching Arena...</h1>
-              <div className="flex justify-center gap-3">
-                <div className="w-4 h-4 bg-[#00FFD1] rounded-full animate-bounce shadow-[0_0_10px_#00ffd1]"></div>
-                <div className="w-4 h-4 bg-[#00FFD1] rounded-full animate-bounce shadow-[0_0_10px_#00ffd1]" style={{ animationDelay: '0.2s' }}></div>
-                <div className="w-4 h-4 bg-[#00FFD1] rounded-full animate-bounce shadow-[0_0_10px_#00ffd1]" style={{ animationDelay: '0.4s' }}></div>
-              </div>
-              <p className="text-[#B1C5FF] font-mono text-sm tracking-widest uppercase opacity-60">Scanning for rivals across the grid</p>
-              <button
-                onClick={handleReturnToLobby}
-                className="mt-12 px-8 py-3 border border-[#00FFD1] text-[#00FFD1] rounded-xl hover:bg-[#00FFD1]/10 transition-all font-mono text-xs uppercase tracking-widest"
-              >
-                Cancel Search
-              </button>
-            </div>
+          // Shared matchmaking screen — same copy and look in every game. The
+          // PLAYERS n/N line shows how many others are queuing alongside you.
+          // Cancel leaves the queue via handleReturnToLobby.
+          <div className="min-h-[100dvh] flex items-center justify-center p-6">
+            <SearchingForMatch
+              playersInQueue={queueCount?.current}
+              playersNeeded={queueCount?.needed}
+              onCancel={handleReturnToLobby}
+            />
           </div>
         ) : (
-          <div className="flex items-center justify-center py-10 min-h-full gap-8 max-w-[1200px] mx-auto translate-y-[20px]">
+          // STACKED below lg: a fixed 280px menu beside the board needs ~620px
+          // of width, so on a phone the board was pushed off-screen. Board
+          // first (order-1), menu below it.
+          <div className="flex flex-col lg:flex-row items-center justify-start lg:justify-center py-6 lg:py-10 min-h-full gap-6 lg:gap-8 max-w-[1200px] mx-auto px-3 lg:px-0 lg:translate-y-[20px]">
             {/* The 5 buttons menu on the left */}
-            <div className="w-[280px] h-[600px] flex-shrink-0">
+            <div className="order-2 lg:order-1 w-full max-w-[340px] lg:w-[280px] h-auto lg:h-[600px] flex-shrink-0">
                <GameMenuPanel 
                  onReturn={handleReturnToLobby} 
                  onExit={handleExitApp}
@@ -473,6 +545,9 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
                />
             </div>
 
+            {/* order-1: the board comes FIRST on a stacked phone layout — you
+                should not have to scroll past a menu to see the game. */}
+            <div className="order-1 lg:order-2 w-full flex justify-center min-w-0">
             {gameMode === 'local' ? (
               <LocalGame
                 onReturnToLobby={handleReturnToLobby}
@@ -505,6 +580,7 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
                 onRematchRequest={() => {}}
               />
             )}
+            </div>
           </div>
         )}
       </div>

@@ -1,15 +1,18 @@
 // ─────────────────────────────────────────
 // GAME TYPES
 // ─────────────────────────────────────────
-export type GameMode   = 'snake' | 'slayer' | 'server' | '1v1'
+export type GameMode   = 'lms' | 'slayer' | 'server' | '1v1'
 export type MatchStatus = 'open' | 'active' | 'settling' | 'settled' | 'cancelled'
 export type PlayerStatus = 'deposited' | 'active' | 'eliminated' | 'cashed_out'
 export type KillReason = 'player_kill' | 'zone' | 'asteroid' | 'resign'
 export type Region     = 'us-east' | 'us-west' | 'eu' | 'ap'
 
 // ─────────────────────────────────────────
-// ELO / RANK TYPES
+// RANK TYPES  (Ranked 2.0 — see elo.ts for the maths)
 // ─────────────────────────────────────────
+// The visible ladder is RP (Rank Points). The hidden skill layer is
+// TrueSkill {mu, sigma} and NEVER appears in a client payload — it exists
+// only for matchmaking and for computing the RP change.
 export type RankTier =
   | 'Copper'
   | 'Bronze'
@@ -20,13 +23,47 @@ export type RankTier =
   | 'Diamond'
   | 'Champion'
 
+/** Sub-rank inside a tier. V is the BOTTOM of the tier, I the top.
+ *  Champion has no divisions → `null`. */
+export type RankDivision = 'V' | 'IV' | 'III' | 'II' | 'I'
+
+/** The two rating pools. Free play is unranked and belongs to neither. */
+export type RankLadder = '1v1' | 'ffa'
+
+/** Hidden TrueSkill state for one player on one ladder. SERVER ONLY —
+ *  never serialize this to a client (it would expose matchmaking). */
+export interface SkillRating {
+  mu:    number
+  sigma: number
+}
+
+/**
+ * Everything the UI needs to draw a rank badge, derived from RP ALONE.
+ * (Tier/division are never stored — they are a view of the RP integer.)
+ */
 export interface RankInfo {
-  tier:          RankTier
-  elo:           number
-  progress:      number     // 0–100 within current tier
-  eloToNextRank: number     // how many ELO until next rank
-  isMaxRank:     boolean
-  color:         string     // hex for UI
+  tier:           RankTier
+  division:       RankDivision | null  // null === Champion (no divisions)
+  rp:             number               // the player's RP, clamped at the floor
+  rpIntoDivision: number               // RP earned inside the current division
+  rpForDivision:  number               // width of the current division in RP
+  progressPct:    number               // 0–100 across the current division
+  nextTier:       RankTier | null      // null at Champion
+  rpToNextTier:   number               // 0 at Champion
+  color:          string               // hex for UI
+  gradient:       string               // CSS gradient for rank cards
+  isMaxRank:      boolean              // tier === 'Champion'
+  label:          string               // "Silver III" / "Champion"
+
+  // ── LEGACY ALIASES ────────────────────────────────────────────────
+  // Kept so pre-Ranked-2.0 consumers keep compiling during the migration.
+  // New code must use rp / progressPct / rpToNextTier instead.
+  /** @deprecated use `rp` */
+  elo:            number
+  /** @deprecated use `progressPct` (this is progress across the DIVISION) */
+  progress:       number
+  /** @deprecated use `rpToNextTier` */
+  eloToNextRank:  number
 }
 
 // ─────────────────────────────────────────

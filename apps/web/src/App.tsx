@@ -1,69 +1,146 @@
 import React from "react";
 import { motion, AnimatePresence } from "motion/react";
+// Only what this file actually renders. The nine game-tile glyphs moved to
+// components/glass/gameIcons.tsx with the catalog-driven grid, and roughly a
+// dozen more (Activity, BarChart3, Trophy, Flame, Clock, …) were already dead
+// imports that lucide-react was still being asked to resolve.
 import {
-  Ghost,
-  Skull,
-  FlagTriangleRight,
   Compass,
-  Activity,
-  BarChart3,
   Gamepad2,
-  Trophy,
-  Plus,
-  Flame,
   User,
   Wallet,
-  Swords,
-  CircleDot,
-  Crosshair,
-  Orbit,
-  Rocket,
-  Brain,
-  ChevronLeft,
   Menu as MenuIcon,
-  Settings,
-  Bell,
-  Gift,
-  Check,
-  Sparkles,
-  Clock,
 } from "lucide-react";
 import { Howler } from "howler";
+import { useQueryClient } from "@tanstack/react-query";
 
 import { useNeonBucks } from "./NeonBucksStore";
+import { useCurrency } from "./CurrencyStore";
 import { AccountSetup } from "./components/AccountSetup";
 import { ProfileSettings } from "./components/ProfileSettings";
-import NeonConnectGame from "./components/NeonConnect/NeonConnectGame";
-import ChessGame from "./components/Chess/ChessGame";
-import VolleyGame from "./components/Volley/VolleyGame";
-import CellsGame from "./components/Cells/CellsGame";
-import AsteroidsGame from "./components/Asteroids/AsteroidsGame";
-import TriviaGame from "./components/Trivia/TriviaCore";
-import GolfGame from "./components/Golf/GolfGame";
-import ClumsyGame from "./components/Clumsy/ClumsyGame";
-import KillerGame from "./components/Killer/KillerGame";
-import PugShooterGame from "./components/PugShooter/PugShooterGame";
+import { GameChunkLoading } from "./components/common/GameChunkLoading";
+
+// ---------------------------------------------------------------------------
+// GAMES ARE CODE-SPLIT, ALL NINE OF THEM
+// ---------------------------------------------------------------------------
+// These were static imports, which meant the landing page downloaded and parsed
+// every game before it could paint — Asteroids' 3k-line canvas core, the chess
+// engine glue, Cells, Volley, Trivia, and every iframe wrapper — for a visitor
+// who had not chosen anything yet.
+//
+// `React.lazy` gives each game its own chunk, fetched the first time that view
+// opens and cached by the browser afterwards. App.tsx renders exactly one game
+// at a time in the ternary below, so leaving a game still unmounts it and stops
+// its work; lazy only changes WHEN the code arrives, never whether it is freed.
+//
+// Each one is wrapped in <Suspense fallback={<GameChunkLoading …/>}> at its use
+// site rather than around the whole AnimatePresence — a fallback hoisted above
+// AnimatePresence would blow away the view-transition animation.
+const NeonConnectGame = React.lazy(() => import("./components/NeonConnect/NeonConnectGame"));
+const ChessGame = React.lazy(() => import("./components/Chess/ChessGame"));
+const VolleyGame = React.lazy(() => import("./components/Volley/VolleyGame"));
+const CellsGame = React.lazy(() => import("./components/Cells/CellsGame"));
+const AsteroidsGame = React.lazy(() => import("./components/Asteroids/AsteroidsGame"));
+const TriviaGame = React.lazy(() => import("./components/Trivia/TriviaCore"));
+const GolfGame = React.lazy(() => import("./components/Golf/GolfGame"));
+const ClumsyGame = React.lazy(() => import("./components/Clumsy/ClumsyGame"));
+const PugShooterGame = React.lazy(() => import("./components/PugShooter/PugShooterGame"));
+
 import { disconnectGameSocket } from "./hooks/useGameSocket";
 
-import { SidebarMenu } from "./components/SidebarMenu";
+// ---------------------------------------------------------------------------
+// NOTIFICATIONS
+// ---------------------------------------------------------------------------
+// The store itself is mounted above <App/> in main.tsx; these are the three
+// pieces that live in the app tree:
+//
+//   useNotifications          mid-match suppression + the sidebar handoff
+//   NotificationCenter        the nav-bar bell and its dropdown (eager: the
+//                             badge has to be right on first paint)
+//   NotificationsSocketBridge the ONE socket listener, gated on an account
+//   NotificationToasts        the in-app pop-up stack
+//
+// The bridge and the toasts are LAZY for the same reason PrivateWagerHost is:
+// the bridge reaches the private-wager catalog and the toasts are pure
+// decoration until something actually happens. The centre is not — a stale
+// bell is worse than a few kB.
+import { useNotifications } from "./notifications/NotificationsStore";
+import { NotificationCenter } from "./notifications/NotificationCenter";
+const NotificationsSocketBridge = React.lazy(() =>
+  import("./notifications/NotificationsSocketBridge").then((m) => ({
+    default: m.NotificationsSocketBridge,
+  })),
+);
+const NotificationToasts = React.lazy(() =>
+  import("./notifications/NotificationToasts").then((m) => ({
+    default: m.NotificationToasts,
+  })),
+);
+
+// LAZY. The sidebar is a closed drawer on arrival, but it reads the live SOL
+// balance — so it static-imported lib/solana → @solana/kit, which put the
+// whole Solana codec tree in the entry graph (and, grouped with the wallet
+// SDK, made the browser modulepreload 3.7 MB before first paint). Rendering
+// it lazily takes that off the critical path; it still mounts instantly on
+// the first open because the chunk is warmed alongside the library.
+const SidebarMenu = React.lazy(() =>
+  import("./components/SidebarMenu").then((m) => ({ default: m.SidebarMenu })),
+);
+// Mounted ONCE, app-wide (see below): the private-wager game/mode picker the
+// sidebar's hover-invite opens, plus the ACCEPT/LATER toasts for incoming
+// `private:invited` pushes. Renders nothing until one of those happens.
+// LAZY, and for a non-obvious reason: PrivateWagerRoom → PrivateWagerInvite
+// static-imports Cells/CellsDifficultySelector and Asteroids/AsteroidsDifficulty-
+// Selector (it renders each game's own mode picker in the invite flow). Eagerly
+// importing the host therefore dragged ~35 kB of *game-directory* code into the
+// landing page's entry chunk — the one thing the code-splitting above exists to
+// prevent. The render gate below (`hasAccount &&`) gates rendering, not download;
+// only React.lazy does that.
+const PrivateWagerHost = React.lazy(() =>
+  import("./components/social/PrivateWagerRoom").then((m) => ({ default: m.PrivateWagerHost })),
+);
 
 import { LiquidFilter } from "./components/glass/LiquidFilter";
-import { CursorBlob3D } from "./components/glass/CursorBlob3D";
 import { CursorGlow } from "./components/glass/CursorGlow";
 import { GlassPanel } from "./components/glass/GlassPanel";
-import { LibraryBlob } from "./components/glass/LibraryBlob";
-import { MagicBentoGameTile, GlobalSpotlight } from "./components/glass/MagicGameTile";
-import { SplashCursor } from "./components/SplashCursor";
+// THE LIBRARY IS LAZY TOO, and not only because it's a separate screen: it is
+// the sole owner of `ogl` (the WebGL blob behind the grid) and `gsap` (the
+// tile tilt/particle effects) on the landing path. As a static import those
+// two libraries sat in the entry chunk for every visitor, including ones who
+// never leave the landing page. See components/ArcadeView.tsx.
+const ArcadeView = React.lazy(() => import("./components/ArcadeView"));
+// The mobile allow-list and the nav title read the same catalog the library
+// grid does — see lib/games.ts for why the categories are what they are.
+import { GAME_TITLES, isPlayableOnMobile } from "./lib/games";
+import { useDevice } from "./hooks/useIsMobile";
+// LANDING-ONLY WEBGL DECORATION, ALSO SPLIT OUT.
+// These two are the reason three.js + @react-three/fiber and a 1100-line fluid
+// simulation were in the entry chunk — the single biggest thing standing between
+// a visitor and a painted home page, for two effects that are purely cosmetic.
+// Lazy + `fallback={null}` means the landing renders immediately and the blob /
+// splash fade in a beat later; nothing else in the app references them.
+const CursorBlob3D = React.lazy(() =>
+  import("./components/glass/CursorBlob3D").then((m) => ({ default: m.CursorBlob3D })),
+);
+const SplashCursor = React.lazy(() =>
+  import("./components/SplashCursor").then((m) => ({ default: m.SplashCursor })),
+);
 import { NeonViewportGlow } from "./components/NeonViewportGlow";
 import { SafeErrorBoundary } from "./components/SafeErrorBoundary";
 import ActiveUsers from "./components/ActiveUsers";
 import { useActiveUsers } from "./hooks/useActiveUsers";
 import TrueFocus from "./components/TrueFocus";
 
-import { usePrivy, useLogin } from "@privy-io/react-auth";
-import { useWallets } from "@privy-io/react-auth/solana";
-import { useBackendAuth, AUTH_TOKEN_KEY } from "./hooks/useBackendAuth";
-import { WalletPanel } from "./components/WalletPanel";
+// Auth comes from our own deferred context, not from Privy's hooks — the SDK
+// is fetched on idle and mounted outside this tree so it can't block first
+// paint. src/auth/index.tsx explains the arrangement.
+import { useAuth, useOnLoginComplete } from "./auth";
+import { refreshSession, endSession, AUTH_TOKEN_KEY } from "./hooks/useBackendAuth";
+// LAZY for the same reason as SidebarMenu: it's a modal that nobody has
+// opened yet, and it reaches @solana/kit for the balance readout.
+const WalletPanel = React.lazy(() =>
+  import("./components/WalletPanel").then((m) => ({ default: m.WalletPanel })),
+);
 import { profileApi, ApiError } from "./lib/api";
 import { AVATAR_LIST } from "./lib/avatars";
 
@@ -78,7 +155,6 @@ type View =
   | "trivia"
   | "golf"
   | "clumsy"
-  | "killer"
   | "pugshooter"
   | "account_setup";
 
@@ -100,31 +176,66 @@ interface BackendAccount {
 const PROFILE_STORAGE_KEY = "neon_arcade_profile_v2";
 const LEGACY_PROFILE_KEY = "neon_arcade_profile";
 
+/**
+ * Private-wager `gameKey` → the arcade view that hosts it.
+ *
+ * The keys mirror the private-wager catalog (and the server's CATALOG); the
+ * values are this file's own `View` union. Only "connect" differs by name, and
+ * that mismatch is exactly why this table exists rather than a cast.
+ */
+const PRIVATE_WAGER_VIEWS: Record<string, View> = {
+  chess: "chess",
+  connect: "neonconnect",
+  volley: "volley",
+  trivia: "trivia",
+  cells: "cells",
+  asteroids: "asteroids",
+  golf: "golf",
+  clumsy: "clumsy",
+  pugshooter: "pugshooter",
+};
+
 export default function App() {
   const { activeUsers, connected } = useActiveUsers();
+  // isTouch gates which games exist for this visitor; isNarrow gates layout.
+  // See hooks/useIsMobile.ts for why those are two different questions.
+  const { isTouch, isNarrow } = useDevice();
 
-  // Privy session + the bridge that turns it into our backend JWT
-  const { ready: privyReady, authenticated, logout } = usePrivy();
-  const { wallets } = useWallets();
+  // Privy session + the bridge that turns it into our backend JWT.
+  // `authLoaded` is new: it's false for the brief window between first paint
+  // and the auth chunk arriving, during which `ready` is also false but for a
+  // different reason — nothing is wrong, the SDK simply isn't up yet.
+  const {
+    loaded: authLoaded,
+    ready: privyReady,
+    authenticated,
+    wallets,
+    login,
+    logout,
+  } = useAuth();
 
   // The Create Account panel opens the moment Privy sign-on completes —
   // not after the wallet appears and the backend signature exchange
   // lands. AccountSetup itself shows the wallet/signature progress and
   // self-dismisses for accounts that are already complete, so following
   // up unconditionally is safe.
-  const { login } = useLogin({
-    onComplete: () => {
-      setGameInSession(false);
-      setView("account_setup");
-    },
+  useOnLoginComplete(() => {
+    setGameInSession(false);
+    setView("account_setup");
   });
-  const { clearSession } = useBackendAuth();
+  // Sign-out goes through `endSession()` rather than the hook's
+  // `clearSession()`: the token has to be REVOKED on the server before it
+  // is thrown away locally, or every other copy of it stays live for the
+  // rest of its 30 days. See handleDisconnectWallet.
   // "Already auto-followed-up once this session" — restored sessions get
   // one automatic push into Create Account; after that the gates
   // (Connect / Play Now / tiles) take over.
   const autoFollowUpDone = React.useRef(false);
 
   const { win, balance } = useNeonBucks();
+  // Only used to EVICT on sign-out (see handleDisconnectWallet) — App itself
+  // runs no queries.
+  const queryClient = useQueryClient();
   const [view, setView] = React.useState<View>("landing");
   const [profile, setProfile] = React.useState<Profile | null>(null);
   // Backend account status — drives the sign-in gate on Connect /
@@ -141,21 +252,77 @@ export default function App() {
     return saved !== null ? parseFloat(saved) : 0.5;
   });
   const [showVolumeConfig, setShowVolumeConfig] = React.useState(false);
-  
-  const [showNotifications, setShowNotifications] = React.useState(false);
-  const notificationRef = React.useRef<HTMLDivElement>(null);
 
-  React.useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (notificationRef.current && !notificationRef.current.contains(event.target as Node)) {
-        setShowNotifications(false);
+  // NOTIFICATIONS. The bell (and its outside-click handling) now lives in
+  // <NotificationCenter/>; App only owns the two things the centre can't:
+  // whether a match is running, and which sidebar panel a row should open.
+  // `clearAll` is only used on sign-out: notifications are addressed to the
+  // account that just left, so they must not survive into the next one.
+  const { setInGame: setNotificationsInGame, clearAll: clearNotifications } =
+    useNotifications();
+
+  /**
+   * "Open the drawer on THIS panel" — set by a notification row just before
+   * the drawer is opened. Cleared when the drawer closes, never while it is
+   * open (SidebarMenu only reads it on the closed→open edge, so clearing it
+   * mid-flight would bounce the user back to the menu).
+   */
+  const [sidebarTarget, setSidebarTarget] = React.useState<
+    { panel: "friends" | "messages"; username?: string } | null
+  >(null);
+
+  const openSidebarPanel = React.useCallback(
+    (panel: "friends" | "messages", username?: string) => {
+      setSidebarTarget({ panel, username });
+      setMenuOpen(true);
+    },
+    []
+  );
+
+  const closeSidebar = React.useCallback(() => {
+    setMenuOpen(false);
+    setSidebarTarget(null);
+  }, []);
+
+  /**
+   * ACCEPTING AN INVITE HAS TO GET YOU TO THE GAME.
+   *
+   * A private room does not run the game — when everyone is ready the server
+   * drives each player's normal matchmaking and the game's OWN start event
+   * lands a tick later. A room opened from a lobby is already standing on that
+   * screen, so something is listening. A room opened from the nav-bar bell is
+   * not: the invitee could be on the landing page, and the match would start
+   * with nobody home.
+   *
+   * So the arcade navigates to the invited game BEFORE the waiting room opens.
+   * Returns a REASON string when it refuses (null when it navigated), and
+   * `PrivateWagerHost` shows that reason rather than opening a room the player
+   * cannot play — leaving the invite in the bell so they can take it later.
+   *
+   * TWO refusals:
+   *   MID-MATCH  navigating would unmount a live game. The server-side match
+   *              keeps running, so the player would simply stop playing one
+   *              they cannot get back to — and lose it. Never worth an invite.
+   *   DEVICE     the same gate `requireAccount` applies, so a phone cannot be
+   *              dropped into a keyboard-only game by accepting an invite.
+   */
+  const openGameForPrivateWager = React.useCallback(
+    (gameKey: string): string | null => {
+      const dest = PRIVATE_WAGER_VIEWS[gameKey];
+      if (!dest) return "That game isn't available in this build.";
+      if (gameInSession) {
+        return "You're in the middle of a match. Finish it first, then join.";
       }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-    };
-  }, [notificationRef]);
+      if (isTouch && !isPlayableOnMobile(dest)) {
+        return "That game needs a keyboard — join from a computer.";
+      }
+      closeSidebar();
+      setView(dest);
+      return null;
+    },
+    [isTouch, gameInSession, closeSidebar]
+  );
+
   const [lastClaimedDate, setLastClaimedDate] = React.useState<string | null>(() => {
     return localStorage.getItem("last_claimed_daily");
   });
@@ -205,8 +372,16 @@ export default function App() {
 
   // Close navigation menu whenever the active view changes or a game session finishes/changes
   React.useEffect(() => {
-    setMenuOpen(false);
-  }, [view, gameInSession]);
+    closeSidebar();
+  }, [view, gameInSession, closeSidebar]);
+
+  // MID-MATCH SUPPRESSION. `gameInSession` is the same flag that hides the nav
+  // bar, so this is exactly "the player is playing": pop-ups are held back and
+  // replayed the moment it goes false. Everything still lands in the bell
+  // while it is true — quiet, not lost.
+  React.useEffect(() => {
+    setNotificationsInGame(gameInSession);
+  }, [gameInSession, setNotificationsInGame]);
 
   // Fetch the backend account for the signed-in wallet and route into
   // AccountSetup when it's missing/unfinished. Returns the fresh status
@@ -229,6 +404,27 @@ export default function App() {
     }
   }, []);
 
+  // STAY SIGNED IN. On every load a stored session token is traded for a
+  // fresh 30-day one, so a player who keeps visiting is never signed out
+  // and never sees a signature prompt on a device they have already used.
+  // Sessions used to last a day, which meant a wallet popup most mornings
+  // — and every one of those was another chance to end up back on the
+  // account screens.
+  //
+  // Only a FINISHED account is seeded into state here. An unfinished one
+  // is deliberately left null so the follow-up effect below still runs and
+  // routes that person into setup, exactly as it did before.
+  React.useEffect(() => {
+    let cancelled = false;
+    refreshSession().then((acct) => {
+      if (cancelled || !acct?.username || !acct.totpEnabled) return;
+      setAccount({ username: acct.username, totpEnabled: acct.totpEnabled });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Follow-up rule: ANY signed-in session without a finished account
   // lands in Create Account — fresh logins via useLogin's onComplete
   // above, and restored/redirect sessions here. The panel drives the
@@ -236,6 +432,13 @@ export default function App() {
   // account turns out to be complete, so this never strands anyone.
   React.useEffect(() => {
     if (!authenticated) {
+      // BEFORE THE AUTH CHUNK LANDS, `authenticated` IS FALSE FOR EVERYONE
+      // — including someone with a perfectly live session. Treating that
+      // window as "signed out" wiped the account the boot refresh had just
+      // seeded, so the panel-free reload it exists to give was thrown away
+      // a frame later. Wait for the SDK to actually report before believing
+      // a sign-out; `showSignedIn` below hedges the same way for the nav.
+      if (!authLoaded) return;
       autoFollowUpDone.current = false;
       setAccount(null);
       return;
@@ -273,7 +476,7 @@ export default function App() {
     if (wallets.length === 0) return;
     followUp();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [privyReady, authenticated, wallets, account, refreshAccount]);
+  }, [authLoaded, privyReady, authenticated, wallets, account, refreshAccount]);
 
   // Fresh device with a finished account: rebuild the local display
   // profile from the backend username (avatar defaults; editable in
@@ -290,6 +493,60 @@ export default function App() {
   // username claimed, PIN set, authenticator proven.
   const hasAccount = !!(account?.username && account.totpEnabled);
 
+  // Deferring the auth SDK means `authenticated` is false for the first
+  // moment after load even for someone with a live session — which would
+  // flash "Connect" in the nav at a signed-in user before flipping to
+  // "Wallet" a second later. A stored session token is proof they WERE
+  // signed in, so show the signed-in affordance from the first paint and let
+  // the real value take over the instant it arrives. Read once: this is about
+  // the initial render, and re-reading localStorage per render would let a
+  // sign-out mid-session be masked by a stale token.
+  const hadSession = React.useMemo(() => !!localStorage.getItem(AUTH_TOKEN_KEY), []);
+  const showSignedIn = authenticated || (!authLoaded && hadSession);
+
+  // IDLE PREFETCH. Code-splitting trades entry-chunk weight for a fetch at
+  // navigation time, and the library is where essentially every visitor goes
+  // next — so warm its chunk once the browser is idle. By the time anyone
+  // clicks "Explore Games" the module is in the module map and the Suspense
+  // fallback never appears; the landing page still paints without it.
+  //
+  // Only the library, deliberately. Prefetching the games too would pull
+  // megabytes (Asteroids' engine, three.js, Stockfish) on a connection we
+  // know nothing about, to win a spinner the GameChunkLoading screen already
+  // covers gracefully.
+  React.useEffect(() => {
+    if (view !== "landing") return;
+    const w = window as typeof window & {
+      requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    const warm = () => void import("./components/ArcadeView");
+    if (w.requestIdleCallback) {
+      const id = w.requestIdleCallback(warm, { timeout: 3000 });
+      return () => w.cancelIdleCallback?.(id);
+    }
+    const id = window.setTimeout(warm, 1500);
+    return () => clearTimeout(id);
+  }, [view]);
+
+  // DEFERRED-AUTH REPLAY. Clicking a tile in the first moment after load —
+  // before the auth chunk has landed — parks the destination in pendingDest
+  // and asks for a login. A returning user with a finished account never sees
+  // a modal (Privy restores their session and the bridge skips it), so
+  // without this their click would just evaporate. Once the account is known
+  // to be complete, honour where they were going.
+  //
+  // handleAccountComplete clears pendingDest synchronously on the setup path,
+  // so this effect can't double-navigate behind it.
+  React.useEffect(() => {
+    if (!hasAccount) return;
+    const dest = pendingDest.current;
+    if (!dest || dest === "account_setup") return;
+    pendingDest.current = null;
+    setGameInSession(false);
+    setView(dest);
+  }, [hasAccount]);
+
   // THE GATE. Connect, Play Now and every game tile route through here:
   //   signed out            → Privy wallet popup (setup follows sign-in)
   //   signed in, no account → username + PIN + authenticator screen
@@ -297,8 +554,48 @@ export default function App() {
   const requireAccount = React.useCallback(
     (dest: View) => {
       setGameInSession(false);
-      if (!privyReady) return;
-      if (!authenticated) {
+      // DEVICE GATE, ahead of the auth gate. The library already hides
+      // PC-only tiles on touch, but this is the funnel EVERY game entry runs
+      // through — the sidebar, a private-wager invite for a keyboard game,
+      // and the post-sign-in `pendingDest` replay all land here too. Blocking
+      // once, here, means a phone cannot end up inside Asteroids by any route
+      // rather than only by the route we remembered to cover.
+      if (isTouch && !isPlayableOnMobile(dest)) {
+        setView("arcade");
+        return;
+      }
+      // A FINISHED ACCOUNT IS ENOUGH. Ask about the arcade session before
+      // asking Privy anything.
+      //
+      // This is the order the gate always should have used. A player with a
+      // valid session token, a registered username and a proven
+      // authenticator IS signed in to Neon Arcade — that is what the whole
+      // account system establishes. Privy is how they reach their WALLET,
+      // which matters for money, not for opening a game.
+      //
+      // Asking Privy first meant a returning player whose SDK had not
+      // finished reporting yet fell through to `login()`, and `login()`
+      // does nothing for someone already authenticated (and merely queues
+      // an intent when Privy is not ready). Either way the click
+      // evaporated: no navigation, no modal, no error. Pressing PLAY NOW
+      // simply did nothing — indefinitely, if Privy never settled.
+      if (hasAccount) {
+        setView(dest);
+        return;
+      }
+      // Signed in to Privy but the account is unfinished — go and finish it,
+      // whatever the other readiness flags say.
+      if (authenticated) {
+        pendingDest.current = dest;
+        setView("account_setup");
+        return;
+      }
+      // Not signed in — OR the auth chunk is still in flight, which looks the
+      // same from here. Either way: remember the destination and ask to log
+      // in. `login()` is safe to call before the SDK is up; it queues the
+      // intent and the bridge replays it once Privy reports ready, so an
+      // early click is never silently swallowed.
+      if (!authLoaded || !privyReady || !authenticated) {
         pendingDest.current = dest;
         login();
         return;
@@ -310,7 +607,7 @@ export default function App() {
       }
       setView(dest);
     },
-    [privyReady, authenticated, hasAccount, login]
+    [authLoaded, privyReady, authenticated, hasAccount, login, isTouch]
   );
 
   const handleVolumeChange = (vol: number) => {
@@ -348,11 +645,69 @@ export default function App() {
     setView(dest === "account_setup" ? "arcade" : dest);
   };
 
+  /**
+   * SIGN OUT — the Privy wallet and the arcade account, in one action.
+   *
+   * These were never really one action. Disconnecting dropped the backend
+   * JWT and called Privy's logout, but left every trace of WHO was signed
+   * in: `profile` and `account` in state, and the display profile in
+   * localStorage. So the nav kept showing the previous player's name and
+   * avatar, and a reload restored them — the account looked signed in
+   * because, as far as the UI was concerned, it still was. On a shared
+   * machine the next person inherited that identity.
+   *
+   * Now everything that identifies the account is torn down in one place,
+   * in a deliberate order:
+   *
+   *   1. Revoke server-side FIRST, while the token still exists to
+   *      authenticate with. That is what ends the session on other
+   *      devices — a 30-day token cannot be un-issued afterwards.
+   *   2. Tear down locally, unconditionally. A failed request must never
+   *      leave somebody signed in on the machine in front of them.
+   *   3. Log Privy out last, so a slow wallet SDK cannot delay any of it.
+   *
+   * Every step is failure-tolerant on purpose: sign-out is the one action
+   * that has to work even when nothing else does.
+   */
   const handleDisconnectWallet = async () => {
+    // Close anything that renders account data.
     setShowWallet(false);
+    setShowSettings(false);
+    setMenuOpen(false);
+    setSidebarTarget(null);
+
+    // 1 + 2. Revoke, then forget. endSession() does both and never throws.
     disconnectGameSocket(); // drop the game socket so a stale-token session can't linger
-    clearSession(); // our backend JWT dies with the Privy session
-    await logout();
+    await endSession();
+
+    // Everything we fetched AS that account. The QueryClient is a
+    // module-level singleton, and `enabled: false` only stops refetching — it
+    // never evicts. Without this, the nav-bar bell (which is rendered signed
+    // out too) keeps rendering the previous account's friend requests and
+    // unread DM previews from cache, on a shared machine, indefinitely.
+    queryClient.clear();
+    clearNotifications();
+
+    // The display identity: state AND the copy that survives a reload.
+    // Missing this last line is what made sign-out look broken.
+    setAccount(null);
+    setProfile(null);
+    localStorage.removeItem(PROFILE_STORAGE_KEY);
+
+    // Back to the signed-out world. Leaving the user inside the arcade (or
+    // a game) after signing out is how they end up hitting gates that
+    // re-prompt for a signature they did not ask for.
+    pendingDest.current = null;
+    autoFollowUpDone.current = false;
+    setGameInSession(false);
+    setView("landing");
+
+    // 3. And the wallet session itself.
+    try {
+      await logout();
+    } catch (err) {
+      console.error("Privy sign-out failed:", err);
+    }
   };
 
   const handleProfileUpdate = (newProfile: Profile) => {
@@ -363,21 +718,22 @@ export default function App() {
     localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(next));
   };
 
-  const viewToGameTitle: Record<string, string> = {
-    neonconnect: "Neon Connect",
-    chess: "Neon Chess",
-    trivia: "Neon Quiz",
-    cells: "Neon Cells",
-    asteroids: "Neon Asteroids",
-    volley: "Neon Volley",
-    golf: "Neon Golf Clash",
-    clumsy: "Neon Clumsy",
-    killer: "Neon Killer",
-    pugshooter: "Neon Pug Shooter",
-  };
+  // Titles come from the catalog now — this was a second, hand-maintained
+  // copy of the same nine strings.
+  const viewToGameTitle: Record<string, string> = GAME_TITLES;
 
   return (
-    <div className="font-sans selection:bg-cyan-500/30 selection:text-cyan-200 h-screen overflow-hidden bg-[#081616] text-[#d7e5e5]">
+    /*
+      h-[100dvh], not h-screen. `100vh` on mobile Safari/Chrome means the
+      viewport with the URL bar HIDDEN, so with the bar showing — which is how
+      the page first loads — the app is taller than the visible area and its
+      bottom is cut off, while `overflow-hidden` here forbids scrolling to
+      reach it. `100dvh` tracks the *dynamic* viewport and resizes as the bar
+      retracts. (Two height classes can't be stacked as a fallback here: which
+      one wins depends on stylesheet order, not attribute order. dvh is
+      supported everywhere this app already runs.)
+    */
+    <div className="font-sans selection:bg-cyan-500/30 selection:text-cyan-200 h-[100dvh] overflow-hidden bg-[#081616] text-[#d7e5e5]">
       <LiquidFilter />
       <NeonViewportGlow />
       {(view === "landing" ||
@@ -389,23 +745,60 @@ export default function App() {
         view === "asteroids" ||
         view === "golf" ||
         view === "clumsy" ||
-        view === "killer" ||
         view === "pugshooter" ||
         view === "volley") && (
-        <SidebarMenu 
-          gameTitle={viewToGameTitle[view] || "Neon Arcade"} 
-          isOpen={menuOpen}
-          onClose={() => setMenuOpen(false)}
-          showDefaultTrigger={false}
-        />
+        <React.Suspense fallback={null}>
+          <SidebarMenu
+            gameTitle={viewToGameTitle[view] || "Neon Arcade"}
+            isOpen={menuOpen}
+            onClose={closeSidebar}
+            showDefaultTrigger={false}
+            onOpenSettings={() => setShowSettings(true)}
+            /* A notification row opens the drawer already on the right panel
+               (and, for a message, already in the right conversation). */
+            openTo={sidebarTarget}
+          />
+        </React.Suspense>
+      )}
+
+      {/*
+        PRIVATE WAGER host + NOTIFICATIONS — exactly one instance each, app
+        level, so they survive every view change (an invite must not be missed
+        because you were on a different screen). Deliberately NOT inside
+        SidebarMenu's conditional: an invite can land while you are mid-lobby.
+
+        Gated on a finished account because every private:* / social:* event
+        needs the authed socket, which only exists once a username + TOTP are
+        set up. Unmounting the bridge on sign-out is also what clears the feed
+        — see NotificationsSocketBridge.
+      */}
+      {hasAccount && (
+        <React.Suspense fallback={null}>
+          <NotificationsSocketBridge />
+          {/* onOpenGame is what makes "accept from the nav bar" actually
+              playable — it navigates to the game so its screen is mounted and
+              listening before the match starts. */}
+          <PrivateWagerHost onOpenGame={openGameForPrivateWager} />
+          {/* Pop-ups sit at z-[150]: above the private-wager room (z-[110])
+              and its countdown (z-[125]), below the sidebar drawer (z-[200])
+              whose backdrop is meant to own the screen. */}
+          <NotificationToasts
+            onOpenMessages={(username) => openSidebarPanel("messages", username)}
+            onOpenFriends={() => openSidebarPanel("friends")}
+          />
+        </React.Suspense>
       )}
 
       {/* Standalone Menu Button aligned vertically with the nav bar at top-6 */}
       {view !== "cells" && view !== "asteroids" && view !== "account_setup" && !gameInSession && (
         <button
           onClick={() => setMenuOpen(true)}
-          className="fixed top-6 left-6 z-[60] p-2.5 border border-[#00FFD1]/40 rounded-full backdrop-blur-md hover:scale-105 active:scale-95 transition-all flex items-center justify-center cursor-pointer group select-none pointer-events-auto"
+          /* ml/mt safe-area insets keep it clear of the notch in landscape;
+             aria-label because `title` tooltips never appear on touch, so an
+             icon-only control would otherwise be unlabelled there. */
+          className="fixed top-6 left-6 z-[60] p-2.5 border border-[#00FFD1]/40 rounded-full backdrop-blur-md bg-[#081616]/60 hover:scale-105 active:scale-95 transition-all flex items-center justify-center cursor-pointer group select-none pointer-events-auto ml-[env(safe-area-inset-left)] mt-[env(safe-area-inset-top)]"
           title="Open Navigation Menu"
+          aria-label="Open navigation menu"
         >
           <MenuIcon size={24} className="text-white group-hover:rotate-12 transition-transform duration-300" />
         </button>
@@ -432,40 +825,59 @@ export default function App() {
                 }}
               />
 
-              <div className="relative z-10 flex w-full items-center gap-2 md:gap-4 p-2 pl-4 md:pl-6 border border-[#00FFD1]/40 rounded-full transition-all duration-500">
-                {/* Logo */}
+              {/*
+                pl-16 below lg: the floating hamburger is `fixed top-6 left-6`
+                and the nav bar starts at x=16px, so with the old flat pl-4 the
+                button sat directly on top of the logo at every width where the
+                max-w-5xl pill reaches the left edge (~1160px and under). The
+                extra left padding reserves that corner for it; from lg up the
+                pill is inset far enough that it isn't needed.
+              */}
+              <div className="relative z-10 flex w-full items-center gap-1 sm:gap-2 md:gap-4 p-2 pl-16 lg:pl-6 border border-[#00FFD1]/40 rounded-full transition-all duration-500">
+                {/* Logo. The wordmark is dropped on the narrowest screens —
+                    the mark itself still identifies the app, and the ~90px it
+                    frees is the difference between the nav fitting at 390px
+                    and its controls being pushed off the pill. */}
                 <div
-                  className="flex items-center gap-2 mr-auto cursor-pointer"
+                  className="flex items-center gap-2 mr-auto cursor-pointer min-w-0"
                   onClick={navigateToLanding}
                 >
-                  <img src="/NeonArcadeLogo.png" alt="Neon Arcade Logo" className="h-6 md:h-8 w-auto object-contain drop-shadow-[0_0_8px_rgba(0,255,209,0.5)]" />
-                  <span className="text-white font-black italic tracking-tighter text-sm md:text-lg uppercase neon-text-glow whitespace-nowrap">
+                  <img src="/NeonArcadeLogo.png" alt="Neon Arcade Logo" className="h-6 md:h-8 w-auto object-contain drop-shadow-[0_0_8px_rgba(0,255,209,0.5)] shrink-0" />
+                  <span className="hidden xs:block text-white font-black italic tracking-tighter text-sm md:text-lg uppercase neon-text-glow whitespace-nowrap">
                     NEON ARCADE
                   </span>
                 </div>
 
-                {/* Desktop Links */}
-                <div className="hidden md:flex items-center gap-1">
+                {/*
+                  Main Menu / Library. These used to be `hidden md:flex`, which
+                  left phones with NO way to reach the library from the nav at
+                  all. They are icon-only until lg (the labels were already
+                  `hidden lg:inline`), so showing them costs ~72px and gives
+                  mobile the same two destinations desktop has.
+                */}
+                <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
                   <button
                     onClick={navigateToLanding}
-                    className={`flex items-center gap-2 px-3 md:px-4 py-2 rounded-full transition-all text-xs md:text-sm font-medium ${
+                    aria-label="Main Menu"
+                    className={`flex items-center gap-2 px-2.5 sm:px-3 md:px-4 py-2 min-h-[44px] rounded-full transition-all text-xs md:text-sm font-medium ${
                       view === "landing"
                         ? "text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]"
                         : "text-white/60 hover:text-white"
                     }`}
                   >
-                    <Compass className="w-4 h-4" />
+                    <Compass className="w-4 h-4 shrink-0" />
                     <span className="hidden lg:inline">Main Menu</span>
                   </button>
                   <button
                     onClick={handlePlayNow}
-                    className={`flex items-center gap-2 px-3 md:px-4 py-2 rounded-full transition-all text-xs md:text-sm font-medium ${
+                    aria-label="Library"
+                    className={`flex items-center gap-2 px-2.5 sm:px-3 md:px-4 py-2 min-h-[44px] rounded-full transition-all text-xs md:text-sm font-medium ${
                       view === "arcade"
                         ? "text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]"
                         : "text-white/60 hover:text-white"
                     }`}
                   >
-                    <Gamepad2 className="w-4 h-4" />
+                    <Gamepad2 className="w-4 h-4 shrink-0" />
                     <span className="hidden lg:inline">Library</span>
                   </button>
                 </div>
@@ -474,7 +886,7 @@ export default function App() {
                 {profile && (
                   <div
                     onClick={() => setShowSettings(true)}
-                    className="flex items-center gap-3 px-4 py-2 border-l border-white/10 cursor-pointer group hover:bg-white/5 transition-colors rounded-full"
+                    className="flex items-center gap-2 md:gap-3 pl-2 pr-1 sm:px-4 py-2 border-l border-white/10 cursor-pointer group hover:bg-white/5 transition-colors rounded-full shrink-0"
                   >
                     <div className="w-8 h-8 rounded-full bg-white/5 overflow-hidden border border-[#00FFD1]/40 group-hover:scale-110 transition-transform flex items-center justify-center relative z-20">
                       {profile.avatarUrl &&
@@ -495,115 +907,33 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Notification Bell Icon & Daily Reward Dropdown */}
-                <div className="relative z-30" ref={notificationRef}>
-                  <button
-                    onClick={() => setShowNotifications(!showNotifications)}
-                    className="p-2.5 border border-white/10 hover:border-[#00FFD1]/50 hover:bg-[#00FFD1]/10 rounded-full transition-all flex items-center justify-center relative cursor-pointer group pointer-events-auto"
-                    title="System Notifications"
-                  >
-                    <Bell className="w-4 h-4 text-white group-hover:text-[#00FFD1] transition-colors" />
-                    {dailyAvailable && (
-                      <span className="absolute top-0.5 right-0.5 w-2 h-2 bg-rose-500 rounded-full animate-ping shadow-[0_0_10px_#f43f5e]" />
-                    )}
-                    {dailyAvailable && (
-                      <span className="absolute top-0.5 right-0.5 w-2 h-2 bg-rose-500 rounded-full shadow-[0_0_8px_#f43f5e]" />
-                    )}
-                  </button>
-
-                  <AnimatePresence>
-                    {showNotifications && (
-                      <motion.div
-                        initial={{ opacity: 0, scale: 0.95, y: 10 }}
-                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                        className="absolute right-0 mt-3 w-82 bg-[#081616]/98 border border-[#00FFD1]/40 rounded-2xl p-4 shadow-[0_0_50px_rgba(0,255,209,0.15)] backdrop-blur-xl z-[100] text-left font-mono space-y-4"
-                      >
-                        <div className="flex items-center justify-between border-b border-[#00FFD1]/20 pb-2">
-                          <span className="text-[10px] text-[#00FFD1] font-black uppercase tracking-wider flex items-center gap-1.5 animate-pulse">
-                            <Sparkles className="w-3.5 h-3.5" /> System Feeds
-                          </span>
-                          <span className="text-[8px] text-white/30 uppercase flex items-center gap-0">
-                            Wallet: <img src="/neon-bucks-icon.png" alt="NB" referrerPolicy="no-referrer" className="h-4 w-auto inline-block drop-shadow-[0_0_5px_rgba(0,255,209,0.5)] -mr-0.5" /> {balance}
-                          </span>
-                        </div>
-
-                        <div className="space-y-3">
-                          {/* Daily Reward Row */}
-                          <div className={`p-2 rounded-xl border transition-all ${
-                            dailyAvailable 
-                              ? 'border-[#00FFD1]/30 bg-[#00FFD1]/5 hover:bg-[#00FFD1]/10' 
-                              : 'border-white/5 bg-white/2'
-                          }`}>
-                            <div className="flex items-center gap-2.5">
-                              <div className={`w-10 h-10 rounded-xl shrink-0 flex items-center justify-center ${
-                                dailyAvailable ? 'bg-[#00FFD1]/20 text-[#00FFD1]' : 'bg-white/5 text-white/30'
-                              }`}>
-                                <Gift className={`w-4 h-4 ${dailyAvailable ? 'animate-bounce' : ''}`} />
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <h5 className={`text-[11px] font-black uppercase tracking-wider leading-none ${
-                                  dailyAvailable ? 'text-[#00FFD1]' : 'text-white/60'
-                                }`}>
-                                  Daily Reward
-                                </h5>
-                                <p className="text-[8px] text-white/40 uppercase tracking-widest mt-1 truncate">
-                                  {dailyAvailable 
-                                    ? "20 Neon Bucks ready"
-                                    : "Claimed today"
-                                  }
-                                </p>
-                              </div>
-                              
-                              <div className="shrink-0">
-                                {dailyAvailable ? (
-                                  <button
-                                    onClick={handleClaimDaily}
-                                    className="px-3 py-1.5 bg-[#00FFD1] hover:bg-[#00e0b7] text-[#081616] font-black text-[9px] uppercase tracking-wider rounded-full transition-transform hover:scale-[1.02] active:scale-95 cursor-pointer shadow-[0_0_10px_rgba(0,255,209,0.3)] pointer-events-auto"
-                                  >
-                                    Claim
-                                  </button>
-                                ) : (
-                                  <div className="flex items-center gap-0.5 text-[8px] text-[#00FFD1] font-bold uppercase mr-1">
-                                    <Check className="w-3 h-3 animate-pulse" /> Done
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Welcome System Notification */}
-                          <div className="p-2.5 rounded-xl border border-white/5 bg-white/2">
-                            <div className="flex gap-3">
-                              <div className="w-10 h-10 rounded-xl bg-cyan-500/10 text-[#00FFD1] shrink-0 flex items-center justify-center">
-                                <Sparkles className="w-4 h-4" />
-                              </div>
-                              <div className="space-y-1 flex-1">
-                                <h5 className="text-xs font-black text-white/80 uppercase">
-                                  Arcade Welcome
-                                </h5>
-                                <p className="text-[9px] text-white/40 leading-relaxed uppercase tracking-wider">
-                                  Welcome to Neon Arcade! Play matches using Neon Bucks. Double your stake in Slayer or Snake formats.
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="text-[8px] text-center text-white/20 uppercase tracking-widest border-t border-white/5 pt-2">
-                          Secure Blockchain Sync Ready
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
+                {/*
+                  NOTIFICATIONS. The bell used to be a daily-reward dropdown
+                  and nothing else; it is now the arcade's whole inbox —
+                  private-wager invites (with a JOIN that opens the waiting
+                  room), friend requests, unread conversations, and the daily
+                  reward as one row among them. Message and friend rows open
+                  the matching sidebar panel through `openSidebarPanel`.
+                */}
+                <NotificationCenter
+                  signedIn={hasAccount}
+                  dailyAvailable={dailyAvailable}
+                  onClaimDaily={handleClaimDaily}
+                  balance={balance}
+                  onOpenMessages={(username) => openSidebarPanel("messages", username)}
+                  onOpenFriends={() => openSidebarPanel("friends")}
+                />
 
                 {/* Logged out → "Connect" opens the Privy login modal.
                     Logged in → "Wallet" opens the embedded-wallet panel
                     (address + SOL balance + export/disconnect). */}
-                {authenticated ? (
+                {showSignedIn ? (
                   <button
-                    onClick={() => setShowWallet(true)}
+                    // Before the auth chunk lands `authenticated` is still
+                    // false even for a signed-in user, so opening the panel
+                    // would show nothing. Route through the gate instead —
+                    // it queues the intent and resolves once Privy is up.
+                    onClick={() => (authenticated ? setShowWallet(true) : requireAccount(view))}
                     title="Open your wallet"
                     className="flex items-center gap-2 bg-gradient-to-r from-[#00FFD1] to-[#00e0b7] text-[#00382c] px-4 md:px-5 py-2 md:py-2.5 rounded-full font-bold text-[10px] md:text-sm transition-all shadow-[0_0_40px_rgba(0,255,209,0.5)] hover:scale-105 active:scale-95 ml-1 md:ml-2 relative z-20 cursor-pointer"
                   >
@@ -652,11 +982,13 @@ export default function App() {
 
       <AnimatePresence>
         {showWallet && authenticated && (
-          <WalletPanel
-            profile={profile}
-            onClose={() => setShowWallet(false)}
-            onDisconnect={handleDisconnectWallet}
-          />
+          <React.Suspense fallback={null}>
+            <WalletPanel
+              profile={profile}
+              onClose={() => setShowWallet(false)}
+              onDisconnect={handleDisconnectWallet}
+            />
+          </React.Suspense>
         )}
       </AnimatePresence>
 
@@ -696,23 +1028,15 @@ export default function App() {
             {/* Every tile routes through requireAccount: signed-out users
                 get the Privy popup (then username + PIN + authenticator)
                 before any game opens. */}
-            <ArcadeView
-              onBack={navigateToLanding}
-              onSelectNeonConnect={() => requireAccount("neonconnect")}
-              onSelectChess={() => requireAccount("chess")}
-              onSelectVolley={() => requireAccount("volley")}
-              onSelectCells={() => requireAccount("cells")}
-              onSelectAsteroids={() => requireAccount("asteroids")}
-              onSelectTrivia={() => requireAccount("trivia")}
-              onSelectGolf={() => requireAccount("golf")}
-              onSelectClumsy={() => requireAccount("clumsy")}
-              onSelectKiller={() => requireAccount("killer")}
-              onSelectPugShooter={() => requireAccount("pugshooter")}
-              masterVolume={masterVolume}
-              onVolumeChange={handleVolumeChange}
-              showVolumeConfig={showVolumeConfig}
-              onToggleVolumeConfig={() => setShowVolumeConfig(!showVolumeConfig)}
-            />
+            <React.Suspense fallback={<GameChunkLoading label="Library" />}>
+              <ArcadeView
+                onSelectGame={requireAccount}
+                masterVolume={masterVolume}
+                onVolumeChange={handleVolumeChange}
+                showVolumeConfig={showVolumeConfig}
+                onToggleVolumeConfig={() => setShowVolumeConfig(!showVolumeConfig)}
+              />
+            </React.Suspense>
           </motion.div>
         ) : view === "neonconnect" ? (
           <motion.div
@@ -722,14 +1046,16 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="h-full"
           >
-            <NeonConnectGame
-              onExit={() => {
-                setView("arcade");
-                setGameInSession(false);
-              }}
-              profile={profile}
-              onGameStatusChange={setGameInSession}
-            />
+            <React.Suspense fallback={<GameChunkLoading label="Neon Connect" />}>
+              <NeonConnectGame
+                onExit={() => {
+                  setView("arcade");
+                  setGameInSession(false);
+                }}
+                profile={profile}
+                onGameStatusChange={setGameInSession}
+              />
+            </React.Suspense>
           </motion.div>
         ) : view === "chess" ? (
           <motion.div
@@ -739,14 +1065,16 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="h-full"
           >
-            <ChessGame 
-              onExit={() => {
-                setView("arcade");
-                setGameInSession(false);
-              }} 
-              profile={profile} 
-              onGameStatusChange={setGameInSession}
-            />
+            <React.Suspense fallback={<GameChunkLoading label="Neon Chess" />}>
+              <ChessGame
+                onExit={() => {
+                  setView("arcade");
+                  setGameInSession(false);
+                }}
+                profile={profile}
+                onGameStatusChange={setGameInSession}
+              />
+            </React.Suspense>
           </motion.div>
         ) : view === "volley" ? (
           <motion.div
@@ -756,14 +1084,16 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="h-full"
           >
-            <VolleyGame
-              onExit={() => {
-                setView("arcade");
-                setGameInSession(false);
-              }}
-              profile={profile}
-              onGameStatusChange={setGameInSession}
-            />
+            <React.Suspense fallback={<GameChunkLoading label="Neon Volley" />}>
+              <VolleyGame
+                onExit={() => {
+                  setView("arcade");
+                  setGameInSession(false);
+                }}
+                profile={profile}
+                onGameStatusChange={setGameInSession}
+              />
+            </React.Suspense>
           </motion.div>
         ) : view === "cells" ? (
           <motion.div
@@ -773,7 +1103,19 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="h-full"
           >
-            <CellsGame onExit={() => setView("arcade")} profile={profile} />
+            <React.Suspense fallback={<GameChunkLoading label="Neon Cells" />}>
+              {/* onGameStatusChange was the one game missing it, which meant
+                  Cells was also the one game where a pop-up could land over a
+                  live match. Every other game already reported its state. */}
+              <CellsGame
+                onExit={() => {
+                  setView("arcade");
+                  setGameInSession(false);
+                }}
+                profile={profile}
+                onGameStatusChange={setGameInSession}
+              />
+            </React.Suspense>
           </motion.div>
         ) : view === "trivia" ? (
           <motion.div
@@ -783,14 +1125,16 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="h-full"
           >
-            <TriviaGame
-              onExit={() => {
-                setView("arcade");
-                setGameInSession(false);
-              }}
-              profile={profile}
-              onGameStatusChange={setGameInSession}
-            />
+            <React.Suspense fallback={<GameChunkLoading label="Neon Quiz" />}>
+              <TriviaGame
+                onExit={() => {
+                  setView("arcade");
+                  setGameInSession(false);
+                }}
+                profile={profile}
+                onGameStatusChange={setGameInSession}
+              />
+            </React.Suspense>
           </motion.div>
 
         ) : view === "golf" ? (
@@ -801,14 +1145,16 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="h-full"
           >
-            <GolfGame
-              onExit={() => {
-                setView("arcade");
-                setGameInSession(false);
-              }}
-              profile={profile}
-              onGameStatusChange={setGameInSession}
-            />
+            <React.Suspense fallback={<GameChunkLoading label="Neon Golf Clash" />}>
+              <GolfGame
+                onExit={() => {
+                  setView("arcade");
+                  setGameInSession(false);
+                }}
+                profile={profile}
+                onGameStatusChange={setGameInSession}
+              />
+            </React.Suspense>
           </motion.div>
         ) : view === "clumsy" ? (
           <motion.div
@@ -818,31 +1164,16 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="h-full"
           >
-            <ClumsyGame
-              onExit={() => {
-                setView("arcade");
-                setGameInSession(false);
-              }}
-              profile={profile}
-              onGameStatusChange={setGameInSession}
-            />
-          </motion.div>
-        ) : view === "killer" ? (
-          <motion.div
-            key="killer"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="h-full"
-          >
-            <KillerGame
-              onExit={() => {
-                setView("arcade");
-                setGameInSession(false);
-              }}
-              profile={profile}
-              onGameStatusChange={setGameInSession}
-            />
+            <React.Suspense fallback={<GameChunkLoading label="Neon Clumsy" />}>
+              <ClumsyGame
+                onExit={() => {
+                  setView("arcade");
+                  setGameInSession(false);
+                }}
+                profile={profile}
+                onGameStatusChange={setGameInSession}
+              />
+            </React.Suspense>
           </motion.div>
         ) : view === "pugshooter" ? (
           <motion.div
@@ -852,14 +1183,16 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="h-full"
           >
-            <PugShooterGame
-              onExit={() => {
-                setView("arcade");
-                setGameInSession(false);
-              }}
-              profile={profile}
-              onGameStatusChange={setGameInSession}
-            />
+            <React.Suspense fallback={<GameChunkLoading label="Neon Pug Shooter" />}>
+              <PugShooterGame
+                onExit={() => {
+                  setView("arcade");
+                  setGameInSession(false);
+                }}
+                profile={profile}
+                onGameStatusChange={setGameInSession}
+              />
+            </React.Suspense>
           </motion.div>
         ) : (
           <motion.div
@@ -869,20 +1202,22 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="h-full"
           >
-            <AsteroidsGame
-              onExit={() => {
-                setView("arcade");
-                setGameInSession(false);
-              }}
-              profile={profile}
-              onGameStatusChange={setGameInSession}
-            />
+            <React.Suspense fallback={<GameChunkLoading label="Neon Asteroids" />}>
+              <AsteroidsGame
+                onExit={() => {
+                  setView("arcade");
+                  setGameInSession(false);
+                }}
+                profile={profile}
+                onGameStatusChange={setGameInSession}
+              />
+            </React.Suspense>
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* Footer (Shared) */}
-      {view !== "asteroids" && view !== "cells" && view !== "volley" && view !== "chess" && view !== "golf" && view !== "clumsy" && view !== "killer" && view !== "pugshooter" && (
+      {view !== "asteroids" && view !== "cells" && view !== "volley" && view !== "chess" && view !== "golf" && view !== "clumsy" && view !== "pugshooter" && (
         <footer className="fixed bottom-0 left-0 right-0 z-50 flex justify-center gap-8 py-6 w-full bg-transparent font-mono text-[10px] tracking-[0.3em] text-[#00FFD1]/40 pointer-events-none">
           <span className="uppercase">© 2026 NeonArcade Gaming</span>
           <div className="hidden md:flex gap-8 pointer-events-auto">
@@ -911,6 +1246,27 @@ export default function App() {
   );
 }
 
+/**
+ * Should this device run the landing page's decorative WebGL?
+ *
+ * Both effects are cursor-driven — a three.js blob that chases the pointer
+ * and a fluid simulation that splats where it moves — so on a touch device
+ * they render a constant rAF loop and a ~256 kB gzip three.js download for
+ * something the user can never actually interact with. `prefers-reduced-
+ * motion` is honoured for the obvious reason, and a low core count stands in
+ * for "this machine will not enjoy two WebGL contexts".
+ *
+ * Read once at module scope: the answer cannot change during a session, and
+ * putting it in state would mean mounting the effects and then tearing them
+ * down.
+ */
+const HEAVY_FX =
+  typeof window !== "undefined" &&
+  !!window.matchMedia &&
+  !window.matchMedia("(prefers-reduced-motion: reduce)").matches &&
+  !window.matchMedia("(pointer: coarse) and (hover: none)").matches &&
+  (navigator.hardwareConcurrency ?? 8) > 4;
+
 function LandingView({
   onExplore,
   onPlayNow,
@@ -922,25 +1278,35 @@ function LandingView({
 }) {
   return (
     <>
-      {/* Background */}
+      {/* Background. The gradient + GlassPanel below carry the look on their
+          own; the two WebGL layers are an enhancement for pointer devices
+          that can afford them (see HEAVY_FX). */}
       <div className="fixed inset-0 z-0 bg-[#081616]">
-        <SafeErrorBoundary>
-          <CursorBlob3D />
-        </SafeErrorBoundary>
-        <CursorGlow />
-        <SafeErrorBoundary>
-          <SplashCursor
-            DENSITY_DISSIPATION={2}
-            VELOCITY_DISSIPATION={3.5}
-            PRESSURE={0.45}
-            SPLAT_RADIUS={0.47}
-            SPLAT_FORCE={17000}
-            COLOR="#00FFEA"
-            RAINBOW_MODE={false}
-            zIndex={1}
-            position="absolute"
-          />
-        </SafeErrorBoundary>
+        {HEAVY_FX && (
+          <>
+            <SafeErrorBoundary>
+              <React.Suspense fallback={null}>
+                <CursorBlob3D />
+              </React.Suspense>
+            </SafeErrorBoundary>
+            <CursorGlow />
+            <SafeErrorBoundary>
+              <React.Suspense fallback={null}>
+                <SplashCursor
+                  DENSITY_DISSIPATION={2}
+                  VELOCITY_DISSIPATION={3.5}
+                  PRESSURE={0.45}
+                  SPLAT_RADIUS={0.47}
+                  SPLAT_FORCE={17000}
+                  COLOR="#00FFEA"
+                  RAINBOW_MODE={false}
+                  zIndex={1}
+                  position="absolute"
+                />
+              </React.Suspense>
+            </SafeErrorBoundary>
+          </>
+        )}
         <GlassPanel
           variant="md"
           radius={0}
@@ -950,7 +1316,15 @@ function LandingView({
         </GlassPanel>
       </div>
 
-      <main className="relative z-10 h-full flex flex-col items-center justify-center text-center px-6 pt-24 pb-20">
+      {/*
+        SCROLLABLE, and justified from the top on phones. The app root is
+        `overflow-hidden` (it has to be — games own their own viewport), so if
+        this pane doesn't scroll, nothing does: the headline, both CTAs and
+        the stats bar are together taller than a 390x844 screen, and the
+        bottom of the page was simply unreachable. `justify-center` is kept
+        from md up, where the content does fit and centring is the right look.
+      */}
+      <main className="relative z-10 h-full overflow-y-auto overflow-x-hidden flex flex-col items-center justify-start md:justify-center text-center px-6 pt-24 pb-20">
         <motion.div
           initial={{ scale: 0.9, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
@@ -1011,15 +1385,7 @@ function LandingView({
             <div className="relative z-10 p-6 md:p-8 flex flex-col sm:flex-row justify-around items-center gap-6 sm:gap-0 border border-[#00FFD1]/40 rounded-2xl transition-all duration-500 backdrop-blur-md">
               <ActiveUsers realCount={activeUsers} label="Active Users" />
               <div className="hidden sm:block w-px h-10 bg-[#00FFD1]/40"></div>
-              <Stat 
-                value={
-                  <div className="flex items-center gap-1.5 -translate-x-0.5">
-                    <img src="/solana-sol-icon.svg" alt="SOL" className="h-5 md:h-6 w-auto" />
-                    <span>0</span>
-                  </div>
-                } 
-                label="Player Earnings" 
-              />
+              <Stat value={<PlayerEarningsValue />} label="Player Earnings" />
               <div className="hidden sm:block w-px h-10 bg-[#00FFD1]/40"></div>
               <Stat value="6" label="Exclusive Titles" />
             </div>
@@ -1030,185 +1396,37 @@ function LandingView({
   );
 }
 
-function ArcadeView({
-  onBack,
-  onSelectNeonConnect,
-  onSelectChess,
-  onSelectVolley,
-  onSelectCells,
-  onSelectAsteroids,
-  onSelectTrivia,
-  onSelectGolf,
-  onSelectClumsy,
-  onSelectKiller,
-  onSelectPugShooter,
-  masterVolume,
-  onVolumeChange,
-  showVolumeConfig,
-  onToggleVolumeConfig,
-}: {
-  onBack: () => void;
-  onSelectNeonConnect: () => void;
-  onSelectChess: () => void;
-  onSelectVolley: () => void;
-  onSelectCells: () => void;
-  onSelectAsteroids: () => void;
-  onSelectTrivia: () => void;
-  onSelectGolf: () => void;
-  onSelectClumsy: () => void;
-  onSelectKiller: () => void;
-  onSelectPugShooter: () => void;
-  masterVolume: number;
-  onVolumeChange: (vol: number) => void;
-  showVolumeConfig: boolean;
-  onToggleVolumeConfig: () => void;
-}) {
-  const gridRef = React.useRef<HTMLDivElement>(null);
+/**
+ * Career payout total behind the landing page's PLAYER EARNINGS stat, in SOL.
+ *
+ * Still a placeholder zero — there is no server-side earnings ledger to read
+ * from yet — but it is now a SOL *quantity* rather than a hard-coded glyph,
+ * so the moment a real total exists this stat renders it in whatever currency
+ * the player picked, with no further change here.
+ */
+const PLAYER_EARNINGS_SOL = 0;
 
-  return (
-    <div className="relative h-full w-full flex flex-col items-center justify-center overflow-auto pt-28 pb-24">
-      {/* Dark Background */}
-      <div className="fixed inset-0 z-0 bg-[#081616]">
-        <LibraryBlob />
-        <div className="absolute inset-0 bg-gradient-to-t from-[#081616] via-transparent to-[#081616]/50"></div>
+/**
+ * The earnings number, denominated in the player's chosen display currency.
+ *
+ * Picking SOL keeps the original treatment exactly — the Solana mark beside a
+ * bare number. Any fiat choice renders a single formatted string (`A$0`,
+ * `₦0`, `¥0`), compact so a seven-figure total can't blow out the stat bar.
+ */
+function PlayerEarningsValue() {
+  const { formatSolAs, isNative } = useCurrency();
+  const text = formatSolAs(PLAYER_EARNINGS_SOL, { compact: true, bare: isNative });
+
+  if (isNative) {
+    return (
+      <div className="flex items-center gap-1.5 -translate-x-0.5">
+        <img src="/solana-sol-icon.svg" alt="SOL" className="h-5 md:h-6 w-auto" />
+        <span className="tabular-nums">{text}</span>
       </div>
+    );
+  }
 
-      <GlobalSpotlight gridRef={gridRef} />
-
-      <main className="relative z-10 w-full max-w-7xl px-6 md:px-8 flex flex-col items-center translate-y-[40px]">
-        <div ref={gridRef} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6 w-full bento-section">
-          <MagicBentoGameTile
-            onClick={onSelectNeonConnect}
-            icon={
-              <div className="grid grid-cols-2 gap-2">
-                <div className="w-4 h-4 rounded-full bg-[#00FFD1] shadow-[0_0_10px_#00FFD1]" />
-                <div className="w-4 h-4 rounded-full border border-[#00FFD1]/40" />
-                <div className="w-4 h-4 rounded-full border border-[#00FFD1]/40" />
-                <div className="w-4 h-4 rounded-full bg-[#00FFD1] shadow-[0_0_10px_#00FFD1]" />
-              </div>
-            }
-            title="Neon Connect"
-          />
-          <MagicBentoGameTile
-            onClick={onSelectChess}
-            icon={<Swords className="w-12 h-12" />}
-            title="Neon Chess"
-          />
-          <MagicBentoGameTile
-            onClick={onSelectVolley}
-            icon={
-              <svg
-                width="48"
-                height="48"
-                viewBox="0 0 24 24"
-                fill="currentColor"
-              >
-                <rect x="4" y="19" width="16" height="2" rx="1" />
-                <circle cx="12" cy="11" r="3" />
-                <path
-                  d="M10 9 C 7 5, 5 2, 4 0 C 8 3, 10 6, 11 9 Z"
-                  opacity="0.7"
-                />
-                <path
-                  d="M14 9 C 17 5, 19 2, 20 0 C 16 3, 14 6, 13 9 Z"
-                  opacity="0.7"
-                />
-                <path
-                  d="M12 8 C 12 4, 12 1, 12 -1 C 13 1, 13 4, 12 8 Z"
-                  opacity="0.5"
-                />
-              </svg>
-            }
-            title="Neon Volley"
-          />
-          <MagicBentoGameTile
-            onClick={onSelectCells}
-            icon={<Orbit className="w-12 h-12" />}
-            title="Neon Cells"
-          />
-          <MagicBentoGameTile
-            onClick={onSelectAsteroids}
-            icon={<Rocket className="w-12 h-12 text-[#00FFD1] -rotate-45" />}
-            title="Neon Asteroids"
-          />
-          <MagicBentoGameTile
-            onClick={onSelectTrivia}
-            icon={<Brain className="w-12 h-12 text-[#00FFD1]" />}
-            title="Neon Quiz"
-          />
-          <div className="lg:col-start-1">
-            <MagicBentoGameTile
-              onClick={onSelectGolf}
-              icon={<FlagTriangleRight className="w-12 h-12 text-[#00FFD1]" />}
-              title="Neon Golf Clash"
-            />
-          </div>
-          <div className="lg:col-start-2">
-            <MagicBentoGameTile
-              onClick={onSelectClumsy}
-              icon={<Ghost className="w-12 h-12 text-[#00FFD1]" />}
-              title="Neon Clumsy"
-            />
-          </div>
-          <div className="lg:col-start-3">
-            <MagicBentoGameTile
-              onClick={onSelectKiller}
-              icon={<Skull className="w-12 h-12 text-[#00FFD1]" />}
-              title="Neon Killer"
-            />
-          </div>
-          <div className="lg:col-start-1">
-            <MagicBentoGameTile
-              onClick={onSelectPugShooter}
-              icon={<Crosshair className="w-12 h-12 text-[#00FFD1]" />}
-              title="Neon Pug Shooter"
-            />
-          </div>
-        </div>
-      </main>
-
-      {/* Floating Settings Button in the bottom right of the library (ArcadeView) */}
-      <div className="fixed bottom-8 right-8 z-[50]">
-        <button
-          onClick={onToggleVolumeConfig}
-          className="p-4 rounded-full border border-[#00FFD1]/40 hover:scale-105 active:scale-95 transition-all flex items-center justify-center cursor-pointer select-none backdrop-blur-md"
-          title="Configure Master Volume"
-        >
-          <Settings className="w-6 h-6 animate-spin-slow text-white" />
-        </button>
-
-        <AnimatePresence>
-          {showVolumeConfig && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 10 }}
-              className="absolute bottom-20 right-0 w-64 bg-black/95 border border-[#00FFD1]/40 rounded-2xl p-6 shadow-2xl backdrop-blur-xl z-[60] space-y-4 text-left font-mono"
-            >
-              <h4 className="text-white font-black uppercase text-xs tracking-wider">
-                System Options
-              </h4>
-              <div className="space-y-2">
-                <div className="flex justify-between text-[10px] uppercase text-white/50">
-                  <span>Master Volume</span>
-                  <span>{Math.round(masterVolume * 100)}%</span>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={masterVolume}
-                  onChange={(e) => onVolumeChange(parseFloat(e.target.value))}
-                  className="w-full accent-[#00FFD1] bg-[#111E1E] rounded-lg appearance-none h-1 cursor-pointer"
-                />
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-    </div>
-  );
+  return <span className="tabular-nums">{text}</span>;
 }
 
 function Stat({ value, label }: { value: React.ReactNode; label: string }) {

@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import GameBackButton from '../common/GameBackButton';
+import { reportGameSession } from '../../lib/sessionXp';
 import type { PugShooterMatchConfig } from './PugShooterLobby';
 
 interface PugShooterPlayProps {
@@ -22,17 +23,47 @@ interface PugShooterPlayProps {
  * The game has no main menu of its own any more: it boots straight into the
  * match on the query string, and its "Quit to lobby" posts
  * `neon-pug-shooter:exit`, which we translate into onExit here.
+ *
+ * It also posts `neon-pug-shooter:result` when a match ends, which is how a
+ * game the server never sees still earns XP — see lib/sessionXp.ts for why
+ * that has to come from the client and what stops it being abused.
  */
 export default function PugShooterPlay({ config, onExit }: PugShooterPlayProps) {
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (event.origin === window.location.origin && event.data?.type === 'neon-pug-shooter:exit') {
+      // Same-origin only: the iframe is served from our own /public, so a
+      // message from anywhere else is not this game talking.
+      if (event.origin !== window.location.origin) return;
+
+      if (event.data?.type === 'neon-pug-shooter:exit') {
         onExit();
+        return;
+      }
+
+      if (event.data?.type === 'neon-pug-shooter:result') {
+        const r = event.data;
+        void reportGameSession(
+          {
+            gameKey: 'pugshooter',
+            // The lobby's mode vocabulary ('duel'/'duo'/'ffa'/…) is not the
+            // stats one; duels are the 1v1 shape, everything else is a
+            // free-for-all against bots.
+            mode: config.mode === 'duel' ? '1v1' : 'ffa',
+            result: r.won ? 'win' : 'loss',
+            kills: r.kills,
+            deaths: r.deaths,
+            score: r.score,
+            placement: r.placement ?? null,
+            durationMs: r.durationMs ?? null,
+          },
+          // One award per match: the game stamps each round it starts.
+          `pugshooter:${r.roundId ?? r.durationMs ?? ''}`
+        );
       }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [onExit]);
+  }, [onExit, config.mode]);
 
   const src = `/neon-pug-shooter/index.html?mode=${config.mode}&map=${config.map}&difficulty=${config.difficulty}`;
 

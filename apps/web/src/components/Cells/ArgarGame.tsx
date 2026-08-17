@@ -1,19 +1,52 @@
 // src/components/Cells/ArgarGame.tsx
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Maximize, Minimize, RefreshCw, Trophy, Activity, Target, Timer, Zap, Menu, Volume2, VolumeX } from 'lucide-react';
+import { Maximize, Minimize, RefreshCw, Trophy, Activity, Target, Timer, Zap, Menu, Volume2, VolumeX, Globe } from 'lucide-react';
 import GameBackButton from '../common/GameBackButton';
 import { GameEngine, type Entity } from './gameEngine';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
 import { useNeonBucks } from '../../NeonBucksStore';
-import { FreeplayNet, type NetFood } from '../../lib/freeplayNet';
+import {
+  FreeplayNet,
+  FREE_PLAY_DIFFICULTY,
+  type NetFood,
+  type FreeplayMode,
+  type FreeplaySector,
+  type MatchState,
+  type MatchResult,
+} from '../../lib/freeplayNet';
+import SearchingForMatch from '../common/SearchingForMatch';
 
 // ---------------------------------------------------------------------------
-// NETWORK-MODE ADAPTER HELPERS (free-play multiplayer)
+// NETWORK-MODE ADAPTER HELPERS (online play — free_play / slayer / lms)
 // The server is authoritative; these helpers map interpolated server players
 // into the Entity/Food shapes the existing canvas draw code already expects,
 // so the render path itself stays untouched.
 // ---------------------------------------------------------------------------
+
+/**
+ * SPAWN-SIZE PARITY WITH PRACTICE.
+ *
+ * The owner's "online spawns far too large" bug came from the server's old
+ * mass model (spawn radius 30 = 2× practice) being rendered raw. The server
+ * world now uses the PRACTICE constants directly — spawn radius 15, world
+ * 6000×6000, food radius 8, the same accel/decay curve — so no conversion is
+ * needed and the online cell is pixel-identical to a practice cell (the camera
+ * zoom is derived from the radius, so it lines up too).
+ *
+ * This scale exists as the single knob for that parity: it multiplies EVERY
+ * server length (x, y, radii, food, world bounds) uniformly. Uniform matters —
+ * scaling radii alone would let big blobs eat from outside their drawn circle.
+ * Keep it at 1 while the server mirrors practice; only change it (in the same
+ * commit as the server constant) if the two ever diverge again.
+ */
+const PRACTICE_START_RADIUS = 15;
+const SERVER_START_RADIUS = 15; // apps/server/src/socket/freeplay/cellsWorld.ts
+const NET_WORLD_SCALE = PRACTICE_START_RADIUS / SERVER_START_RADIUS;
+
+/** HUD/React sync rate while online (Hz→ms). The canvas still runs at rAF;
+ *  only the DOM overlays throttle, so React re-renders can't fight the loop. */
+const NET_HUD_INTERVAL_MS = 100;
 
 /** The 24-point jiggle ring every rendered cell carries (offsets stay 0 online). */
 const makeNetCellPoints = () =>
@@ -45,6 +78,84 @@ const makeNetCellEntity = (id: string): Entity => ({
   score: 0,
   kills: 0,
 });
+
+/**
+ * SLAYER RESULT — a ranked KILL BOARD, not a verdict.
+ *
+ * Contract: "SLAYER has NO winner. Everybody scores points for the kills they
+ * got." So there is no Victory/Defeat headline, no winner row styling and no
+ * money — every player is listed with the kills they scored, ranked, with our
+ * own row highlighted. LMS still uses the normal win/lose ResultsScreen.
+ */
+const SlayerScoreboard: React.FC<{
+  result: MatchResult;
+  gameMode: string;
+  onRematch: () => void;
+  onExit: () => void;
+}> = ({ result, gameMode, onRematch, onExit }) => {
+  const rows = [...result.standings].sort(
+    (a, b) => (b.points || b.kills) - (a.points || a.kills) || a.place - b.place
+  );
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+      className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-black/90 backdrop-blur-xl px-6"
+    >
+      <Target className="w-14 h-14 mb-5 text-[#00FFD1] animate-pulse" />
+      <h2 className="text-4xl md:text-6xl font-black text-white italic uppercase tracking-tighter mb-2 text-center">
+        Match Over
+      </h2>
+      <p className="text-[#00FFD1]/80 font-mono text-[11px] uppercase tracking-[0.35em] mb-8 text-center">
+        No winner — points for kills
+      </p>
+
+      <div className="bg-[#040b0b] border border-[#00FFD1]/30 rounded-xl p-6 w-full max-w-md mb-8">
+        <div className="flex justify-between items-center border-b border-[#00FFD1]/10 pb-2 mb-3 font-mono text-[10px] uppercase tracking-widest text-[#00FFD1]/60">
+          <span>Rank</span>
+          <span className="flex-1 px-3">Operator · {gameMode}</span>
+          <span>Kills</span>
+        </div>
+        <div className="space-y-1 max-h-64 overflow-y-auto">
+          {rows.length === 0 && (
+            <p className="text-white/40 font-mono text-xs uppercase tracking-widest py-4 text-center">
+              No scores reported
+            </p>
+          )}
+          {rows.map((s, idx) => (
+            <div
+              key={s.id || `${s.name}-${idx}`}
+              className={`flex items-center justify-between px-3 py-2 rounded-lg font-mono text-xs ${
+                s.isYou ? 'bg-[#00FFD1]/10 text-[#00FFD1] border border-[#00FFD1]/30' : 'text-white/60'
+              }`}
+            >
+              <span className="opacity-50 w-6">#{idx + 1}</span>
+              <span className="flex-1 px-3 truncate uppercase">{s.name}</span>
+              <span className="font-black text-base italic">{s.points || s.kills}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex gap-3">
+        <button
+          onClick={onRematch}
+          className="px-8 py-4 rounded-2xl bg-[#00FFD1] text-[#081616] font-black uppercase italic tracking-tighter hover:scale-105 transition-all flex items-center gap-2"
+        >
+          <RefreshCw className="w-5 h-5" /> Play Again
+        </button>
+        <button
+          onClick={onExit}
+          className="px-8 py-4 rounded-2xl bg-white/5 border border-white/10 text-white/70 font-black uppercase italic tracking-tighter hover:bg-white/10 transition-all"
+        >
+          Exit
+        </button>
+      </div>
+    </motion.div>
+  );
+};
 
 const MiniMap = ({ player, zone, safeZone, nextSafeZone, worldSize, difficulty, leaderboard, camera }: any) => {
   const mapSize = 180;
@@ -139,26 +250,55 @@ const MiniMap = ({ player, zone, safeZone, nextSafeZone, worldSize, difficulty, 
 interface ArgarGameProps {
   difficulty?: number;
   isMultiplayer?: boolean;
+  /** The ONLINE mode chosen in the lobby. Null = practice/local play. */
+  onlineMode?: FreeplayMode | null;
+  /** The ONLINE sector chosen in the lobby (eclipse/blitz). Null = practice. */
+  onlineSector?: FreeplaySector | null;
   profile: { name: string; avatarUrl: string } | null;
   onExit: () => void;
   wagerAmount?: number;
-  wagerMode?: 'free_play' | 'slayer' | 'snake' | null;
+  wagerMode?: 'free_play' | 'slayer' | 'lms' | null;
   targetKills?: number;
 }
 
-const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, isMultiplayer = false, profile, onExit, wagerAmount = 0, wagerMode = null, targetKills }) => {
-  // NETWORK MODE: true only for the online free-play (wager) path. Derived ONCE
-  // per mount — every multiplayer branch below keys off this single boolean.
-  const isNetworkMode = isMultiplayer && wagerMode === 'free_play';
-  // The server free-play world has no shrink zone. Difficulty 1 is the local
-  // "Free Play / no zone" ruleset, so forcing it online disables every zone
-  // render/HUD path without touching any practice-mode code.
-  const difficulty = isNetworkMode ? 1 : difficultyProp;
+const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, isMultiplayer = false, onlineMode = null, onlineSector = null, profile, onExit, wagerAmount = 0, wagerMode = null, targetKills }) => {
+  // NETWORK MODE: online play in the mode the lobby picked. The old rule
+  // (`isMultiplayer && wagerMode === 'free_play'`) silently forced free play
+  // for every online session — slayer and lms now reach the server as
+  // themselves. Derived ONCE per mount; every online branch keys off this.
+  const isNetworkMode = isMultiplayer && onlineMode !== null;
+  /** slayer/lms are match-scoped: they queue first. free_play joins now. */
+  const isQueuedOnline = isNetworkMode && onlineMode !== 'free_play';
+
+  // ── ONLINE ZONE RULESET ───────────────────────────────────────────────────
+  // The server sends the PRACTICE difficulty code it is simulating (10/11
+  // Eclipse, 12/13 Blitz, 1 = the no-zone free-play world) in the match-start
+  // payload. Rendering off that number is what makes an online Eclipse/Blitz
+  // zone look and behave exactly like the practice one — the old
+  // `difficulty = 1` hard-code disabled every zone code path online.
+  // Null until the server says; the ref is what the rAF loop reads (a state
+  // change alone would not reach the already-captured loop closure).
+  const [netDifficulty, setNetDifficulty] = useState<number>(FREE_PLAY_DIFFICULTY);
+  const netDifficultyRef = useRef<number>(FREE_PLAY_DIFFICULTY);
+  // …and we only DRAW a zone once the server has actually sent zone state in
+  // a snapshot. Without this a zone difficulty with no zone data would paint
+  // a ring the server does not have — a made-up boundary is worse than none.
+  const [netHasZone, setNetHasZone] = useState(false);
+  const netHasZoneRef = useRef(false);
+  const difficulty = isNetworkMode
+    ? netHasZone
+      ? netDifficulty
+      : FREE_PLAY_DIFFICULTY
+    : difficultyProp;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<GameEngine | null>(null);
-  const [gameState, setGameState] = useState<'menu' | 'countdown' | 'playing' | 'gameOver'>('menu');
+  // Online skips the "INITIALIZE CORE" briefing entirely (the lobby click was
+  // the start), so it begins in 'playing' — no one-frame menu flash.
+  const [gameState, setGameState] = useState<'menu' | 'countdown' | 'playing' | 'gameOver'>(
+    isNetworkMode ? 'playing' : 'menu'
+  );
   const [gameResult, setGameResult] = useState<'win' | 'lost' | null>(null);
   const [score, setScore] = useState(0);
   const [kills, setKills] = useState(0);
@@ -186,16 +326,27 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
   const [worldSize, setWorldSize] = useState({ width: 0, height: 0 });
   const [enemies, setEnemies] = useState<any[]>([]);
 
-  // ── Network-mode session state (free-play multiplayer only) ───────────────
+  // ── Network-mode session state (online play) ──────────────────────────────
   const netRef = useRef<FreeplayNet | null>(null);
   const netInputRef = useRef({ dx: 0, dy: 0, boost: false });
   const netEnemyCacheRef = useRef(new Map<string, Entity>()); // id -> render adapter
   const netFoodSrcRef = useRef<NetFood[] | null>(null);       // identity cache: skip re-mapping unchanged food
   const netFoodMappedRef = useRef<{ x: number; y: number; radius: number; color: string }[]>([]);
+  const netHudAtRef = useRef(0);                              // last HUD/React sync (ms)
   const [netJoined, setNetJoined] = useState(false);
-  const [netPot, setNetPot] = useState(0);                    // SOL ledger value echoed by the server
-  const [netEntryFee, setNetEntryFee] = useState(0);
+  // Matchmaking (slayer/lms only) — set optimistically on entry, never
+  // waiting for a server ack.
+  const [netSearching, setNetSearching] = useState(false);
+  const [netQueue, setNetQueue] = useState({ current: 1, needed: 2 });
+  // Lobby-match lifecycle (waiting -> running -> ended) for the countdown.
+  const [netMatch, setNetMatch] = useState<MatchState | null>(null);
   const [netError, setNetError] = useState<string | null>(null);
+  // The server's end-of-match scoreboard. SLAYER renders it as a ranked
+  // kill board (no winner); LMS keeps the win/lose ResultsScreen.
+  const [netResult, setNetResult] = useState<MatchResult | null>(null);
+  // SLAYER only: we were killed out of the field but the match is still
+  // running, so there is no verdict to show yet — just wait for the board.
+  const [netEliminated, setNetEliminated] = useState(false);
   const [respawnInfo, setRespawnInfo] = useState<{ by: string; until: number } | null>(null);
   const [respawnRemaining, setRespawnRemaining] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -327,8 +478,9 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
 
   useEffect(() => {
     if (gameState === 'gameOver' && gameResult) {
-       // NETWORK MODE: payouts live in the server ledger only — NeonBucks is
-       // never touched online; sessionWinnings is set by the server events.
+       // ONLINE HAS NO MONEY THIS PASS: never call wager()/win() online.
+       // (wagerMode is null on the online path, so this block is doubly
+       // guarded — the isNetworkMode check documents the intent.)
        if (!isNetworkMode && wagerAmount > 0 && wagerMode) {
           if (wagerMode === 'free_play') {
              if (gameResult === 'win') {
@@ -344,7 +496,7 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
              const payout = (engineRef.current?.player.kills ?? 0) * wagerAmount;
              if (payout > 0) win(payout);
              setSessionWinnings(payout - wagerAmount);
-          } else if (wagerMode === 'snake') {
+          } else if (wagerMode === 'lms') {
              if (gameResult === 'win') {
                 const totalBots = 9; // standard practice has 9 enemies
                 const pot = (totalBots + 1) * wagerAmount;
@@ -387,15 +539,8 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
     };
   }, [isMultiplayer]);
 
-  // NETWORK MODE: leaving the component mid-session is a voluntary despawn —
-  // freeplay:leave makes the server auto-cash-out the current pot.
-  useEffect(() => {
-    if (!isNetworkMode) return;
-    return () => {
-      netRef.current?.leave();
-      netRef.current = null;
-    };
-  }, [isNetworkMode]);
+  // (The online session's start + teardown live in ONE effect further down,
+  // next to startNetworkGame — see "ONLINE: enter on mount".)
 
   // NETWORK MODE: respawn-overlay countdown ticker.
   useEffect(() => {
@@ -645,25 +790,50 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
     const net = netRef.current;
     const view = net?.interpolate(time) ?? null;
 
+    // ── Zone ruleset: whatever difficulty code the SERVER reports ──
+    // Read every frame (not just on `joined`) so it cannot be lost to event
+    // ordering. Never falls back to 1 once known — a torn-down session must
+    // not blank the zone the results screen is drawn over.
+    const serverDifficulty = net?.matchDifficulty ?? null;
+    if (serverDifficulty !== null && serverDifficulty !== netDifficultyRef.current) {
+      netDifficultyRef.current = serverDifficulty;
+      setNetDifficulty(serverDifficulty);
+    }
+    // Latch "the server really is sending zone state" (sticky for the session
+    // so one zone-less snapshot cannot flicker the ring away).
+    if (view?.zone && !netHasZoneRef.current) {
+      netHasZoneRef.current = true;
+      setNetHasZone(true);
+    }
+    // The canvas draw code gates every zone visual on engine.difficulty.
+    engine.difficulty = netHasZoneRef.current ? netDifficultyRef.current : FREE_PLAY_DIFFICULTY;
+
     if (view) {
-      // Own cell: position/radius come from the server only (null while dead).
+      // Own cell: the pose comes from FreeplayNet's LOCAL PREDICTION (smooth,
+      // input-latency-free, reconciled against the server every frame) — that
+      // is what killed the constant jitter. Radius is scaled to practice units.
       if (view.you) {
         const you = view.you;
-        const r = Number(you.r ?? you.radius ?? engine.player.radius);
-        engine.player.x = you.x;
-        engine.player.y = you.y;
+        const r = Number(you.r ?? you.radius ?? SERVER_START_RADIUS) * NET_WORLD_SCALE;
+        const x = you.x * NET_WORLD_SCALE;
+        const y = you.y * NET_WORLD_SCALE;
+        engine.player.x = x;
+        engine.player.y = y;
         engine.player.radius = r;
+        engine.player.kills = Number(you.kills ?? engine.player.kills ?? 0);
         const cell0 = engine.player.cells[0];
         if (cell0) {
-          cell0.x = you.x;
-          cell0.y = you.y;
+          cell0.x = x;
+          cell0.y = y;
           cell0.radius = r;
         }
         engine.player.score = Number(you.mass ?? you.score ?? r);
       }
-      // Local boost input drives the glow instantly; the server confirms via speed.
-      engine.player.isBoosting = netInputRef.current.boost;
-      engine.player.boostTimer = netInputRef.current.boost ? 1 : 0;
+      // Boost: the server owns the banked seconds (5 per kill, practice rule);
+      // the local key state drives the glow instantly so it feels responsive.
+      const boostLeft = Number(view.you?.boostRemaining ?? 0);
+      engine.player.isBoosting = netInputRef.current.boost && boostLeft > 0;
+      engine.player.boostTimer = boostLeft;
 
       // Remote players -> cached Entity-shaped adapters for the existing draw code.
       const cache = netEnemyCacheRef.current;
@@ -675,17 +845,19 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
           ent = makeNetCellEntity(pl.id);
           cache.set(pl.id, ent);
         }
-        const r = Number(pl.r ?? pl.radius ?? 15);
-        ent.x = pl.x;
-        ent.y = pl.y;
+        const r = Number(pl.r ?? pl.radius ?? SERVER_START_RADIUS) * NET_WORLD_SCALE;
+        const x = pl.x * NET_WORLD_SCALE;
+        const y = pl.y * NET_WORLD_SCALE;
+        ent.x = x;
+        ent.y = y;
         ent.radius = r;
         ent.nickname = pl.name ?? 'UNKNOWN';
-        ent.score = Number(pl.pot ?? 0);
+        ent.score = Number(pl.mass ?? pl.score ?? 0);
         ent.isBoosting = !!pl.boosting;
         ent.boostTimer = pl.boosting ? 1 : 0;
         const c = ent.cells[0];
-        c.x = pl.x;
-        c.y = pl.y;
+        c.x = x;
+        c.y = y;
         c.radius = r;
         return ent;
       });
@@ -694,28 +866,44 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
         if (!seen.has(id)) cache.delete(id);
       }
 
+      // ── SERVER-AUTHORITATIVE SAFE ZONE → the engine's render fields ──
+      // A mirror, NOT a simulation: the shrink, the phase timers and the
+      // next-zone target all come from the snapshot, so what we draw is
+      // exactly the ring the server kills you against. (Practice keeps
+      // running its own zone in engine.update(); that path is untouched and
+      // never executes online.)
+      const zone = view.zone;
+      if (zone) {
+        engine.zoneX = zone.x * NET_WORLD_SCALE;
+        engine.zoneY = zone.y * NET_WORLD_SCALE;
+        engine.zoneRadius = zone.radius * NET_WORLD_SCALE;
+        engine.safeZone = { x: engine.zoneX, y: engine.zoneY, radius: engine.zoneRadius };
+        engine.nextSafeZone = zone.next
+          ? {
+              x: zone.next.x * NET_WORLD_SCALE,
+              y: zone.next.y * NET_WORLD_SCALE,
+              radius: zone.next.radius * NET_WORLD_SCALE,
+            }
+          : null;
+        engine.isZoneShrinking = zone.shrinking;
+        engine.zonePhase = zone.phase;
+        engine.zonePhaseTimer = zone.phaseTimer;
+        engine.countdownTimer = zone.countdown;
+        engine.outsideTimer = zone.outsideTimer;
+        engine.maxOutsideTime = zone.maxOutsideTime;
+      }
+
       // Food: re-map only when the delta-accumulated array actually changed.
       if (view.food !== netFoodSrcRef.current) {
         netFoodSrcRef.current = view.food;
         netFoodMappedRef.current = view.food.map((f) => ({
-          x: f.x,
-          y: f.y,
-          radius: f.radius ?? 8,
+          x: f.x * NET_WORLD_SCALE,
+          y: f.y * NET_WORLD_SCALE,
+          radius: (f.radius ?? 8) * NET_WORLD_SCALE,
           color: f.color ?? '#00E0B7',
         }));
       }
       engine.food = netFoodMappedRef.current;
-
-      // Leaderboard: server sends [{name, pot}] — adapt to the HUD entry shape
-      // (score column shows the pot; the JSX formats it as SOL online).
-      setLeaderboard(
-        view.leaderboard.map((l) => ({
-          name: l.name,
-          score: l.pot,
-          color: '#00FFD1',
-          isPlayer: !!profile?.name && l.name === profile.name,
-        }))
-      );
     }
 
     // Publish input: normalized mouse direction from the screen centre (the
@@ -729,14 +917,66 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
     netInputRef.current.dy = len > DEADZONE_PX ? mdy / len : 0;
     net?.setInput({ ...netInputRef.current });
 
-    // Camera + the same lightweight HUD sync the local path performs.
+    // Camera runs every frame (it is canvas-only, no React involved).
     engine.updateCamera();
-    setScore(Math.floor(engine.player.score));
-    setPlayerCellCount(1);
-    setPlayerPos({ x: engine.player.x, y: engine.player.y });
-    setCameraState({ x: engine.camera.x, y: engine.camera.y, zoom: engine.camera.zoom });
-    setWorldSize({ width: engine.worldWidth, height: engine.worldHeight });
-    setIsBoosting(netInputRef.current.boost);
+
+    // HUD/React sync is THROTTLED to ~10Hz. The old code pushed ~6 setStates
+    // per frame, so React re-rendered on every animation frame and fought the
+    // render loop — part of the "jitters constantly" report. AsteroidsCore
+    // already used this pattern; Cells now matches it.
+    if (time - netHudAtRef.current >= NET_HUD_INTERVAL_MS) {
+      netHudAtRef.current = time;
+      setScore(Math.floor(engine.player.score));
+      setKills(engine.player.kills || 0);
+      setPlayerCellCount(1);
+      setPlayerPos({ x: engine.player.x, y: engine.player.y });
+      setCameraState({ x: engine.camera.x, y: engine.camera.y, zoom: engine.camera.zoom });
+      setWorldSize({ width: engine.worldWidth, height: engine.worldHeight });
+      setIsBoosting(!!engine.player.isBoosting);
+      setBoostTimer(engine.player.boostTimer || 0);
+      if (view) {
+        // Leaderboard: kills/score online — there is no pot any more.
+        const lb = view.leaderboard.map((l) => ({
+          name: l.name,
+          score: l.score,
+          color: '#00FFD1',
+          isPlayer: !!profile?.name && l.name === profile.name,
+        }));
+        setLeaderboard(lb);
+        // The canvas gates Blitz's safe-zone reveal on "am I in the top 5?",
+        // which it reads from engine.leaderboard — online that table is only
+        // populated here, so keep them in step.
+        engine.leaderboard = lb;
+
+        // Zone HUD (ring timers, minimap, out-of-zone warning) — same React
+        // state the practice HUD renders, fed from the server's zone.
+        const zone = view.zone;
+        if (zone) {
+          setZoneX(engine.zoneX);
+          setZoneY(engine.zoneY);
+          setZoneRadius(engine.zoneRadius);
+          setSafeZone(engine.safeZone);
+          setNextSafeZone(engine.nextSafeZone);
+          setIsZoneShrinking(engine.isZoneShrinking);
+          setZonePhaseTimer(engine.zonePhaseTimer);
+          setCountdownTimer(engine.countdownTimer);
+          // PRACTICE SEMANTICS: `outsideTimer` is the grace you have LEFT and
+          // sits at maxOutsideTime while you are safely inside — the warning
+          // overlay is exactly `outsideTimer < maxOutsideTime`. Deriving the
+          // "am I outside?" test from the server's own ring and the server's
+          // own position keeps that identical online (and keeps the overlay
+          // silent for Eclipse/Blitz, whose grace is 0 = instant kill).
+          const outside =
+            Math.hypot(engine.player.x - engine.zoneX, engine.player.y - engine.zoneY) > engine.zoneRadius;
+          const graceLeft = outside
+            ? Math.max(0, zone.maxOutsideTime - zone.outsideTimer)
+            : zone.maxOutsideTime;
+          engine.outsideTimer = graceLeft;
+          setOutsideTimer(graceLeft);
+          setMaxOutsideTime(zone.maxOutsideTime);
+        }
+      }
+    }
   }, [profile]);
 
   const gameLoop = useCallback((time: number) => {
@@ -789,10 +1029,15 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
       killsToAdd.forEach(k => addKillNotification(k));
     }
 
-    if (wagerMode === 'free_play' && targetKills !== undefined && engine.player.kills >= targetKills && engine.gameState !== 'gameOver') {
+    // These local win conditions are PRACTICE ONLY. Online they must never
+    // fire: an empty enemy list (no bots online / still queued) would declare
+    // an instant, unearned victory. Server events end online sessions.
+    // (Unreachable online anyway — the network branch returns above — but the
+    // guard keeps it that way if the loop is ever restructured.)
+    if (!isNetworkMode && wagerMode === 'free_play' && targetKills !== undefined && engine.player.kills >= targetKills && engine.gameState !== 'gameOver') {
        engine.gameState = 'gameOver';
        engine.gameResult = 'win';
-    } else if ((wagerMode === 'slayer' || wagerMode === 'snake') && engine.enemies.length === 0 && engine.gameState !== 'gameOver') {
+    } else if (!isNetworkMode && (wagerMode === 'slayer' || wagerMode === 'lms') && engine.enemies.length === 0 && engine.gameState !== 'gameOver') {
        // Only one man standing -> Player!
        engine.gameState = 'gameOver';
        engine.gameResult = 'win';
@@ -825,7 +1070,7 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
     if (ctx) renderGame(ctx, canvas, engine);
 
     animationFrameRef.current = requestAnimationFrame(gameLoop);
-  }, [renderGame, networkFrame, isNetworkMode]);
+  }, [renderGame, networkFrame, isNetworkMode, wagerMode, targetKills, addKillNotification]);
 
   useEffect(() => {
     if (gameState === 'playing') {
@@ -833,6 +1078,14 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
     } else if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
     }
+    // WITHOUT THIS the loop outlives the component. gameLoop re-arms itself on
+    // every frame, so exiting mid-match left a full simulation + canvas render
+    // running for the rest of the session, firing setState into an unmounted
+    // tree. The `else if` above only fires on a gameState CHANGE — unmount is
+    // not a state change, so it never ran.
+    return () => {
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    };
   }, [gameState, gameLoop]);
 
   const handleMouseMove = (e: React.MouseEvent) => {
@@ -895,39 +1148,67 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
   }, []);
 
   /**
-   * NETWORK MODE: join (or re-join after a session ended) the permanent
-   * free-play world. All money/HUD state below is driven purely by server
-   * events — nothing here ever touches NeonBucks.
+   * ONLINE: enter the world for the mode the lobby picked.
+   *   free_play        → joins the permanent world immediately (no queue UI)
+   *   slayer / lms    → enters matchmaking; the SEARCHING FOR ONLINE MATCH
+   *                       overlay shows until the server starts the match
+   * NOTHING here touches NeonBucks — online has no stake and no pot.
    */
   const startNetworkGame = () => {
+    if (!onlineMode) return;
     setNetError(null);
     setNetJoined(false);
-    setNetPot(0);
     setKills(0);
+    setScore(0);
     setRespawnInfo(null);
     setSessionWinnings(0);
+    setLeaderboard([]);
     netEnemyCacheRef.current.clear();
     netFoodSrcRef.current = null;
     netFoodMappedRef.current = [];
+    netHudAtRef.current = 0;
+    setNetResult(null);
+    setNetEliminated(false);
+    // A fresh session knows no ruleset until the server stamps one.
+    netDifficultyRef.current = FREE_PLAY_DIFFICULTY;
+    setNetDifficulty(FREE_PLAY_DIFFICULTY);
+    netHasZoneRef.current = false;
+    setNetHasZone(false);
+    setNextSafeZone(null);
+    setCountdownTimer(null);
+    setOutsideTimer(0);
+    setMaxOutsideTime(0);
+
+    // OPTIMISTIC searching state — set on entry, NOT on a server ack. A
+    // dropped/absent ack can no longer freeze the UI on the lobby.
+    const queued = onlineMode !== 'free_play';
+    setNetSearching(queued);
+    setNetQueue({ current: 1, needed: 2 });
+    setNetMatch(null);
 
     netRef.current?.dispose(); // safety: never stack two sessions
-    const net = new FreeplayNet('cells');
+    // The SECTOR is half of the server's difficulty code (eclipse→10/11,
+    // blitz→12/13), so it has to travel with the queue request.
+    const net = new FreeplayNet('cells', onlineMode, onlineSector);
     netRef.current = net;
     net.join({
+      onQueue: ({ current, needed }) => setNetQueue({ current, needed }),
       onJoined: (info) => {
-        // The server's world size wins over the canvas-derived local guess.
+        // The server's world size wins over the canvas-derived local guess
+        // (in the same scaled units as every other server length).
         const engine = engineRef.current;
         if (engine) {
-          engine.worldWidth = info.world.w;
-          engine.worldHeight = info.world.h;
+          engine.worldWidth = info.world.w * NET_WORLD_SCALE;
+          engine.worldHeight = info.world.h * NET_WORLD_SCALE;
         }
-        setNetEntryFee(info.entryFee);
-        setNetPot(info.entryFee);
+        // The zone ruleset the server is actually simulating.
+        if (typeof info.difficulty === 'number') {
+          netDifficultyRef.current = info.difficulty;
+          setNetDifficulty(info.difficulty);
+          if (engine) engine.difficulty = info.difficulty;
+        }
+        setNetSearching(false);
         setNetJoined(true);
-      },
-      onPot: ({ pot, kills: k }) => {
-        setNetPot(pot);
-        setKills(k);
       },
       onKill: ({ victimName }) => {
         // No coords in the payload — anchor the notification on our own cell.
@@ -935,37 +1216,46 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
         addKillNotification({ name: victimName, x: engine?.player.x ?? 0, y: engine?.player.y ?? 0 });
       },
       onKilled: ({ by, respawnIn }) => {
+        // Free play respawns you; the countdown overlay covers the wait.
         setRespawnInfo({ by, until: Date.now() + respawnIn });
-        // Death always aborts a cash-out hold in progress (server did too).
-        setIsCashingOut(false);
-        setCashoutHoldProgress(0);
-        cashoutStartTime.current = null;
       },
-      onRespawn: ({ pot }) => {
-        setRespawnInfo(null);
-        setNetPot(pot);
-      },
-      onEliminated: ({ potLost }) => {
-        // Environment death: pot goes to the house, session over.
-        setSessionWinnings(-potLost);
+      onRespawn: () => setRespawnInfo(null),
+      onMatchState: (state) => setNetMatch(state),
+      onEliminated: () => {
+        // SLAYER has no loser: being killed does not end YOUR match with a
+        // defeat screen, it just takes you out of the field until the server
+        // publishes the kill board. Stay connected and show the waiting
+        // overlay instead of a verdict.
+        if (onlineMode === 'slayer') {
+          setNetEliminated(true);
+          return;
+        }
+        // LMS: you are out — the existing win/lose screen is correct. Stay
+        // connected so freeplay:match_end can still deliver the standings.
+        // Free play: the server despawned us, so drop the session now.
         setGameResult('lost');
         setGameState('gameOver');
         if (engineRef.current) engineRef.current.gameState = 'gameOver';
-        netRef.current?.dispose(); // already settled server-side — no leave emit
-        netRef.current = null;
+        if (!queued) {
+          netRef.current?.dispose(); // already settled server-side — no leave emit
+          netRef.current = null;
+        }
       },
-      onCashoutConfirmed: ({ payout, kills: k }) => {
-        // The ONLY way a cash-out completes: the server confirmed the payout.
-        setSessionWinnings(payout);
-        setKills(k);
-        setGameResult('win');
+      onMatchEnd: (result) => {
+        // SLAYER: no winner — the kill-count scoreboard replaces the verdict.
+        // LMS: unchanged victory/defeat.
+        setNetResult(result);
+        // Slayer has neither a win nor a loss, so it gets NO verdict (and no
+        // victory/defeat sting) — just the board.
+        setGameResult(result.scoring === 'kills' ? null : result.won ? 'win' : 'lost');
         setGameState('gameOver');
         if (engineRef.current) engineRef.current.gameState = 'gameOver';
-        netRef.current?.dispose();
+        netRef.current?.dispose(); // the match is settled server-side
         netRef.current = null;
       },
       onError: ({ code, message }) => {
         setNetError(message ?? code);
+        setNetSearching(false);
         setGameState('menu');
         if (engineRef.current) engineRef.current.gameState = 'menu';
         netRef.current?.dispose();
@@ -988,6 +1278,30 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
       setGameState('playing');
     }
   };
+
+  /**
+   * ONLINE: enter on mount, leave on unmount.
+   *
+   * No "INITIALIZE CORE" gate online — picking a mode in the lobby IS the
+   * click, so we go straight to matchmaking (slayer/lms) or the world
+   * (free play). Start and teardown share ONE effect on purpose: React 18
+   * StrictMode mounts, unmounts and re-mounts in dev, and a separate
+   * "start once" guard would leave the second mount with no session.
+   *
+   * Teardown emits freeplay:leave (in a world) or freeplay:cancel (while
+   * queued), so a queue slot can never leak when the view changes.
+   *
+   * Declared AFTER the engine-init effect so the engine exists when it runs.
+   */
+  useEffect(() => {
+    if (!isNetworkMode) return;
+    startNetworkGame();
+    return () => {
+      netRef.current?.leave();
+      netRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isNetworkMode]);
 
   const resetGame = () => {
     if (isNetworkMode) {
@@ -1026,22 +1340,34 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
      return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Network mode: any live pot can be cashed out (it always holds at least the
-  // entry fee); practice keeps the original kills>0 gate.
-  const canCashout = isNetworkMode ? netPot > 0 : kills > 0;
+  // Cash-out is a PRACTICE Neon Bucks feature. Online has no pot to cash out,
+  // so the button is not rendered there at all (wagerMode is null online).
+  const canCashout = kills > 0;
+
+  /** ONLINE labels: sector comes from the server's difficulty code when it has
+   *  landed, otherwise from what the lobby asked for. */
+  const netSectorLabel =
+    netDifficulty === 12 || netDifficulty === 13
+      ? 'Blitz'
+      : netDifficulty === 10 || netDifficulty === 11
+        ? 'Eclipse'
+        : onlineSector === 'blitz'
+          ? 'Blitz'
+          : onlineSector === 'eclipse'
+            ? 'Eclipse'
+            : null;
+  const netModeLabel = onlineMode === 'lms' ? 'Last Man Standing' : onlineMode === 'slayer' ? 'Slayer' : 'Free Play';
+  const onlineLabel =
+    onlineMode === 'free_play' || !netSectorLabel ? netModeLabel : `${netSectorLabel} · ${netModeLabel}`;
 
   const handleCashoutDown = () => {
-     if (gameState === 'playing' && canCashout && wagerMode === 'free_play') {
+     if (gameState === 'playing' && !isNetworkMode && canCashout && wagerMode === 'free_play') {
         setIsCashingOut(true);
         cashoutStartTime.current = performance.now();
-        // The server runs its own authoritative 3s hold timer (and slows us);
-        // the local bar is only visual feedback.
-        if (isNetworkMode) netRef.current?.startCashout();
      }
   };
 
   const handleCashoutUp = () => {
-     if (isNetworkMode && isCashingOut) netRef.current?.cancelCashout();
      setIsCashingOut(false);
      setCashoutHoldProgress(0);
      cashoutStartTime.current = null;
@@ -1054,11 +1380,7 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
            const duration = Math.max(0, performance.now() - cashoutStartTime.current);
            const p = duration / 3000;
            setCashoutHoldProgress(Math.min(p, 1));
-           if (p >= 1 && isNetworkMode) {
-               // Pin the bar at full and WAIT: only the server's
-               // freeplay:cashout_confirmed event ends a network session.
-               af = requestAnimationFrame(tickCashout);
-           } else if (p >= 1 && engineRef.current) {
+           if (p >= 1 && engineRef.current) {
                setIsCashingOut(false);
                engineRef.current.gameState = 'gameOver';
                engineRef.current.gameResult = 'win';
@@ -1192,13 +1514,15 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
                 <p className="text-lg font-black text-red-500 italic tracking-tighter leading-none mt-1 uppercase">{kills}</p>
              </div>
           </div>
-          {/* Network mode: live pot (server ledger, SOL units) */}
+          {/* Online: mode badge where the SOL pot used to be — no money HUD. */}
           {isNetworkMode && (
-            <div className="backdrop-blur-md bg-black/40 border border-yellow-500/20 px-6 py-3 rounded-xl flex items-center gap-3">
-               <Trophy className="w-4 h-4 text-yellow-500" />
+            <div className="backdrop-blur-md bg-black/40 border border-[#00FFD1]/20 px-6 py-3 rounded-xl flex items-center gap-3">
+               <Globe className="w-4 h-4 text-[#00FFD1]" />
                <div className="text-left">
-                  <p className="text-[10px] font-mono text-white/40 uppercase">Pot (SOL)</p>
-                  <p className="text-lg font-black text-yellow-500 italic tracking-tighter leading-none mt-1">{netPot.toFixed(3)}</p>
+                  <p className="text-[10px] font-mono text-white/40 uppercase">Online</p>
+                  <p className="text-lg font-black text-[#00FFD1] italic tracking-tighter leading-none mt-1 uppercase">
+                    {onlineLabel}
+                  </p>
                </div>
             </div>
           )}
@@ -1237,8 +1561,8 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
               >
                 <span className="opacity-50">#{idx + 1}</span>
                 <span className="flex-1 px-3 truncate">{entry.name}</span>
-                {/* Online the score column is the SOL pot — keep the decimals */}
-                <span className="font-bold">{isNetworkMode ? Number(entry.score ?? 0).toFixed(3) : Math.floor(entry.score)}</span>
+                {/* Score column: mass/score both online and in practice. */}
+                <span className="font-bold">{Math.floor(Number(entry.score ?? 0))}</span>
               </div>
             ))}
           </div>
@@ -1345,14 +1669,9 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
           >
             <div className="flex items-center justify-center gap-1.5">
               {canCashout ? (
-                isNetworkMode ? (
-                  // Online pots are SOL ledger values, not NeonBucks.
-                  <>HOLD TO CASHOUT {netPot.toFixed(3)} SOL</>
-                ) : (
-                  <>HOLD TO CASHOUT <img src="/neon-bucks-icon.png" alt="NB" referrerPolicy="no-referrer" className="h-5 w-auto drop-shadow-[0_0_5px_rgba(234,179,8,0.5)]" /></>
-                )
+                <>HOLD TO CASHOUT <img src="/neon-bucks-icon.png" alt="NB" referrerPolicy="no-referrer" className="h-5 w-auto drop-shadow-[0_0_5px_rgba(234,179,8,0.5)]" /></>
               ) : (
-                isNetworkMode ? 'SYNCING POT...' : 'GET A KILL TO CASHOUT'
+                'GET A KILL TO CASHOUT'
               )}
             </div>
           </button>
@@ -1368,19 +1687,64 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
         </div>
       )}
 
-      {/* NETWORK MODE: respawn countdown after a player kill (pot was stolen) */}
+      {/* ONLINE: matchmaking. Shown IMMEDIATELY on entry for slayer/lms —
+          never waits for a server ack. free_play never shows this screen. */}
+      {netSearching && isQueuedOnline && (
+        <div className="absolute inset-0 z-[95] bg-[#081616]/95 backdrop-blur-xl">
+          <SearchingForMatch
+            playersInQueue={netQueue.current}
+            playersNeeded={netQueue.needed}
+            subtitle={`Neon Cells · ${onlineLabel}`}
+            onCancel={() => {
+              netRef.current?.cancel();
+              netRef.current = null;
+              setNetSearching(false);
+              onExit();
+            }}
+          />
+        </div>
+      )}
+
+      {/* ONLINE (lobby modes): match found — the server's start countdown. */}
+      {isQueuedOnline && !netSearching && netMatch?.status === 'waiting' && gameState === 'playing' && (
+        <div className="absolute inset-0 z-[90] flex items-center justify-center pointer-events-none bg-black/60 backdrop-blur-sm">
+          <div className="text-center space-y-3">
+            <p className="text-[#00FFD1] font-mono text-sm tracking-[0.4em] uppercase">Match found</p>
+            <p className="text-8xl font-black italic text-white">{Math.ceil(netMatch.startsIn / 1000)}</p>
+            <p className="text-white/50 font-mono text-xs uppercase tracking-widest">
+              {netMatch.total} players · no bots
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ONLINE: respawn countdown after a player kill (free play) */}
       {isNetworkMode && respawnInfo && gameState === 'playing' && (
         <div className="absolute inset-0 z-[85] flex items-center justify-center pointer-events-none bg-black/50 backdrop-blur-sm">
           <div className="text-center space-y-3">
             <p className="text-red-500 font-mono text-sm tracking-[0.4em] uppercase">Consumed by {respawnInfo.by}</p>
             <p className="text-8xl font-black italic text-white">{respawnRemaining.toFixed(1)}s</p>
-            <p className="text-white/50 font-mono text-xs uppercase tracking-widest">Pot reset to entry fee — redeploying</p>
+            <p className="text-white/50 font-mono text-xs uppercase tracking-widest">Redeploying</p>
           </div>
         </div>
       )}
 
-      {/* NETWORK MODE: joining indicator until the first server state lands */}
-      {isNetworkMode && gameState === 'playing' && !netJoined && (
+      {/* ONLINE (slayer): killed out of the field, waiting for the kill board.
+          Slayer has no defeat screen — the match is still running for others. */}
+      {isNetworkMode && netEliminated && gameState === 'playing' && (
+        <div className="absolute inset-0 z-[86] flex items-center justify-center pointer-events-none bg-black/70 backdrop-blur-sm">
+          <div className="text-center space-y-3">
+            <p className="text-red-500 font-mono text-sm tracking-[0.4em] uppercase">Eliminated</p>
+            <p className="text-6xl font-black italic text-white uppercase tracking-tighter">{kills} Kills</p>
+            <p className="text-white/50 font-mono text-xs uppercase tracking-widest">
+              No winner in Slayer — waiting for the final kill board
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ONLINE: joining indicator until the first server state lands */}
+      {isNetworkMode && !netSearching && gameState === 'playing' && !netJoined && (
         <div className="absolute inset-0 z-[85] flex items-center justify-center pointer-events-none">
           <p className="text-[#00FFD1] font-mono text-sm tracking-[0.4em] uppercase animate-pulse">Linking to Grid...</p>
         </div>
@@ -1441,12 +1805,26 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
           </motion.div>
         )}
 
-        {gameState === 'gameOver' && (
+        {/* SLAYER (online): the kill board replaces the victory/defeat screen. */}
+        {gameState === 'gameOver' && isNetworkMode && netResult?.scoring === 'kills' && (
+          <SlayerScoreboard
+            result={netResult}
+            gameMode={onlineLabel}
+            onRematch={resetGame}
+            onExit={onExit}
+          />
+        )}
+
+        {gameState === 'gameOver' && !(isNetworkMode && netResult?.scoring === 'kills') && (
           <ResultsScreen
             won={gameResult === 'win'}
-            stake={isNetworkMode ? netEntryFee : (wagerMode ? wagerAmount : 0)}
-            winnings={isNetworkMode ? sessionWinnings : (wagerMode ? sessionWinnings : 0)}
-            gameMode={isNetworkMode ? 'Online Free Play (SOL)' : (wagerMode ? `Practice Wager - ${wagerMode}` : (isMultiplayer ? 'Online' : 'Practice'))}
+            stake={isNetworkMode ? 0 : (wagerMode ? wagerAmount : 0)}
+            winnings={isNetworkMode ? 0 : (wagerMode ? sessionWinnings : 0)}
+            gameMode={isNetworkMode
+              ? `Online - ${onlineLabel}`
+              : (wagerMode ? `Practice Wager - ${wagerMode}` : 'Practice')}
+            // Online stakes nothing — hide the Wagered/Payout rows.
+            moneyless={isNetworkMode}
             kills={kills}
             onRematch={resetGame}
             onExit={onExit}

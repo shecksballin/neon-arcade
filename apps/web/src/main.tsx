@@ -3,7 +3,9 @@ import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App.tsx';
 import { NeonBucksProvider } from './NeonBucksStore.tsx';
-import { AppPrivyProvider } from './providers/AppPrivyProvider.tsx';
+import { CurrencyProvider } from './CurrencyStore.tsx';
+import { DeferredAuthProvider } from './auth';
+import { NotificationsProvider } from './notifications/NotificationsStore.tsx';
 import { AppErrorBoundary } from './components/AppErrorBoundary.tsx';
 import './index.css';
 
@@ -33,14 +35,31 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     {/* Outermost so even a provider crash shows the error screen, not white */}
     <AppErrorBoundary>
-      {/* Privy wraps everything so any component can call usePrivy()/useWallets() */}
-      <AppPrivyProvider>
+      {/* Auth is DEFERRED, not absent: this renders <App/> immediately and
+          streams the ~800 kB (gzipped) Privy/wallet stack in on idle, then
+          publishes its state through useAuth(). Components call useAuth(),
+          never usePrivy() — see src/auth/index.tsx for the whole story. */}
+      <DeferredAuthProvider>
         <QueryClientProvider client={queryClient}>
           <NeonBucksProvider>
-            <App />
+            {/* Display currency (AUD/USD/…): read by every real-money
+                amount on screen. Inside NeonBucks because practice bucks
+                are unaffected by it, outside App so the sidebar, wallet
+                panel and settings all share one source of truth. */}
+            <CurrencyProvider>
+              {/* Invites / messages / friend requests, in ONE place: the nav
+                  bell, the sidebar's JOIN button and the in-app pop-ups all
+                  read this store, and exactly one socket listener writes to
+                  it. Above <App/> because the pop-up queue must survive every
+                  view change — an invite that arrives mid-match is replayed
+                  when the match ends, not lost with the screen. */}
+              <NotificationsProvider>
+                <App />
+              </NotificationsProvider>
+            </CurrencyProvider>
           </NeonBucksProvider>
         </QueryClientProvider>
-      </AppPrivyProvider>
+      </DeferredAuthProvider>
     </AppErrorBoundary>
   </StrictMode>,
 );

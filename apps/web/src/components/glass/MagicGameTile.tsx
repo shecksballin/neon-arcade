@@ -90,12 +90,31 @@ export const ParticleCard: React.FC<ParticleCardProps> = ({
     particlesInitialized.current = true;
   }, [particleCount, glowColor]);
 
-  const clearAllParticles = useCallback(() => {
+  /**
+   * @param immediate skip the fade-out and tear down synchronously. Used on
+   *   unmount, where there is nothing left to animate for.
+   *
+   * THE KILL IS LOAD-BEARING. Every spawned particle carries two `repeat: -1`
+   * gsap tweens (drift + pulse, below). GSAP keys tweens off the target object,
+   * and an infinite tween on a DETACHED node keeps ticking in the global rAF
+   * ticker forever while pinning that node in memory. This used to only add a
+   * third, finite fade-out tween — so leaving a game left every particle you had
+   * ever hovered still animating, and every lobby in the arcade uses this card.
+   */
+  const clearAllParticles = useCallback((immediate = false) => {
     timeoutsRef.current.forEach(clearTimeout);
     timeoutsRef.current = [];
     magnetismAnimationRef.current?.kill();
 
-    particlesRef.current.forEach((particle) => {
+    const dying = particlesRef.current;
+    particlesRef.current = [];
+
+    dying.forEach((particle) => {
+      gsap.killTweensOf(particle);
+      if (immediate) {
+        particle.parentNode?.removeChild(particle);
+        return;
+      }
       gsap.to(particle, {
         scale: 0,
         opacity: 0,
@@ -106,7 +125,6 @@ export const ParticleCard: React.FC<ParticleCardProps> = ({
         },
       });
     });
-    particlesRef.current = [];
   }, []);
 
   const animateParticles = useCallback(() => {
@@ -288,7 +306,10 @@ export const ParticleCard: React.FC<ParticleCardProps> = ({
       element.removeEventListener("mouseleave", handleMouseLeave);
       element.removeEventListener("mousemove", handleMouseMove);
       element.removeEventListener("click", handleComponentClick);
-      clearAllParticles();
+      // Unmount: kill and drop, don't animate — an exiting lobby has no frames
+      // left to spend and a fade-out would just defer the teardown.
+      clearAllParticles(true);
+      gsap.killTweensOf(element);
     };
   }, [
     animateParticles,

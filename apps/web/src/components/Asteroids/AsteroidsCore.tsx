@@ -6,15 +6,27 @@ import { useGunSound } from './useGunSound';
 import { useGameAudio } from './useGameAudio';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
 import { useNeonBucks } from '../../NeonBucksStore';
-import { FreeplayNet } from '../../lib/freeplayNet';
+import {
+  FreeplayNet,
+  FREE_PLAY_DIFFICULTY,
+  type FreeplayMode,
+  type FreeplaySector,
+  type MatchState,
+  type MatchResult,
+} from '../../lib/freeplayNet';
+import SearchingForMatch from '../common/SearchingForMatch';
 
 interface AsteroidsGameProps {
   onExit: () => void;
   profile?: { name: string; avatarUrl: string } | null;
   difficulty?: number;
   isMultiplayer?: boolean;
+  /** The ONLINE mode chosen in the lobby. Null = practice/local play. */
+  onlineMode?: FreeplayMode | null;
+  /** The ONLINE sector chosen in the lobby (eclipse/blitz). Null = practice. */
+  onlineSector?: FreeplaySector | null;
   wagerAmount?: number;
-  wagerMode?: 'free_play' | 'slayer' | 'snake' | null;
+  wagerMode?: 'free_play' | 'slayer' | 'lms' | null;
   targetKills?: number;
 }
 
@@ -63,19 +75,130 @@ interface KillNotification {
   lifetime: number;
 }
 
-const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficulty: difficultyProp = 1, isMultiplayer = false, wagerAmount = 0, wagerMode = null, targetKills }) => {
-  // NETWORK MODE: true only for the online free-play (wager) path. Derived ONCE
-  // per mount — every multiplayer branch below keys off this single boolean.
-  const isNetworkMode = isMultiplayer && wagerMode === 'free_play';
-  // The server free-play world has no shrink zone. Difficulty 1 is the local
-  // "Free Sector / no zone" ruleset, so forcing it online disables every zone
-  // sim/render/HUD path without touching any practice-mode code.
-  const difficulty = isNetworkMode ? 1 : difficultyProp;
+/**
+ * SLAYER RESULT — a ranked KILL BOARD, not a verdict.
+ *
+ * Contract: "SLAYER has NO winner. Everybody scores points for the kills they
+ * got." So no Victory/Defeat headline and no money — every pilot is listed
+ * with the kills they scored, ranked, with our own row highlighted. LMS still
+ * uses the normal win/lose ResultsScreen.
+ */
+const SlayerScoreboard: React.FC<{
+  result: MatchResult;
+  gameMode: string;
+  onRematch: () => void;
+  onExit: () => void;
+}> = ({ result, gameMode, onRematch, onExit }) => {
+  const rows = [...result.standings].sort(
+    (a, b) => (b.points || b.kills) - (a.points || a.kills) || a.place - b.place
+  );
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+      className="absolute inset-0 z-[100] flex flex-col items-center justify-center bg-black/90 backdrop-blur-xl px-6"
+    >
+      <Target className="w-14 h-14 mb-5 text-[#00FFD1] animate-pulse" />
+      <h2 className="text-4xl md:text-6xl font-black text-white italic uppercase tracking-tighter mb-2 text-center">
+        Match Over
+      </h2>
+      <p className="text-[#00FFD1]/80 font-mono text-[11px] uppercase tracking-[0.35em] mb-8 text-center">
+        No winner — points for kills
+      </p>
+
+      <div className="bg-[#040b0b] border border-[#00FFD1]/30 rounded-xl p-6 w-full max-w-md mb-8">
+        <div className="flex justify-between items-center border-b border-[#00FFD1]/10 pb-2 mb-3 font-mono text-[10px] uppercase tracking-widest text-[#00FFD1]/60">
+          <span>Rank</span>
+          <span className="flex-1 px-3">Pilot · {gameMode}</span>
+          <span>Kills</span>
+        </div>
+        <div className="space-y-1 max-h-64 overflow-y-auto">
+          {rows.length === 0 && (
+            <p className="text-white/40 font-mono text-xs uppercase tracking-widest py-4 text-center">
+              No scores reported
+            </p>
+          )}
+          {rows.map((s, idx) => (
+            <div
+              key={s.id || `${s.name}-${idx}`}
+              className={`flex items-center justify-between px-3 py-2 rounded-lg font-mono text-xs ${
+                s.isYou ? 'bg-[#00FFD1]/10 text-[#00FFD1] border border-[#00FFD1]/30' : 'text-white/60'
+              }`}
+            >
+              <span className="opacity-50 w-6">#{idx + 1}</span>
+              <span className="flex-1 px-3 truncate uppercase">{s.name}</span>
+              <span className="font-black text-base italic">{s.points || s.kills}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex gap-3">
+        <button
+          onClick={onRematch}
+          className="px-8 py-4 rounded-2xl bg-[#00FFD1] text-[#081616] font-black uppercase italic tracking-tighter hover:scale-105 transition-all flex items-center gap-2"
+        >
+          <RefreshCw className="w-5 h-5" /> Play Again
+        </button>
+        <button
+          onClick={onExit}
+          className="px-8 py-4 rounded-2xl bg-white/5 border border-white/10 text-white/70 font-black uppercase italic tracking-tighter hover:bg-white/10 transition-all"
+        >
+          Exit
+        </button>
+      </div>
+    </motion.div>
+  );
+};
+
+const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficulty: difficultyProp = 1, isMultiplayer = false, onlineMode = null, onlineSector = null, wagerAmount = 0, wagerMode = null, targetKills }) => {
+  // NETWORK MODE: online play in the mode the lobby picked. The old rule
+  // (`isMultiplayer && wagerMode === 'free_play'`) silently forced free play
+  // for every online session — slayer and lms now reach the server as
+  // themselves. Derived ONCE per mount; every online branch keys off this.
+  const isNetworkMode = isMultiplayer && onlineMode !== null;
+  /** slayer/lms are match-scoped: they queue first. free_play joins now. */
+  const isQueuedOnline = isNetworkMode && onlineMode !== 'free_play';
+
+  // ── ONLINE ZONE RULESET ───────────────────────────────────────────────────
+  // The server sends the PRACTICE difficulty code it is simulating (10/11
+  // Eclipse, 12/13 Blitz, 1 = the no-zone free-play world) in the match-start
+  // payload, and the zone visuals key off exactly that number — the old
+  // `difficulty = 1` hard-code disabled every zone code path online.
+  //
+  // The ref is what the rAF loop and draw() read: the loop closure is captured
+  // by an effect keyed on [gameState, dimensions], so a state change alone
+  // would never reach it. The state drives the React HUD.
+  const [netDifficulty, setNetDifficulty] = useState<number>(FREE_PLAY_DIFFICULTY);
+  const netDifficultyRef = useRef<number>(FREE_PLAY_DIFFICULTY);
+  // …and we only DRAW a zone once the server has actually sent zone state in
+  // a snapshot. Without this a zone difficulty with no zone data would paint
+  // a ring the server does not have — a made-up boundary is worse than none.
+  const [netHasZone, setNetHasZone] = useState(false);
+  const netHasZoneRef = useRef(false);
+  const difficulty = isNetworkMode
+    ? netHasZone
+      ? netDifficulty
+      : FREE_PLAY_DIFFICULTY
+    : difficultyProp;
+  /** The difficulty the CANVAS must gate zone drawing on (loop-safe). */
+  const zoneDifficulty = () =>
+    isNetworkMode
+      ? netHasZoneRef.current
+        ? netDifficultyRef.current
+        : FREE_PLAY_DIFFICULTY
+      : difficulty;
 
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
-  const [gameState, setGameState] = useState<'menu' | 'playing' | 'gameover' | 'victory'>('menu');
+  // Online skips the briefing menu entirely (the lobby click was the start),
+  // so it begins in 'playing' — no one-frame menu flash.
+  const [gameState, setGameState] = useState<'menu' | 'playing' | 'gameover' | 'victory'>(
+    isNetworkMode ? 'playing' : 'menu'
+  );
   const [score, setScore] = useState(0);
   const [kills, setKills] = useState(0);
   const [health, setHealth] = useState(100);
@@ -160,7 +283,7 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
   const isUiReloaderHeldRef = useRef(false);
   const reloadHoldTimeRef = useRef(0);
 
-  // ── Network-mode session state (free-play multiplayer only) ───────────────
+  // ── Network-mode session state (online play) ──────────────────────────────
   const netRef = useRef<FreeplayNet | null>(null);
   const netInputRef = useRef<{ turn: -1 | 0 | 1; shoot: boolean; reload: boolean }>({ turn: 0, shoot: false, reload: false });
   const netKillsRef = useRef(0); // loop-side copy of kills for the zoom camera
@@ -169,9 +292,19 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
   const netServerAmmoRef = useRef({ magazine: 30, reloading: false }); // gates the local gun sound
   const reloadPulseUntilRef = useRef(0); // UI reload click -> short reload-input pulse
   const [netJoined, setNetJoined] = useState(false);
-  const [netPot, setNetPot] = useState(0); // SOL ledger value echoed by the server
-  const [netEntryFee, setNetEntryFee] = useState(0);
+  // Matchmaking (slayer/lms only) — set optimistically on entry, never
+  // waiting for a server ack.
+  const [netSearching, setNetSearching] = useState(false);
+  const [netQueue, setNetQueue] = useState({ current: 1, needed: 2 });
+  // Lobby-match lifecycle (waiting -> running -> ended) for the countdown.
+  const [netMatch, setNetMatch] = useState<MatchState | null>(null);
   const [netError, setNetError] = useState<string | null>(null);
+  // The server's end-of-match scoreboard. SLAYER renders it as a ranked kill
+  // board (no winner); LMS keeps the win/lose ResultsScreen.
+  const [netResult, setNetResult] = useState<MatchResult | null>(null);
+  // SLAYER only: killed out of the field while the match runs on — no verdict
+  // to show yet, just wait for the board.
+  const [netEliminated, setNetEliminated] = useState(false);
   const [respawnInfo, setRespawnInfo] = useState<{ by: string; until: number } | null>(null);
   const [respawnRemaining, setRespawnRemaining] = useState(0);
 
@@ -256,22 +389,18 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
   const [isCashingOut, setIsCashingOut] = useState(false);
   const cashoutStartTime = useRef<number | null>(null);
 
-  // Network mode: any live pot can be cashed out (it always holds at least the
-  // entry fee); practice keeps the original kills>0 gate.
-  const canCashout = isNetworkMode ? netPot > 0 : kills > 0;
+  // Cash-out is a PRACTICE Neon Bucks feature. Online has no pot to cash out,
+  // so the button is not rendered there at all (wagerMode is null online).
+  const canCashout = kills > 0;
 
   const handleCashoutDown = () => {
-     if (gameState === 'playing' && canCashout && wagerMode === 'free_play') {
+     if (gameState === 'playing' && !isNetworkMode && canCashout && wagerMode === 'free_play') {
         setIsCashingOut(true);
         cashoutStartTime.current = performance.now();
-        // The server runs its own authoritative 3s hold timer (and slows our
-        // turn rate); the local bar is only visual feedback.
-        if (isNetworkMode) netRef.current?.startCashout();
      }
   };
 
   const handleCashoutUp = () => {
-     if (isNetworkMode && isCashingOut) netRef.current?.cancelCashout();
      setIsCashingOut(false);
      setCashoutHoldProgress(0);
      cashoutStartTime.current = null;
@@ -284,11 +413,7 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
            const duration = Math.max(0, performance.now() - cashoutStartTime.current);
            const p = duration / 3000;
            setCashoutHoldProgress(Math.min(p, 1));
-           if (p >= 1 && isNetworkMode) {
-               // Pin the bar at full and WAIT: only the server's
-               // freeplay:cashout_confirmed event ends a network session.
-               af = requestAnimationFrame(tickCashout);
-           } else if (p >= 1) {
+           if (p >= 1) {
                setIsCashingOut(false);
                setGameState('victory'); // Victory gives the cash and triggers game over screen
            } else {
@@ -302,15 +427,8 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
      return () => cancelAnimationFrame(af);
   }, [isCashingOut, gameState]);
 
-  // NETWORK MODE: leaving the component mid-session is a voluntary despawn —
-  // freeplay:leave makes the server auto-cash-out the current pot.
-  useEffect(() => {
-    if (!isNetworkMode) return;
-    return () => {
-      netRef.current?.leave();
-      netRef.current = null;
-    };
-  }, [isNetworkMode]);
+  // (The online session's start + teardown live in ONE effect further down,
+  // next to startNetworkGame — see "ONLINE: enter on mount".)
 
   // NETWORK MODE: respawn-overlay countdown ticker.
   useEffect(() => {
@@ -437,8 +555,9 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
 
   useEffect(() => {
     if (gameState === 'gameover' || gameState === 'victory') {
-       // NETWORK MODE: payouts live in the server ledger only — NeonBucks is
-       // never touched online; sessionWinnings is set by the server events.
+       // ONLINE HAS NO MONEY THIS PASS: never call wager()/win() online.
+       // (wagerMode is null on the online path, so this block is doubly
+       // guarded — the isNetworkMode check documents the intent.)
        if (!isNetworkMode && wagerAmount > 0 && wagerMode) {
           if (wagerMode === 'free_play') {
              if (gameState === 'victory') { // manual cashout sets to victory
@@ -452,7 +571,7 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
              const payout = playerRef.current.kills * wagerAmount;
              if (payout > 0) win(payout);
              setSessionWinnings(payout - wagerAmount);
-          } else if (wagerMode === 'snake') {
+          } else if (wagerMode === 'lms') {
              if (gameState === 'victory') {
                 const totalBots = difficulty <= 3 ? 25 : 35; 
                 const pot = (totalBots + 1) * wagerAmount;
@@ -463,7 +582,10 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
              }
           }
        }
-       if (gameState === 'gameover') playDeath();
+       // Slayer has no loser: a kill board is not a death screen, so it gets
+       // no death sting either.
+       const slayerBoard = isNetworkMode && netResult?.scoring === 'kills';
+       if (gameState === 'gameover' && !slayerBoard) playDeath();
     }
   }, [gameState, playDeath, wagerAmount, wagerMode, win, difficulty]);
 
@@ -834,12 +956,54 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
     const player = playerRef.current;
     const view = net?.interpolate(time) ?? null;
 
+    // ── Zone ruleset: whatever difficulty code the SERVER reports ──
+    // Polled every frame (not just on `joined`) so event ordering cannot lose
+    // it. Never falls back to 1 once known.
+    const serverDifficulty = net?.matchDifficulty ?? null;
+    if (serverDifficulty !== null && serverDifficulty !== netDifficultyRef.current) {
+      netDifficultyRef.current = serverDifficulty;
+      setNetDifficulty(serverDifficulty);
+    }
+
+    // Latch "the server really is sending zone state" (sticky for the session
+    // so one zone-less snapshot cannot flicker the ring away).
+    if (view?.zone && !netHasZoneRef.current) {
+      netHasZoneRef.current = true;
+      setNetHasZone(true);
+    }
+
     if (view) {
-      // Own ship pose is server-authoritative (you is null while dead).
+      // ── SERVER-AUTHORITATIVE SAFE ZONE → the render refs ──
+      // A mirror, NOT a simulation: updateZone() (the local sim) is never
+      // reached online, so the ring we draw is exactly the ring the server
+      // kills you against. Zone maths/units are identical to practice
+      // (8000² world, same centre coordinates).
+      const zone = view.zone;
+      if (zone) {
+        const z = zoneRef.current;
+        z.x = zone.x;
+        z.y = zone.y;
+        z.radius = zone.radius;
+        z.safeZone = { x: zone.x, y: zone.y, radius: zone.radius };
+        z.nextSafeZone = zone.next ? { ...zone.next } : null;
+        z.isShrinking = zone.shrinking;
+        z.phase = zone.phase;
+        z.phaseTimer = zone.phaseTimer;
+        z.countdownTimer = zone.countdown;
+        z.outsideTimer = zone.outsideTimer;
+      }
+
+      // Own ship pose comes from FreeplayNet's LOCAL PREDICTION: we integrate
+      // our own turn/auto-drive at the server's measured constants and the
+      // library reconciles against the authoritative position every frame.
+      // That is what makes steering feel like practice instead of like a
+      // 20Hz slideshow (and removes the snapshot jitter entirely).
       if (view.you) {
         player.x = view.you.x;
         player.y = view.you.y;
         player.angle = Number(view.you.angle ?? player.angle);
+        player.kills = Number(view.you.kills ?? player.kills ?? 0);
+        netKillsRef.current = player.kills ?? 0;
         netServerAmmoRef.current.magazine = Number(view.you.ammo ?? view.you.mag ?? view.you.magazine ?? 30);
         netServerAmmoRef.current.reloading = !!view.you.reloading;
       }
@@ -911,13 +1075,55 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
     netInputRef.current = { turn, shoot, reload };
     net?.setInput({ ...netInputRef.current });
 
-    // Local gun sound at the fire rate while the server still has ammo for us.
+    // Local gun sound + muzzle flash at the practice fire rate (800 RPM =
+    // 75ms, the same interval the server enforces) while we still have ammo.
     const nowMs = Date.now();
     if (shoot && nowMs - lastShootTimeRef.current >= SHOOT_INTERVAL &&
         netServerAmmoRef.current.magazine > 0 && !netServerAmmoRef.current.reloading) {
       triggerShot();
       lastShootTimeRef.current = nowMs;
+      // Muzzle flash — identical to the practice shoot() burst.
+      const muzzleX = player.x + Math.cos(player.angle) * 20;
+      const muzzleY = player.y + Math.sin(player.angle) * 20;
+      for (let i = 0; i < 3; i++) {
+        particlesRef.current.push({
+          x: muzzleX,
+          y: muzzleY,
+          vx: (Math.random() - 0.5) * 5,
+          vy: (Math.random() - 0.5) * 5,
+          radius: Math.random() * 2,
+          lifetime: 20,
+          color: '#FFFFFF',
+          type: 'particle',
+        });
+      }
     }
+
+    // Engine exhaust — the practice loop emits this every other frame, and
+    // without it the online ship looked dead in the water.
+    if (Math.random() > 0.5) {
+      particlesRef.current.push({
+        x: player.x - Math.cos(player.angle) * 15,
+        y: player.y - Math.sin(player.angle) * 15,
+        vx: -Math.cos(player.angle) * 3 + (Math.random() - 0.5) * 2,
+        vy: -Math.sin(player.angle) * 3 + (Math.random() - 0.5) * 2,
+        radius: Math.random() * 3,
+        lifetime: 15,
+        color: '#FF0080',
+        type: 'particle',
+      });
+    }
+
+    // Age particles exactly like the practice path (they are render-only).
+    particlesRef.current = particlesRef.current.filter((p) => {
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      if (p.lifetime !== undefined) {
+        p.lifetime -= dt;
+        return p.lifetime > 0;
+      }
+      return false;
+    });
 
     // Camera follow + kill-based zoom (identical maths to the local path).
     const lerp = 0.1;
@@ -935,24 +1141,45 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
     if (nowMs - lastHudUpdateRef.current > 100) {
       lastHudUpdateRef.current = nowMs;
       setPlayerPos({ x: player.x, y: player.y });
+      setKills(player.kills ?? 0);
       if (view?.you) {
         setHealth(Math.max(0, Math.round(Number(view.you.hp ?? view.you.health ?? 100))));
         setAmmo({
           magazine: netServerAmmoRef.current.magazine,
-          reserve: 0, // server free play has no reserve pool (reload refills fully)
+          reserve: 0, // the online world has no reserve pool (reload refills fully)
           reloading: netServerAmmoRef.current.reloading,
         });
       }
       if (view) {
-        // Server leaderboard is [{name, pot}] — the JSX shows pot online.
+        // Leaderboard: kills online (no pot any more — online has no money).
         const lb = view.leaderboard.map((l) => ({
           name: l.name,
-          pot: l.pot,
-          kills: undefined as number | undefined,
+          kills: l.kills || l.score || 0,
           isPlayer: !!profile?.name && l.name === profile.name,
         }));
         setLeaderboard(lb);
         leaderboardRef.current = lb;
+
+        // Zone HUD (phase timer, shrink countdown, out-of-zone warning,
+        // minimap ring) — the same React state the practice HUD renders,
+        // fed from the server's authoritative zone.
+        if (view.zone) {
+          const z = zoneRef.current;
+          // PRACTICE SEMANTICS: `outsideTimer` counts UP while you are outside
+          // the ring and is 0 whenever you are inside — the HUD warning is
+          // exactly `outsideTimer > 0`. Gating on the server's own ring vs the
+          // server's own position keeps that identical online (and keeps the
+          // warning silent in Eclipse/Blitz, which kill instantly).
+          const outside = Math.hypot(player.x - z.x, player.y - z.y) > z.radius;
+          setUiZone({
+            radius: z.radius,
+            x: z.x,
+            y: z.y,
+            outsideTimer: outside ? z.outsideTimer : 0,
+            phaseTimer: z.phaseTimer,
+            countdownTimer: z.countdownTimer,
+          });
+        }
       }
     }
   };
@@ -1442,7 +1669,7 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
     // declare an instant, unearned victory. Server events end online sessions.
     if (!isNetworkMode && wagerMode === 'free_play' && targetKills !== undefined && playerRef.current.kills >= targetKills && gameState === 'playing') {
        setGameState('victory');
-    } else if (!isNetworkMode && (wagerMode === 'slayer' || wagerMode === 'snake') && botsRef.current.length === 0 && gameState === 'playing') {
+    } else if (!isNetworkMode && (wagerMode === 'slayer' || wagerMode === 'lms') && botsRef.current.length === 0 && gameState === 'playing') {
        setGameState('victory');
     }
 
@@ -1485,8 +1712,12 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
       ctx.beginPath(); ctx.moveTo(-camX, y - camY); ctx.lineTo(WORLD_SIZE - camX, y - camY); ctx.stroke();
     }
 
-    // Draw Zone
-    if (difficulty !== 1 && difficulty !== 2 && difficulty !== 3) {
+    // Draw Zone.
+    // ONLINE the gate is the SERVER's difficulty code (read through the ref so
+    // a mid-session ruleset stamp reaches this already-captured closure);
+    // practice reads its own prop exactly as before.
+    const drawZoneDifficulty = zoneDifficulty();
+    if (drawZoneDifficulty !== 1 && drawZoneDifficulty !== 2 && drawZoneDifficulty !== 3) {
       const zx = zoneRef.current.x - camX;
       const zy = zoneRef.current.y - camY;
       
@@ -1966,23 +2197,60 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
   }, [gameState, dimensions]);
 
   /**
-   * NETWORK MODE: join (or re-join after a session ended) the permanent
-   * free-play world. All money/HUD state below is driven purely by server
-   * events — nothing here ever touches NeonBucks.
+   * ONLINE: enter the world for the mode the lobby picked.
+   *   free_play      → joins the permanent world immediately (no queue UI)
+   *   slayer / lms  → enters matchmaking; the SEARCHING FOR ONLINE MATCH
+   *                     overlay shows until the server starts the match
+   * NOTHING here touches NeonBucks — online has no stake and no pot.
    */
   const startNetworkGame = () => {
+    if (!onlineMode) return;
     setNetError(null);
     setNetJoined(false);
-    setNetPot(0);
     setSessionWinnings(0);
     setRespawnInfo(null);
     setScore(0);
     setKills(0);
     setHealth(100);
     netKillsRef.current = 0;
+
+    // OPTIMISTIC searching state — set on entry, NOT on a server ack. A
+    // dropped/absent ack can no longer freeze the UI on the lobby.
+    setNetSearching(onlineMode !== 'free_play');
+    setNetQueue({ current: 1, needed: 2 });
+    setNetMatch(null);
+    setNetResult(null);
+    setNetEliminated(false);
     netBotCacheRef.current.clear();
     netAsteroidCacheRef.current.clear();
     netServerAmmoRef.current = { magazine: 30, reloading: false };
+
+    // A fresh session knows no ruleset until the server stamps one — and the
+    // zone refs must not carry a previous match's ring into the new one.
+    netDifficultyRef.current = FREE_PLAY_DIFFICULTY;
+    setNetDifficulty(FREE_PLAY_DIFFICULTY);
+    netHasZoneRef.current = false;
+    setNetHasZone(false);
+    zoneRef.current = {
+      radius: WORLD_SIZE,
+      x: WORLD_SIZE / 2,
+      y: WORLD_SIZE / 2,
+      safeZone: { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2, radius: WORLD_SIZE },
+      nextSafeZone: null,
+      isShrinking: false,
+      phaseTimer: 0,
+      phase: 1,
+      outsideTimer: 0,
+      countdownTimer: null,
+    };
+    setUiZone({
+      radius: WORLD_SIZE,
+      x: WORLD_SIZE / 2,
+      y: WORLD_SIZE / 2,
+      outsideTimer: 0,
+      phaseTimer: 0,
+      countdownTimer: null,
+    });
 
     // Neutral local shells — every gameplay value is overwritten by snapshots.
     playerRef.current = {
@@ -2008,18 +2276,20 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
     leaderboardRef.current = [];
 
     netRef.current?.dispose(); // safety: never stack two sessions
-    const net = new FreeplayNet('asteroids');
+    // The SECTOR is half of the server's difficulty code (eclipse→10/11,
+    // blitz→12/13), so it has to travel with the queue request.
+    const net = new FreeplayNet('asteroids', onlineMode, onlineSector);
     netRef.current = net;
     net.join({
+      onQueue: ({ current, needed }) => setNetQueue({ current, needed }),
       onJoined: (info) => {
+        // The zone ruleset the server is actually simulating.
+        if (typeof info.difficulty === 'number') {
+          netDifficultyRef.current = info.difficulty;
+          setNetDifficulty(info.difficulty);
+        }
+        setNetSearching(false);
         setNetJoined(true);
-        setNetEntryFee(info.entryFee);
-        setNetPot(info.entryFee);
-      },
-      onPot: ({ pot, kills: k }) => {
-        setNetPot(pot);
-        setKills(k);
-        netKillsRef.current = k;
       },
       onKill: ({ victimName }) => {
         // Reuse the existing canvas kill feed + audio.
@@ -2027,34 +2297,40 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
         playKillSound();
       },
       onKilled: ({ by, respawnIn }) => {
+        // Free play respawns you; the countdown overlay covers the wait.
         setRespawnInfo({ by, until: Date.now() + respawnIn });
-        // Death always aborts a cash-out hold in progress (server did too).
-        setIsCashingOut(false);
-        setCashoutHoldProgress(0);
-        cashoutStartTime.current = null;
       },
-      onRespawn: ({ pot }) => {
-        setRespawnInfo(null);
-        setNetPot(pot);
-      },
-      onEliminated: ({ potLost }) => {
-        // Asteroid collision: the house takes the pot, no respawn.
-        setSessionWinnings(-potLost);
+      onRespawn: () => setRespawnInfo(null),
+      onMatchState: (state) => setNetMatch(state),
+      onEliminated: () => {
+        // SLAYER has no loser: being killed does not end YOUR match with a
+        // defeat screen, it just takes you out of the field until the server
+        // publishes the kill board.
         setHealth(0);
+        if (onlineMode === 'slayer') {
+          setNetEliminated(true);
+          return;
+        }
+        // LMS: you are out — the existing win/lose screen is correct. Stay
+        // connected so freeplay:match_end can still deliver the standings.
+        // Free play: the server despawned us, so drop the session now.
         setGameState('gameover');
-        netRef.current?.dispose(); // already settled server-side — no leave emit
-        netRef.current = null;
+        if (onlineMode === 'free_play') {
+          netRef.current?.dispose(); // already settled server-side — no leave emit
+          netRef.current = null;
+        }
       },
-      onCashoutConfirmed: ({ payout, kills: k }) => {
-        // The ONLY way a cash-out completes: the server confirmed the payout.
-        setSessionWinnings(payout);
-        setKills(k);
-        setGameState('victory');
-        netRef.current?.dispose();
+      onMatchEnd: (result) => {
+        // SLAYER: no winner — the kill-count scoreboard replaces the verdict.
+        // LMS: unchanged victory/defeat.
+        setNetResult(result);
+        setGameState(result.won ? 'victory' : 'gameover');
+        netRef.current?.dispose(); // the match is settled server-side
         netRef.current = null;
       },
       onError: ({ code, message }) => {
         setNetError(message ?? code);
+        setNetSearching(false);
         setGameState('menu');
         netRef.current?.dispose();
         netRef.current = null;
@@ -2063,6 +2339,28 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
 
     setGameState('playing');
   };
+
+  /**
+   * ONLINE: enter on mount, leave on unmount.
+   *
+   * No "LAUNCH" gate online — picking a mode in the lobby IS the click, so we
+   * go straight to matchmaking (slayer/lms) or the world (free play). Start
+   * and teardown share ONE effect on purpose: React 18 StrictMode mounts,
+   * unmounts and re-mounts in dev, and a separate "start once" guard would
+   * leave the second mount with no session.
+   *
+   * Teardown emits freeplay:leave (in a world) or freeplay:cancel (while
+   * queued), so a queue slot can never leak when the view changes.
+   */
+  useEffect(() => {
+    if (!isNetworkMode) return;
+    startNetworkGame();
+    return () => {
+      netRef.current?.leave();
+      netRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isNetworkMode]);
 
   const startGame = () => {
     if (isNetworkMode) {
@@ -2184,15 +2482,36 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
     }
   };
 
+  /** ONLINE labels: sector comes from the server's difficulty code when it has
+   *  landed, otherwise from what the lobby asked for. */
+  const netSectorLabel =
+    netDifficulty === 12 || netDifficulty === 13
+      ? 'Blitz'
+      : netDifficulty === 10 || netDifficulty === 11
+        ? 'Eclipse'
+        : onlineSector === 'blitz'
+          ? 'Blitz'
+          : onlineSector === 'eclipse'
+            ? 'Eclipse'
+            : null;
+  const netModeLabel = onlineMode === 'lms' ? 'Last Man Standing' : onlineMode === 'slayer' ? 'Slayer' : 'Free Play';
+  const onlineLabel =
+    onlineMode === 'free_play' || !netSectorLabel ? netModeLabel : `${netSectorLabel} · ${netModeLabel}`;
+
   const getMissionName = () => {
     switch (difficulty) {
       case 1: return 'FREE SECTOR: INFINITE';
       case 2: return 'FREE SECTOR: BOUNTY';
       case 3: return 'FREE SECTOR: SURVIVOR';
-      case 10: return 'ASTEROID ECLIPSE: SAFE';
-      case 11: return 'ASTEROID ECLIPSE: TOTAL';
-      case 12: return 'BLITZ: SURVIVOR';
-      case 13: return 'BLITZ: SLAYER';
+      // The 2×2 the difficulty selector and the online lobby both name:
+      // sector · mode. These used to read SAFE/TOTAL/SURVIVOR/SLAYER, which
+      // disagreed with the tiles the player just clicked (and called 13
+      // "SLAYER" when 12 is the slayer code). Practice and online share this
+      // header now, so it has to match the canonical table exactly.
+      case 10: return 'ASTEROID ECLIPSE: SLAYER';
+      case 11: return 'ASTEROID ECLIPSE: LAST MAN STANDING';
+      case 12: return 'BLITZ: SLAYER';
+      case 13: return 'BLITZ: LAST MAN STANDING';
       default: return 'UNKNOWN';
     }
   };
@@ -2274,13 +2593,15 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
                     <p className="text-lg font-black text-[#00FFD1] italic tracking-tighter leading-none mt-1">{kills}</p>
                   </div>
                 </div>
-                {/* Network mode: live pot (server ledger, SOL units) */}
+                {/* Online: mode badge where the SOL pot used to be — no money HUD. */}
                 {isNetworkMode && (
-                  <div className="backdrop-blur-md bg-black/40 border border-yellow-500/20 px-6 py-3 rounded-xl flex items-center gap-3">
-                    <Trophy className="w-4 h-4 text-yellow-500" />
+                  <div className="backdrop-blur-md bg-black/40 border border-[#00FFD1]/20 px-6 py-3 rounded-xl flex items-center gap-3">
+                    <Navigation className="w-4 h-4 text-[#00FFD1]" />
                     <div className="text-left">
-                      <p className="text-[10px] font-mono text-white/40 uppercase leading-none">Pot (SOL)</p>
-                      <p className="text-lg font-black text-yellow-500 italic tracking-tighter leading-none mt-1">{netPot.toFixed(3)}</p>
+                      <p className="text-[10px] font-mono text-white/40 uppercase leading-none">Online</p>
+                      <p className="text-lg font-black text-[#00FFD1] italic tracking-tighter leading-none mt-1 uppercase">
+                        {onlineLabel}
+                      </p>
                     </div>
                   </div>
                 )}
@@ -2415,8 +2736,8 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
                     >
                       <span className="opacity-50">#{idx + 1}</span>
                       <span className="flex-1 px-3 truncate italic uppercase">{entry.name}</span>
-                      {/* Online the ranking column is the SOL pot */}
-                      <span className="font-bold">{isNetworkMode ? Number(entry.pot ?? 0).toFixed(3) : entry.kills}</span>
+                      {/* Ranking column: kills, online and in practice. */}
+                      <span className="font-bold">{Number(entry.kills ?? 0)}</span>
                     </div>
                   ))}
                 </div>
@@ -2510,21 +2831,16 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
                   onTouchStart={handleCashoutDown}
                   onTouchEnd={handleCashoutUp}
                   className={`px-8 py-4 rounded-xl font-mono text-xs font-black tracking-widest uppercase border select-none transition-all ${
-                    (isNetworkMode ? canCashout : (playerRef.current?.kills ?? 0) > 0)
+                    (playerRef.current?.kills ?? 0) > 0
                       ? 'bg-yellow-500/10 border-yellow-500 text-yellow-500 shadow-[0_0_20px_rgba(234,179,8,0.2)] hover:bg-yellow-500/25 active:scale-95 cursor-pointer'
                       : 'bg-white/5 border-white/10 text-white/30 cursor-not-allowed'
                   }`}
                 >
                   <div className="flex items-center justify-center gap-1.5">
-                    {(isNetworkMode ? canCashout : (playerRef.current?.kills ?? 0) > 0) ? (
-                      isNetworkMode ? (
-                        // Online pots are SOL ledger values, not NeonBucks.
-                        <>HOLD TO CASHOUT {netPot.toFixed(3)} SOL</>
-                      ) : (
-                        <>HOLD TO CASHOUT <img src="/neon-bucks-icon.png" alt="NB" referrerPolicy="no-referrer" className="h-5 w-auto drop-shadow-[0_0_5px_rgba(234,179,8,0.5)]" /></>
-                      )
+                    {(playerRef.current?.kills ?? 0) > 0 ? (
+                      <>HOLD TO CASHOUT <img src="/neon-bucks-icon.png" alt="NB" referrerPolicy="no-referrer" className="h-5 w-auto drop-shadow-[0_0_5px_rgba(234,179,8,0.5)]" /></>
                     ) : (
-                      isNetworkMode ? 'SYNCING POT...' : 'GET A KILL TO CASHOUT'
+                      'GET A KILL TO CASHOUT'
                     )}
                   </div>
                 </button>
@@ -2542,19 +2858,64 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
         )}
       </AnimatePresence>
 
-      {/* NETWORK MODE: respawn countdown after a player kill (pot was stolen) */}
+      {/* ONLINE: matchmaking. Shown IMMEDIATELY on entry for slayer/lms —
+          never waits for a server ack. free_play never shows this screen. */}
+      {netSearching && isQueuedOnline && (
+        <div className="absolute inset-0 z-[95] bg-[#081616]/95 backdrop-blur-xl">
+          <SearchingForMatch
+            playersInQueue={netQueue.current}
+            playersNeeded={netQueue.needed}
+            subtitle={`Neon Asteroids · ${onlineLabel}`}
+            onCancel={() => {
+              netRef.current?.cancel();
+              netRef.current = null;
+              setNetSearching(false);
+              onExit();
+            }}
+          />
+        </div>
+      )}
+
+      {/* ONLINE (lobby modes): match found — the server's start countdown. */}
+      {isQueuedOnline && !netSearching && netMatch?.status === 'waiting' && gameState === 'playing' && (
+        <div className="absolute inset-0 z-[90] flex items-center justify-center pointer-events-none bg-black/60 backdrop-blur-sm">
+          <div className="text-center space-y-3">
+            <p className="text-[#00FFD1] font-mono text-sm tracking-[0.4em] uppercase">Match found</p>
+            <p className="text-8xl font-black italic text-white">{Math.ceil(netMatch.startsIn / 1000)}</p>
+            <p className="text-white/50 font-mono text-xs uppercase tracking-widest">
+              {netMatch.total} pilots · no bots
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ONLINE: respawn countdown after a player kill (free play) */}
       {isNetworkMode && respawnInfo && gameState === 'playing' && (
         <div className="absolute inset-0 z-[85] flex items-center justify-center pointer-events-none bg-black/50 backdrop-blur-sm">
           <div className="text-center space-y-3">
             <p className="text-red-500 font-mono text-sm tracking-[0.4em] uppercase">Shot down by {respawnInfo.by}</p>
             <p className="text-8xl font-black italic text-white">{respawnRemaining.toFixed(1)}s</p>
-            <p className="text-white/50 font-mono text-xs uppercase tracking-widest">Pot reset to entry fee — redeploying</p>
+            <p className="text-white/50 font-mono text-xs uppercase tracking-widest">Redeploying</p>
           </div>
         </div>
       )}
 
-      {/* NETWORK MODE: joining indicator until the first server state lands */}
-      {isNetworkMode && gameState === 'playing' && !netJoined && (
+      {/* ONLINE (slayer): shot down, waiting for the kill board. Slayer has no
+          defeat screen — the match is still running for everybody else. */}
+      {isNetworkMode && netEliminated && gameState === 'playing' && (
+        <div className="absolute inset-0 z-[86] flex items-center justify-center pointer-events-none bg-black/70 backdrop-blur-sm">
+          <div className="text-center space-y-3">
+            <p className="text-red-500 font-mono text-sm tracking-[0.4em] uppercase">Eliminated</p>
+            <p className="text-6xl font-black italic text-white uppercase tracking-tighter">{kills} Kills</p>
+            <p className="text-white/50 font-mono text-xs uppercase tracking-widest">
+              No winner in Slayer — waiting for the final kill board
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ONLINE: joining indicator until the first server state lands */}
+      {isNetworkMode && !netSearching && gameState === 'playing' && !netJoined && (
         <div className="absolute inset-0 z-[85] flex items-center justify-center pointer-events-none">
           <p className="text-[#00FFD1] font-mono text-sm tracking-[0.4em] uppercase animate-pulse">Linking to Grid...</p>
         </div>
@@ -2651,12 +3012,26 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
           </motion.div>
         )}
 
-        {(gameState === 'victory' || gameState === 'gameover') && (
+        {/* SLAYER (online): the kill board replaces the victory/defeat screen. */}
+        {(gameState === 'victory' || gameState === 'gameover') && isNetworkMode && netResult?.scoring === 'kills' && (
+          <SlayerScoreboard
+            result={netResult}
+            gameMode={onlineLabel}
+            onRematch={startNetworkGame}
+            onExit={onExit}
+          />
+        )}
+
+        {(gameState === 'victory' || gameState === 'gameover') && !(isNetworkMode && netResult?.scoring === 'kills') && (
           <ResultsScreen
             won={gameState === 'victory'}
-            stake={isNetworkMode ? netEntryFee : (wagerMode ? wagerAmount : 0)}
-            winnings={isNetworkMode ? sessionWinnings : (wagerMode ? sessionWinnings : 0)}
-            gameMode={isNetworkMode ? 'Online Free Play (SOL)' : (wagerMode ? `Practice Wager - ${wagerMode}` : (isMultiplayer ? 'Online' : 'Practice'))}
+            stake={isNetworkMode ? 0 : (wagerMode ? wagerAmount : 0)}
+            winnings={isNetworkMode ? 0 : (wagerMode ? sessionWinnings : 0)}
+            gameMode={isNetworkMode
+              ? `Online - ${onlineLabel}`
+              : (wagerMode ? `Practice Wager - ${wagerMode}` : 'Practice')}
+            // Online stakes nothing — hide the Wagered/Payout rows.
+            moneyless={isNetworkMode}
             kills={kills}
             onRematch={startGame}
             onExit={onExit}
