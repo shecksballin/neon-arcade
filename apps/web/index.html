@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      viewport-fit=cover lets the app paint under the notch / home indicator;
+      the safe-area-inset-* padding in index.css keeps controls out from under
+      them. maximum-scale is deliberately NOT set: capping zoom would lock out
+      anyone who needs to magnify the board, and iOS ignores it anyway. The
+      focus-zoom it exists to prevent is handled properly instead, by keeping
+      inputs at >=16px (see index.css).
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#081616" />
+    <meta name="mobile-web-app-capable" content="yes" />
+
+    <!--
+      FONTS, LOADED WITHOUT BLOCKING THE FIRST PAINT
+      ----------------------------------------------
+      preconnect opens the TCP+TLS handshake to both font hosts in parallel
+      with the HTML parse, so the stylesheet request below doesn't pay for it.
+      (gstatic serves the font files themselves and needs crossorigin.)
+
+      The stylesheets then load with the media="print" swap trick: the browser
+      fetches them at normal priority but treats them as inapplicable, so they
+      never block rendering; onload flips them back to "all". Without this,
+      three font requests sat squarely on the critical path — the page could
+      not paint until Google responded. The <noscript> keeps fonts working
+      with JS disabled.
+
+      Space Grotesk carries the whole 300-900 range in ONE request; index.css
+      used to @import a second copy of it.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700;800;900&display=swap"
+      media="print"
+      onload="this.media='all'"
+    />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+      media="print"
+      onload="this.media='all'"
+    />
+    <noscript>
+      <link
+        rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700;800;900&display=swap"
+      />
+    </noscript>
+
+    <title>Neon Arcade</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

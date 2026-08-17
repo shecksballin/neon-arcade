@@ -1,0 +1,102 @@
+jsimport * as THREE from 'three';
+
+export function createSky({
+  radius = 4000,
+  colorSky = '#248fd5',      // zenith blue (from the demo)
+  colorHorizon = '#caf0fe',  // pale cyan horizon (from the demo)
+  colorClouds = '#ffe5c4',   // warm cloud tint (from the demo)
+  cloudsTexture,             // THREE.Texture: a soft cloud/noise map (tileable)
+  flowTexture,               // THREE.Texture: a flow/distortion map (optional)
+} = {}) {
+
+  if (cloudsTexture) cloudsTexture.wrapS = cloudsTexture.wrapT = THREE.RepeatWrapping;
+  if (flowTexture)   flowTexture.wrapS   = flowTexture.wrapT   = THREE.RepeatWrapping;
+
+  const uniforms = {
+    uTime:         { value: 0 },
+    uColorSky:     { value: new THREE.Color(colorSky) },
+    uColorHorizon: { value: new THREE.Color(colorHorizon) },
+    uColorClouds:  { value: new THREE.Color(colorClouds) },
+    uCloudsMap:    { value: cloudsTexture || null },
+    uFlowMap:      { value: flowTexture || null },
+    uHasClouds:    { value: cloudsTexture ? 1 : 0 },
+    uHasFlow:      { value: flowTexture ? 1 : 0 },
+    uCloudScale:   { value: 2.0 },   // tiling of the cloud texture
+    uCloudSpeed:   { value: 0.01 },  // drift speed
+    uCloudCover:   { value: 0.5 },   // 0..1 how much sky is covered
+    uHorizonPow:   { value: 3.0 },   // sharpness of the gradient falloff
+  };
+
+  const material = new THREE.ShaderMaterial({
+    side: THREE.BackSide,   // render the inside of the dome
+    depthWrite: false,      // sky never occludes scene geometry
+    fog: false,
+    uniforms,
+    vertexShader: /* glsl */`
+      varying vec3 vWorldDir;
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        vec4 world = modelMatrix * vec4(position, 1.0);
+        vWorldDir = normalize(world.xyz - cameraPosition);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */`
+      varying vec3 vWorldDir;
+      varying vec2 vUv;
+
+      uniform float uTime;
+      uniform vec3  uColorSky, uColorHorizon, uColorClouds;
+      uniform sampler2D uCloudsMap, uFlowMap;
+      uniform int   uHasClouds, uHasFlow;
+      uniform float uCloudScale, uCloudSpeed, uCloudCover, uHorizonPow;
+
+      void main() {
+        // --- vertical gradient: horizon -> zenith based on view angle ---
+        float h = clamp(vWorldDir.y, 0.0, 1.0);
+        float t = 1.0 - pow(1.0 - h, uHorizonPow);
+        vec3 col = mix(uColorHorizon, uColorSky, t);
+
+        // --- scrolling, flow-distorted clouds ---
+        if (uHasClouds == 1) {
+          vec2 uv = vUv * uCloudScale;
+          vec2 drift = vec2(uTime * uCloudSpeed, uTime * uCloudSpeed * 0.3);
+
+          vec2 flow = vec2(0.0);
+          if (uHasFlow == 1) {
+            flow = (texture2D(uFlowMap, uv * 0.5 + drift * 0.5).rg - 0.5) * 0.1;
+          }
+
+          float clouds = texture2D(uCloudsMap, uv + drift + flow).r;
+          // fade clouds out toward the horizon so they sit "up in the sky"
+          clouds *= smoothstep(0.05, 0.5, h);
+          clouds = smoothstep(1.0 - uCloudCover, 1.0, clouds);
+
+          col = mix(col, uColorClouds, clouds);
+        }
+
+        gl_FragColor = vec4(col, 1.0);
+        #include <colorspace_fragment>
+      }
+    `,
+  });
+
+  const geometry = new THREE.SphereGeometry(radius, 32, 16);
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = -1;   // draw first, behind everything
+
+  // call this every frame from your loop
+  mesh.tick = (elapsed) => { uniforms.uTime.value = elapsed; };
+
+  return mesh;
+}
+And to use it:
+jsconst sky = createSky({
+  cloudsTexture: new THREE.TextureLoader().load('clouds.png'), // soft tileable cloud/noise
+  flowTexture:   new THREE.TextureLoader().load('flow.png'),   // optional
+});
+scene.add(sky);
+
+// in your animation loop:
+sky.tick(clock.getElapsedTime());

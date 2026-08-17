@@ -1,0 +1,589 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Globe, Cpu, LogOut, Users, Trophy, TrendingUp, Settings, Award, MessageSquare, History } from 'lucide-react';
+import { ParticleCard } from '../glass/MagicGameTile';
+// Shared matchmaking screen — identical copy/look in every online game.
+import SearchingForMatch from '../common/SearchingForMatch';
+import GameLobby from './GameLobby';
+import ComputerGame from './ComputerGame';
+import OnlineGame from './OnlineGame';
+import LocalGame from './LocalGame';
+import { useComputerMove } from './useComputerMove';
+import { DEFAULT_SKILL_LEVEL } from './difficulty';
+// Shared authed game socket — connects lazily when the player enters online
+// mode (connectGameSocket), never at module import.
+import { connectGameSocket, getSocket } from '../../hooks/useGameSocket';
+
+interface ChessGameProps {
+  onExit: () => void;
+  profile: { name: string; avatarUrl: string } | null;
+  onGameStatusChange?: (inProgress: boolean) => void;
+}
+
+/** Server-declared end of an online game (resign / disconnect / mate / draw). */
+export interface ServerGameEnd {
+  winner: 'white' | 'black' | 'draw';
+  reason: string;
+}
+
+// Internal component for the left nav sidebar (based on SidebarMenu)
+function ChessNavSidebar({ 
+  gameTitle = "Neon Chess",
+  onReturn, 
+  onExit,
+  gameMode, 
+  onPlayOnline, 
+  onPlayComputer, 
+  onPlayLocal,
+  profile
+}: { 
+  gameTitle?: string;
+  onReturn: () => void;
+  onExit: () => void;
+  gameMode: string | null;
+  onPlayOnline: () => void;
+  onPlayComputer: () => void;
+  onPlayLocal: () => void;
+  profile: { name: string; avatarUrl: string } | null;
+}) {
+  return (
+    <div className="hidden lg:flex w-64 border-r border-[#00FFD1]/20 bg-[#040b0b] flex-col h-[100dvh] sticky top-0 overflow-hidden shrink-0 z-50">
+      <div className="flex items-center justify-between p-4 border-b border-[#00ffd1]/20 bg-gradient-to-r from-[#00ffd1]/10 to-transparent">
+        <h2 className="text-lg font-black text-[#00ffd1] uppercase tracking-[0.2em]">{gameTitle} Menu</h2>
+      </div>
+
+      <div className="flex-1 p-2.5 flex flex-col gap-2.5">
+        {/* Rank Section */}
+        <div className="p-3 border border-[#00ffd1]/20 rounded-xl bg-black/40">
+          <div className="flex items-center gap-2 mb-1.5">
+            <Trophy size={18} className="text-[#00ffd1] shrink-0" />
+            <div>
+              <div className="text-[10px] text-[#00ffd1]/60 uppercase tracking-widest leading-none mt-0.5">Current Rank</div>
+              <div className="text-base mt-1 text-white font-bold tracking-wider leading-none">DIAMOND I</div>
+            </div>
+          </div>
+          <div className="w-full bg-black/60 h-1.5 rounded-full mt-2 overflow-hidden">
+            <div className="bg-[#00ffd1] h-full w-[75%] shadow-[0_0_10px_#00ffd1]"></div>
+          </div>
+        </div>
+
+        {/* Navigation Items */}
+        <div className="space-y-1">
+          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
+            <Users size={16} />
+            <span className="uppercase tracking-wider text-xs flex-1 text-left">Friends</span>
+            <span className="bg-[#00ffd1]/20 text-[#00ffd1] text-[9px] px-1.5 py-0.5 rounded flex items-center justify-center font-bold">5</span>
+          </button>
+          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
+            <MessageSquare size={16} />
+            <span className="uppercase tracking-wider text-xs flex-1 text-left">Messages</span>
+            <span className="bg-[#00ffd1]/20 text-[#00ffd1] text-[9px] px-1.5 py-0.5 rounded flex items-center justify-center font-bold">2</span>
+          </button>
+          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
+            <History size={16} />
+            <span className="uppercase tracking-wider text-xs flex-1 text-left">{gameTitle} History</span>
+          </button>
+          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
+            <Award size={16} />
+            <span className="uppercase tracking-wider text-xs flex-1 text-left">Leaderboard</span>
+          </button>
+          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
+            <TrendingUp size={16} />
+            <span className="uppercase tracking-wider text-xs flex-1 text-left">Stats</span>
+          </button>
+          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
+            <Settings size={16} />
+            <span className="uppercase tracking-wider text-xs flex-1 text-left">Settings</span>
+          </button>
+        </div>
+
+        {/* Placeholder Friends List */}
+        <div className="pt-2 border-t border-[#00ffd1]/20 flex-1 flex flex-col min-h-0 pb-4">
+          <div className="text-[10px] text-white/40 uppercase tracking-[0.2em] mb-2 pl-2 shrink-0">Online Friends</div>
+          <div className="space-y-1 overflow-y-auto custom-scrollbar flex-1">
+            <div className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 cursor-pointer transition-colors group">
+              <div className="flex items-center gap-3">
+                <div className="relative">
+                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#00ffd1]/40 to-blue-500/40 border border-[#00ffd1]/20" />
+                  <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#081616] bg-purple-500" />
+                </div>
+                <div className="text-left">
+                  <div className="text-sm text-white/90 group-hover:text-white transition-colors tracking-wide leading-none">CyberNinja</div>
+                  <div className="text-[10px] text-purple-400 mt-1">In Game</div>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 cursor-pointer transition-colors group">
+              <div className="flex items-center gap-3">
+                <div className="relative">
+                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#00ffd1]/40 to-blue-500/40 border border-[#00ffd1]/20" />
+                  <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#081616] bg-green-500" />
+                </div>
+                <div className="text-left">
+                  <div className="text-sm text-white/90 group-hover:text-white transition-colors tracking-wide leading-none">GlitchMatrix</div>
+                  <div className="text-[10px] text-green-400 mt-1">Online</div>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 cursor-pointer transition-colors group">
+              <div className="flex items-center gap-3">
+                <div className="relative">
+                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#00ffd1]/40 to-blue-500/40 border border-[#00ffd1]/20" />
+                  <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#081616] bg-yellow-500" />
+                </div>
+                <div className="text-left">
+                  <div className="text-sm text-white/90 group-hover:text-white transition-colors tracking-wide leading-none">NeonRider</div>
+                  <div className="text-[10px] text-yellow-400 mt-1">Away</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GameMenuPanel({ 
+  onReturn, 
+  onExit,
+  gameMode, 
+  onPlayOnline, 
+  onPlayComputer, 
+  onPlayLocal,
+  profile
+}: { 
+  onReturn: () => void, 
+  onExit: () => void,
+  gameMode: string | null,
+  onPlayOnline: () => void,
+  onPlayComputer: () => void,
+  onPlayLocal: () => void,
+  profile: { name: string; avatarUrl: string } | null
+}) {
+  return (
+    <div className="w-full h-full px-1 flex flex-col gap-2 items-stretch pb-1">
+      <div className="w-full flex flex-col justify-start gap-2 flex-1">
+        {/* Online Match */}
+        <ParticleCard
+          onClick={onPlayOnline}
+          className={`magic-bento-card flex-1 px-3 py-3.5 rounded-xl transition-all duration-300 flex flex-col items-center justify-center gap-1.5 group relative overflow-hidden cursor-pointer ${
+            gameMode === 'multiplayer'
+              ? 'bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] shadow-[0_0_40px_rgba(0,255,209,0.4)] scale-[1.02]'
+              : 'bg-[#081616] border border-[#00FFD1]/40 text-white hover:border-[#00FFD1] hover:shadow-[0_0_20px_rgba(0,255,209,0.2)]'
+          }`}
+          style={{ backdropFilter: 'none' }}
+        >
+          {gameMode === 'multiplayer' && <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>}
+          <Globe className={`w-5 h-5 shrink-0 ${gameMode === 'multiplayer' ? '' : 'text-zinc-400 group-hover:rotate-12 transition-transform block'}`} />
+          <div className="text-center">
+            <span className="block font-black text-[10px] uppercase tracking-tighter italic leading-none">Wager Match</span>
+          </div>
+        </ParticleCard>
+
+        {/* Practice / Computer */}
+        <ParticleCard
+          onClick={onPlayComputer}
+          className={`magic-bento-card flex-1 px-3 py-3.5 rounded-xl transition-all duration-300 flex flex-col items-center justify-center gap-1.5 group relative overflow-hidden cursor-pointer ${
+            gameMode === 'computer'
+              ? 'bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] shadow-[0_0_40px_rgba(0,255,209,0.4)] scale-[1.02]'
+              : 'bg-[#081616] border border-[#00FFD1]/40 text-white hover:border-[#00FFD1] hover:shadow-[0_0_20px_rgba(0,255,209,0.2)]'
+          }`}
+          style={{ backdropFilter: 'none' }}
+        >
+          {gameMode === 'computer' && <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>}
+          <Cpu className={`w-5 h-5 shrink-0 ${gameMode === 'computer' ? '' : 'text-zinc-400 group-hover:rotate-12 transition-transform block'}`} />
+          <div className="text-center">
+            <span className="block font-black text-[10px] uppercase tracking-tighter italic leading-none">
+              Practice
+            </span>
+          </div>
+        </ParticleCard>
+
+        {/* Local Co-Op */}
+        <ParticleCard
+          onClick={onPlayLocal}
+          className={`magic-bento-card flex-1 px-3 py-3.5 rounded-xl transition-all duration-300 flex flex-col items-center justify-center gap-1.5 group relative overflow-hidden cursor-pointer ${
+            gameMode === 'local'
+              ? 'bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] shadow-[0_0_40px_rgba(0,255,209,0.4)] scale-[1.02]'
+              : 'bg-[#081616] border border-[#00FFD1]/40 text-white hover:border-[#00FFD1] hover:shadow-[0_0_20px_rgba(0,255,209,0.2)]'
+          }`}
+          style={{ backdropFilter: 'none' }}
+        >
+          {gameMode === 'local' && <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>}
+          <div className={`material-symbols-outlined text-[20px] block leading-none shrink-0 ${gameMode === 'local' ? '' : 'text-zinc-400 group-hover:scale-110 transition-transform'}`}>
+            people
+          </div>
+          <div className="text-center">
+            <span className="block font-black text-[10px] uppercase tracking-tighter italic leading-none">
+              Local Co-Op
+            </span>
+          </div>
+        </ParticleCard>
+      </div>
+
+      <div className="w-full mt-auto border-t border-[#3a4a44]/40 pt-2 pb-2 space-y-2 flex-shrink-0">
+        {/* User Profile display */}
+        {profile && (
+          <div className="flex items-center gap-2 justify-center px-3 py-3 bg-[#081616] border border-[#00FFD1]/20 rounded-xl">
+            <img src={profile.avatarUrl} alt="Avatar" className="w-5 h-5 rounded-full border border-[#00FFD1]/40" />
+            <span className="text-[10px] font-black text-white italic uppercase tracking-tighter">
+              {profile.name}
+            </span>
+          </div>
+        )}
+
+        <button
+          onClick={onExit}
+          className="w-full px-3 py-4 border border-red-500/40 text-red-400 rounded-xl transition-all flex items-center justify-center gap-1.5 group hover:scale-[1.02] cursor-pointer hover:bg-red-500/10 hover:border-red-500/60 font-black tracking-widest uppercase text-[10px]"
+        >
+          <LogOut className="w-3.5 h-3.5 group-hover:-translate-x-1 transition-transform inline-block pointer-events-none" />
+          <span className="pointer-events-none">EXIT GAME</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// PRACTICE-ONLY: the Neon Bucks wager menu is shown before a COMPUTER game.
+// The online path never stakes anything — no SOL, no Neon Bucks.
+import { WagerMenu } from '../NeonBucks/WagerMenu';
+
+export default function ChessGame({ onExit, profile, onGameStatusChange }: ChessGameProps) {
+  const [gameState, setGameState] = useState<'lobby' | 'waiting' | 'playing' | 'ended' | 'practice_wager'>('lobby');
+  const [playerData, setPlayerData] = useState<any>(null);
+  const [gameData, setGameData] = useState<any>(null);
+  const [gameMode, setGameMode] = useState<'multiplayer' | 'computer' | 'local' | null>(null);
+  const [wagerAmount, setWagerAmount] = useState<number>(0);
+  // Practice-mode engine strength (Stockfish skill level), shared by the
+  // lobby selector and the in-game selector.
+  const [skillLevel, setSkillLevel] = useState<number>(DEFAULT_SKILL_LEVEL);
+
+  const [externalMove, setExternalMove] = useState<string | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'waiting' | 'disconnected'>('disconnected');
+  // Result pushed by the server (resign / disconnect / reported mate / draw).
+  // Rendered by OnlineGame's end overlay — local chess.js detection alone
+  // can't see the opponent resigning or dropping.
+  const [serverGameEnd, setServerGameEnd] = useState<ServerGameEnd | null>(null);
+  // Live queue occupancy from `queue:status`, shown while searching.
+  const [queueCount, setQueueCount] = useState<{ current: number; needed: number } | null>(null);
+
+  // Singleton — stable across renders, NOT connected until connectGameSocket().
+  const socket = getSocket();
+
+  const { getBestMove } = useComputerMove();
+
+  // Mirrors of state for listeners/cleanups that must not re-subscribe on
+  // every render (the socket handlers below are bound exactly once).
+  const gameStateRef = useRef(gameState);
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
+  const findPayloadRef = useRef<{ name: string; avatarUrl: string } | null>(null);
+
+  useEffect(() => {
+    if (onGameStatusChange) {
+      onGameStatusChange(gameState !== 'lobby');
+    }
+  }, [gameState, onGameStatusChange]);
+
+  useEffect(() => {
+    // Named handlers + handler-specific socket.off: the socket is SHARED with
+    // the other games, so blanket socket.off('event') would strip their
+    // listeners (and the global connect_error logger) too.
+    const onConnect = () => {
+      setConnectionStatus('connected');
+      // A reconnect hands us a BRAND NEW socket.id, so any queue slot the
+      // server still holds for the old id is stale. Re-enter the queue if we
+      // are still searching — findGame is idempotent server-side.
+      if (gameStateRef.current === 'waiting' && findPayloadRef.current) {
+        socket.emit('findGame', findPayloadRef.current);
+      }
+    };
+    const onDisconnect = () => setConnectionStatus('disconnected');
+    const onConnectError = (err: Error) => {
+      // 'unauthorized' / 'auth_unavailable' — token missing/expired or the
+      // server can't verify JWTs. Surface via the existing status pill.
+      if (err.message === 'unauthorized' || err.message === 'auth_unavailable') {
+        console.warn('[chess] socket auth failed:', err.message);
+      }
+      setConnectionStatus('disconnected');
+      // Never strand the player on the searching screen when the socket can't
+      // even connect — there is nothing to search with.
+      setGameState((s) => (s === 'waiting' ? 'lobby' : s));
+    };
+    // Legacy ack. The searching screen is already up (set optimistically on
+    // click), so this only confirms — it must never overwrite a live game.
+    const onWaiting = () => {
+      setGameState((s) => (s === 'lobby' ? 'waiting' : s));
+      setConnectionStatus('waiting');
+    };
+    // Authoritative, never-silent queue state from the shared server queue.
+    const onQueueStatus = (data: any) => {
+      if (data?.game !== 'chess') return; // shared socket — ignore other games
+      if (data.inQueue) {
+        setConnectionStatus('waiting');
+        // How many are waiting with you — shown on the searching screen.
+        setQueueCount({ current: data.current ?? 1, needed: data.needed ?? 2 });
+        return;
+      }
+      // inQueue:false means "not queued AND no match started" (a started match
+      // is announced by gameStart instead) — so drop the searching screen.
+      setGameState((s) => (s === 'waiting' ? 'lobby' : s));
+    };
+    const onGameStart = (data: any) => {
+      setGameState('playing');
+      setGameData(data);
+      setGameMode(data.mode);
+      setConnectionStatus('connected');
+      setServerGameEnd(null);
+      setExternalMove(null);
+    };
+    const onGameEnded = (data: any) => {
+      setGameState('ended');
+      setServerGameEnd({
+        winner: data?.winner ?? 'draw',
+        reason: data?.reason ?? 'ended',
+      });
+    };
+    const onOpponentDisconnected = () => {
+      // Informational only — the server follows up with gameEnded
+      // { reason: 'disconnect' }, which drives the end overlay. (The old
+      // hard reset to lobby hid the result and faked a 'Disconnected' pill.)
+      console.info('[chess] opponent disconnected — awaiting server result');
+    };
+    const onMoveMade = (data: any) => setExternalMove(data.move);
+    const onGameAuthError = (data: any) => {
+      // Server refused matchmaking (e.g. account setup unfinished).
+      console.warn('[chess] cannot play online:', data?.message ?? data?.code);
+      setGameState('lobby');
+      setConnectionStatus('disconnected');
+    };
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('connect_error', onConnectError);
+    socket.on('waiting', onWaiting);
+    socket.on('queue:status', onQueueStatus);
+    socket.on('gameStart', onGameStart);
+    socket.on('gameEnded', onGameEnded);
+    socket.on('opponentDisconnected', onOpponentDisconnected);
+    socket.on('moveMade', onMoveMade);
+    socket.on('gameAuthError', onGameAuthError);
+
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('connect_error', onConnectError);
+      socket.off('waiting', onWaiting);
+      socket.off('queue:status', onQueueStatus);
+      socket.off('gameStart', onGameStart);
+      socket.off('gameEnded', onGameEnded);
+      socket.off('opponentDisconnected', onOpponentDisconnected);
+      socket.off('moveMade', onMoveMade);
+      socket.off('gameAuthError', onGameAuthError);
+    };
+  }, [socket]);
+
+  // Leave the queue if this whole screen goes away mid-search (route change,
+  // arcade exit, hot reload). The in-app paths — Cancel, Return to lobby, Exit
+  // — emit leaveQueue themselves; the server also sweeps on disconnect.
+  useEffect(() => {
+    return () => {
+      if (gameStateRef.current === 'waiting') socket.emit('leaveQueue');
+    };
+  }, [socket]);
+
+  const handleFindGame = () => {
+    const fullPlayer = {
+      name: profile?.name || 'Player',
+      avatarUrl: profile?.avatarUrl || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix'
+    };
+    setPlayerData(fullPlayer);
+    findPayloadRef.current = fullPlayer;
+
+    // OPTIMISTIC: the SEARCHING FOR ONLINE MATCH screen goes up on THIS click.
+    // It is never gated on the server's ack — a dropped or absent reply used
+    // to leave the UI frozen on the lobby, which is what made online look
+    // broken. No wager, no stake: the online path costs nothing.
+    setGameState('waiting');
+    gameStateRef.current = 'waiting'; // eager: listeners/cleanup read the ref
+    setConnectionStatus('connecting');
+    setServerGameEnd(null);
+    setExternalMove(null);
+
+    // Lazy connect: only touches the network when entering online mode.
+    const s = connectGameSocket();
+    // Emits are buffered by socket.io until the connection is up.
+    s.emit('findGame', fullPlayer);
+    if (s.connected) setConnectionStatus('connected');
+
+    if (!s.connected && !s.active) {
+      // Not connected and not even trying (no auth token stored) — the queue
+      // can never be joined, so don't spin on a screen that will never resolve.
+      console.warn('[chess] game socket is not connecting — sign in to play online');
+      setGameState('lobby');
+      gameStateRef.current = 'lobby';
+      setConnectionStatus('disconnected');
+    }
+  };
+
+  const handlePlayComputer = () => {
+    const fullPlayer = {
+      name: profile?.name || 'Player',
+      avatarUrl: profile?.avatarUrl || 'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix'
+    };
+    setPlayerData(fullPlayer);
+    setGameState('practice_wager');
+  };
+
+  const handlePlayLocal = () => {
+    setGameMode('local');
+    setGameState('playing');
+  };
+
+  const handleExitApp = () => {
+    // Always free the queue slot on the way out — a leaked entry is what
+    // yanks an absent player into a match nobody is playing.
+    if (gameState === 'waiting') {
+      socket.emit('leaveQueue');
+      gameStateRef.current = 'lobby'; // the unmount cleanup must not re-emit
+    }
+    if (gameMode === 'multiplayer' && gameState === 'playing' && gameData?.gameId) {
+      socket.emit('resign', gameData.gameId);
+    }
+    onExit();
+  };
+
+  // Also the Cancel button on the SEARCHING FOR ONLINE MATCH screen.
+  const handleReturnToLobby = () => {
+    if (gameState === 'waiting') {
+      socket.emit('leaveQueue');
+    }
+    if (gameMode === 'multiplayer' && gameState === 'playing' && gameData?.gameId) {
+      socket.emit('resign', gameData.gameId);
+    }
+    setGameState('lobby');
+    gameStateRef.current = 'lobby';
+    findPayloadRef.current = null; // stop the reconnect replay
+    setGameData(null);
+    setGameMode(null);
+    setPlayerData(null);
+    setExternalMove(null);
+    setServerGameEnd(null);
+  };
+
+  if (gameState === 'lobby' || gameState === 'practice_wager') {
+    return (
+      <div className="min-h-screen bg-[#081616] relative flex justify-center">
+        {gameState === 'practice_wager' && (
+          <WagerMenu 
+            gameTitle="Neon Chess"
+            onCancel={() => setGameState('lobby')}
+            onStart={(stake) => {
+              setWagerAmount(stake);
+              setGameMode('computer');
+              setGameState('playing');
+            }}
+          />
+        )}
+        <div className="w-full relative z-0">
+          <GameLobby
+            onFindGame={handleFindGame}
+            onPlayComputer={handlePlayComputer}
+            onPlayLocal={handlePlayLocal}
+            onExit={onExit}
+            difficulty={skillLevel}
+            onDifficultyChange={setSkillLevel}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-[100dvh] flex bg-[#081616] overflow-hidden">
+      {/* Permanent Left Sidebar (Nav & Actions) */}
+      <ChessNavSidebar 
+        gameTitle="Neon Chess" 
+        onReturn={handleReturnToLobby}
+        onExit={handleExitApp}
+        gameMode={gameMode}
+        onPlayOnline={gameMode === 'multiplayer' ? () => {} : handleFindGame}
+        onPlayComputer={gameMode === 'computer' ? () => {} : handlePlayComputer}
+        onPlayLocal={gameMode === 'local' ? () => {} : handlePlayLocal}
+        profile={profile}
+      />
+
+      {/* Main Content Area */}
+      <div className="flex-1 overflow-y-auto h-[100dvh] relative">
+        {gameState === 'waiting' ? (
+          // Shared matchmaking screen — same copy and look in every game. The
+          // PLAYERS n/N line shows how many others are queuing alongside you.
+          // Cancel leaves the queue via handleReturnToLobby.
+          <div className="min-h-[100dvh] flex items-center justify-center p-6">
+            <SearchingForMatch
+              playersInQueue={queueCount?.current}
+              playersNeeded={queueCount?.needed}
+              onCancel={handleReturnToLobby}
+            />
+          </div>
+        ) : (
+          // STACKED below lg: a fixed 280px menu beside the board needs ~620px
+          // of width, so on a phone the board was pushed off-screen. Board
+          // first (order-1), menu below it.
+          <div className="flex flex-col lg:flex-row items-center justify-start lg:justify-center py-6 lg:py-10 min-h-full gap-6 lg:gap-8 max-w-[1200px] mx-auto px-3 lg:px-0 lg:translate-y-[20px]">
+            {/* The 5 buttons menu on the left */}
+            <div className="order-2 lg:order-1 w-full max-w-[340px] lg:w-[280px] h-auto lg:h-[600px] flex-shrink-0">
+               <GameMenuPanel 
+                 onReturn={handleReturnToLobby} 
+                 onExit={handleExitApp}
+                 gameMode={gameMode} 
+                 onPlayOnline={gameMode === 'multiplayer' ? () => {} : handleFindGame}
+                 onPlayComputer={gameMode === 'computer' ? () => {} : handlePlayComputer}
+                 onPlayLocal={gameMode === 'local' ? () => {} : handlePlayLocal}
+                 profile={profile}
+               />
+            </div>
+
+            {/* order-1: the board comes FIRST on a stacked phone layout — you
+                should not have to scroll past a menu to see the game. */}
+            <div className="order-1 lg:order-2 w-full flex justify-center min-w-0">
+            {gameMode === 'local' ? (
+              <LocalGame
+                onReturnToLobby={handleReturnToLobby}
+                profile={profile}
+              />
+            ) : gameMode === 'computer' ? (
+              <ComputerGame
+                onRequestComputerMove={(fen: string, diff: number) => getBestMove(fen, { skillLevel: diff })}
+                playerColor="white"
+                difficulty={skillLevel}
+                onDifficultyChange={setSkillLevel}
+                onReturnToLobby={handleReturnToLobby}
+                profile={profile}
+                wagerAmount={wagerAmount}
+              />
+            ) : (
+              <OnlineGame
+                playerColor={gameData?.whitePlayer?.socketId === socket.id ? 'white' : 'black'}
+                connectionStatus={connectionStatus}
+                externalMove={externalMove}
+                profile={profile}
+                onSendMove={(uci: string, fen: string) => {
+                  socket.emit('makeMove', { gameId: gameData?.gameId, move: uci, fen });
+                }}
+                gameId={gameData?.gameId}
+                opponentName={gameData?.whitePlayer?.socketId === socket.id ? gameData?.blackPlayer?.name : gameData?.whitePlayer?.name}
+                playerName={playerData?.name}
+                serverGameEnd={serverGameEnd}
+                onReturnToLobby={handleReturnToLobby}
+                onRematchRequest={() => {}}
+              />
+            )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

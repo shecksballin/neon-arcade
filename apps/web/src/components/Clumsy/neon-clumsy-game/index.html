@@ -1,0 +1,349 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Neon Clumsy</title>
+<style>
+  /* Space Grotesk is what the arcade shell (and therefore the Neon Asteroids
+     HUD) renders its values in. Fonts do not cross the iframe boundary, so the
+     HUD asks for it again here — the parent already fetched it, so this is a
+     cache hit. Scoped to #hud below: the menu keeps its rounded identity, and
+     the stack falls back to system sans if the font never arrives. */
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700;900&display=swap');
+  :root {
+    --mint: #00FFD1;
+    --ink: #0d0824;
+    --panel: rgba(13, 8, 36, 0.82);
+    --pink: #ff5fa2;
+    --violet: #8a5cff;
+    --yellow: #ffd84d;
+    /* HUD type ramps — mono micro-label over a heavy italic value, the exact
+       pairing the Neon Asteroids overlay uses. */
+    --hud-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --hud-sans: "Space Grotesk", ui-sans-serif, system-ui, "Segoe UI", Arial, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; overflow: hidden; background: var(--ink); }
+  body { font-family: ui-rounded, "SF Pro Rounded", "Arial Rounded MT Bold", "Segoe UI", system-ui, sans-serif;
+         color: #fff; user-select: none; -webkit-user-select: none; }
+  canvas#c { display: block; }
+
+  .screen { position: fixed; inset: 0; display: flex; flex-direction: column;
+            align-items: center; justify-content: center; z-index: 10; }
+  .hidden { display: none !important; }
+
+  /* ---------- menu ---------- */
+  #menu { background: radial-gradient(120% 90% at 50% 10%, #241448 0%, #0d0824 65%);
+          gap: 14px; text-align: center; padding: 20px; }
+  .logo { font-size: clamp(44px, 9vw, 96px); font-weight: 900; letter-spacing: 0.04em;
+          color: #fff;
+          text-shadow: 0 0 12px var(--mint), 0 0 42px rgba(0,255,209,.65), 0 4px 0 #0a5c4d;
+          transform: rotate(-2deg); }
+  .logo .alt { color: var(--mint); text-shadow: 0 0 14px #fff, 0 0 42px var(--mint), 0 4px 0 #7a1650; }
+  .subtitle { font-size: clamp(14px, 2.4vw, 22px); font-weight: 800; letter-spacing: 0.34em;
+              color: var(--pink); text-shadow: 0 0 14px rgba(255,95,162,.8); margin-bottom: 8px; }
+  #nick { width: min(320px, 78vw); padding: 13px 18px; border-radius: 999px; border: 2px solid var(--violet);
+          background: rgba(20, 12, 50, 0.9); color: #fff; font-size: 17px; font-weight: 700;
+          text-align: center; outline: none; font-family: inherit; }
+  #nick:focus { border-color: var(--mint); box-shadow: 0 0 18px rgba(0,255,209,.35); }
+  .btn { cursor: pointer; border: none; border-radius: 999px; font-family: inherit; font-weight: 900;
+         letter-spacing: 0.08em; color: #06251e;
+         background: linear-gradient(180deg, #7dffe8, var(--mint) 55%, #00c9a5);
+         box-shadow: 0 6px 0 #00806a, 0 10px 26px rgba(0,255,209,.4);
+         transition: transform .08s ease, box-shadow .08s ease; }
+  .btn:hover { transform: translateY(-2px) scale(1.03); }
+  .btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #00806a; }
+  .btn.big { padding: 16px 66px; font-size: 26px; }
+  .btn.mid { padding: 12px 34px; font-size: 17px; }
+  .btn.ghost { background: transparent; color: var(--mint); border: 2px solid var(--mint);
+               box-shadow: none; }
+  #controlsCard { margin-top: 10px; background: var(--panel); border: 2px solid rgba(138,92,255,.5);
+                  border-radius: 18px; padding: 14px 22px; font-size: 14px; }
+  #controlsCard h3 { color: var(--yellow); letter-spacing: .2em; font-size: 13px; margin-bottom: 8px; }
+  #controlsCard table { border-collapse: collapse; }
+  #controlsCard td { padding: 2.5px 10px; text-align: left; }
+  #controlsCard td:first-child { color: var(--mint); font-weight: 800; white-space: nowrap; }
+  .version { position: fixed; bottom: 10px; left: 14px; font-size: 12px; color: rgba(255,255,255,.45); }
+
+  /* ---------- loading ---------- */
+  #loading { background: #0d0824; z-index: 40; gap: 18px; }
+  #loadBarWrap { width: min(340px, 70vw); height: 14px; border-radius: 999px;
+                 border: 2px solid var(--violet); overflow: hidden; }
+  #loadBar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--pink), var(--mint));
+             transition: width .2s ease; }
+  #loadText { letter-spacing: .3em; font-weight: 800; color: var(--mint); font-size: 14px; }
+
+  /* ---------- HUD ----------
+     Matched to the NEON ASTEROIDS overlay (AsteroidsCore.tsx), so the two games
+     read as the same arcade. The Tailwind classes that file uses are spelled out
+     here in plain CSS because nothing inside this iframe is compiled:
+       backdrop-blur-md/xl        -> blur(12px) / blur(16px)
+       bg-black/40, bg-black/60   -> rgba(0,0,0,.4) / rgba(0,0,0,.6)
+       border-[#00FFD1]/20        -> 1px solid rgba(0,255,209,.2)
+       border-white/10            -> 1px solid rgba(255,255,255,.1)
+       rounded-xl/2xl/3xl         -> 12px / 16px / 24px
+       px-6 py-3 / p-4 / px-8 py-4-> 12px 24px / 16px / 16px 32px
+       text-[10px] font-mono …/40 -> .hudKey below
+       text-lg/2xl font-black italic tracking-tighter -> .hudVal below
+     Zones mirror Asteroids too: stat chips top-left, the headline panel top-centre,
+     the running feed top-right, a status bar bottom-left. */
+  #hud { pointer-events: none; z-index: 5; }
+
+  /* The two type ramps the whole Asteroids HUD is built from. */
+  .hudKey { display: block; font-family: var(--hud-mono); font-size: 10px; line-height: 1;
+            font-weight: 400; text-transform: uppercase; letter-spacing: .1em;
+            color: rgba(255,255,255,.4); }
+  .hudVal { display: block; font-family: var(--hud-sans); font-size: 18px; line-height: 1;
+            font-weight: 900; font-style: italic; letter-spacing: -.03em;
+            margin-top: 4px; color: #fff; }
+
+  /* --- top-left: the stat chip cluster (Asteroids' kills / health row) --- */
+  #statCluster { position: fixed; top: 32px; left: 32px; display: flex; gap: 8px; }
+  .chip { display: flex; align-items: center; gap: 12px; padding: 12px 24px;
+          border-radius: 12px; background: rgba(0,0,0,.4);
+          border: 1px solid rgba(0,255,209,.2);
+          backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+  .chip svg { width: 16px; height: 16px; flex: none; }
+  .chipText { display: flex; flex-direction: column; align-items: flex-start; }
+  #layerMeter svg, #layerMeter .hudVal { color: var(--mint); }
+  #timer svg { color: var(--pink); }
+
+  /* --- top-centre: the headline panel (Asteroids' ZONE readout) --- */
+  #playersLeft { position: fixed; top: 32px; left: 50%; transform: translateX(-50%);
+                 display: flex; align-items: center; gap: 24px; padding: 16px 32px;
+                 border-radius: 24px; background: rgba(0,0,0,.6);
+                 border: 1px solid rgba(255,255,255,.1);
+                 backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+                 box-shadow: 0 25px 50px -12px rgba(0,0,0,.6); }
+  #playersLeft .hudIcon { display: flex; padding: 8px; border-radius: 12px;
+                          background: rgba(0,255,209,.2); color: var(--mint); }
+  #playersLeft .hudIcon svg { width: 20px; height: 20px; animation: hudPulse 2s ease-in-out infinite; }
+  #playersLeft .hudPanelText { text-align: center; min-width: 140px; }
+  #playersLeft .hudKey { letter-spacing: .2em; }
+  #playersLeft .hudVal { font-size: 24px; }
+  @keyframes hudPulse { 50% { opacity: .5; } }
+
+  /* --- top-right: the elimination feed (Asteroids' leaderboard column) --- */
+  #feed { position: fixed; top: 32px; right: 32px; width: 256px;
+          display: flex; flex-direction: column; gap: 8px; }
+  .feedMsg { background: rgba(0,0,0,.4); border: 1px solid rgba(0,255,209,.2);
+             backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+             border-radius: 8px; padding: 8px 12px;
+             font-family: var(--hud-mono); font-size: 10px; line-height: 1.45;
+             letter-spacing: .05em; text-transform: uppercase;
+             color: rgba(255,255,255,.75); animation: feedIn .25s ease; }
+  @keyframes feedIn { from { transform: translateX(30px); opacity: 0; } }
+
+  /* --- bottom-left: the status bar (Asteroids' health panel) --- */
+  #hudHint { position: fixed; bottom: 32px; left: 32px; width: 256px; padding: 16px;
+             border-radius: 16px; background: rgba(0,0,0,.6);
+             border: 1px solid rgba(255,255,255,.1);
+             backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+             box-shadow: 0 25px 50px -12px rgba(0,0,0,.6); }
+  #hudHint .hudKey { color: var(--mint); }
+  #hudHintText { display: block; margin-top: 8px; font-family: var(--hud-mono);
+                 font-size: 11px; line-height: 1.45; letter-spacing: .06em;
+                 text-transform: uppercase; color: rgba(255,255,255,.55); }
+  /* --- touch / small screens ---
+     The virtual stick owns the bottom-left corner and the jump/dive buttons own
+     the bottom-right, so the hint panel goes and the rest tightens up. The
+     backdrop blurs go too: five stacked backdrop-filter layers over a live
+     three.js canvas is re-sampled every frame, and that cost lands hardest
+     exactly where the GPU budget is smallest. Opaque panels read the same. */
+  @media (pointer: coarse), (max-width: 900px) {
+    #hudHint { display: none; }
+    #statCluster { top: 12px; left: 12px; gap: 6px; }
+    .chip { padding: 8px 14px; gap: 8px; }
+    #playersLeft { top: 12px; gap: 14px; padding: 10px 20px; }
+    #playersLeft .hudPanelText { min-width: 90px; }
+    #playersLeft .hudVal { font-size: 20px; }
+    #feed { top: 92px; right: 12px; width: 190px; }
+    #spectateBar { top: 84px; }
+    #muteBtn { bottom: 12px; right: 12px; padding: 9px 12px; }
+    #playersLeft, #hudHint, .chip, .feedMsg, #muteBtn, #spectateBar {
+      backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(0,0,0,.72);
+    }
+  }
+
+  /* ---------- countdown ---------- */
+  #countdown { pointer-events: none; z-index: 20; background: none; }
+  #countNum { font-size: clamp(90px, 22vw, 220px); font-weight: 900; color: var(--mint);
+              text-shadow: 0 0 30px var(--mint), 0 8px 0 #0a5c4d; transform: rotate(-3deg); }
+
+  /* ---------- overlays ---------- */
+  #lockOverlay { z-index: 15; background: rgba(13,8,36,.55); cursor: pointer; }
+  #lockOverlay div { background: var(--panel); border: 2px solid var(--mint); border-radius: 16px;
+                     padding: 18px 34px; font-weight: 900; letter-spacing: .1em; color: var(--mint); }
+  #pause { z-index: 25; background: rgba(13,8,36,.8); gap: 18px; }
+  .bigWord { font-size: clamp(40px, 8vw, 80px); font-weight: 900; letter-spacing: .1em;
+             color: #fff; text-shadow: 0 0 22px var(--violet); }
+  #end { z-index: 26; background: rgba(13,8,36,.82); gap: 12px; text-align: center; }
+  #endTitle { font-size: clamp(48px, 10vw, 110px); font-weight: 900; transform: rotate(-2deg);
+              color: var(--yellow); text-shadow: 0 0 26px rgba(255,216,77,.9), 0 6px 0 #7a5a00; }
+  #endTitle.lose { color: var(--pink); text-shadow: 0 0 26px rgba(255,95,162,.9), 0 6px 0 #6e1140; }
+  #endSub { font-size: clamp(18px, 3.5vw, 30px); font-weight: 900; letter-spacing: .18em; color: #fff; }
+  #endStats { display: flex; gap: 12px; margin: 10px 0 6px; flex-wrap: wrap; justify-content: center; }
+  .stat { background: var(--panel); border: 2px solid rgba(138,92,255,.55); border-radius: 14px;
+          padding: 10px 18px; min-width: 120px; }
+  .stat .v { font-size: 26px; font-weight: 900; color: var(--mint); }
+  .stat .k { font-size: 10.5px; letter-spacing: .18em; color: rgba(255,255,255,.6); font-weight: 800; }
+  #endBtns { display: flex; gap: 14px; margin-top: 4px; }
+  /* Sits UNDER the players-left panel — both live top-centre. */
+  #spectateBar { position: fixed; top: 120px; left: 50%; transform: translateX(-50%); z-index: 6;
+                 flex-direction: column; align-items: center; gap: 4px; text-align: center;
+                 font-family: var(--hud-mono); font-size: 11px; letter-spacing: .12em;
+                 text-transform: uppercase; color: var(--mint); }
+  #spectateBar small { display: block; font-size: 9px; letter-spacing: .18em;
+                       color: rgba(255,255,255,.4); }
+
+  /* Asteroids' bottom-right control buttons. Asteroids uses bg-white/5 there,
+     but it sits on deep space; Clumsy's arena is hot pink and yellow, so the
+     panel fill is the HUD's own black/40 to keep the mint legible. */
+  #muteBtn { position: fixed; bottom: 32px; right: 32px; z-index: 30;
+             background: rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.12);
+             color: var(--mint); border-radius: 16px; padding: 13px 18px;
+             font-family: var(--hud-mono); font-weight: 700; font-size: 10px;
+             letter-spacing: .2em; text-transform: uppercase; cursor: pointer;
+             backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+             box-shadow: 0 25px 50px -12px rgba(0,0,0,.6);
+             transition: background .15s ease, border-color .15s ease, transform .1s ease; }
+  #muteBtn:hover { background: rgba(0,255,209,.1); border-color: rgba(0,255,209,.5); }
+  #muteBtn:active { transform: scale(.92); }
+
+  #dev { position: fixed; top: 60px; left: 14px; z-index: 50; color: #0f0; font: 12px/1.5 monospace;
+         background: rgba(0,0,0,.55); padding: 6px 10px; border-radius: 8px; display: none; }
+
+  /* ---------- touch controls ---------- */
+  #touchUI { position: fixed; inset: 0; z-index: 8; pointer-events: none; display: none; }
+  #stickBase { position: absolute; left: 34px; bottom: 44px; width: 128px; height: 128px;
+               border-radius: 50%; border: 2px solid rgba(0,255,209,.5); background: rgba(13,8,36,.4);
+               pointer-events: auto; touch-action: none; }
+  #stickKnob { position: absolute; left: 39px; top: 39px; width: 50px; height: 50px; border-radius: 50%;
+               background: rgba(0,255,209,.75); box-shadow: 0 0 16px rgba(0,255,209,.7); }
+  .tbtn { position: absolute; width: 76px; height: 76px; border-radius: 50%; pointer-events: auto;
+          touch-action: none; border: 2px solid rgba(255,255,255,.4); background: rgba(13,8,36,.55);
+          color: #fff; font-family: inherit; font-weight: 900; font-size: 13px; letter-spacing: .05em; }
+  .tbtn:active { background: rgba(0,255,209,.5); color: #06251e; }
+  #btnJump { right: 40px; bottom: 120px; border-color: rgba(0,255,209,.7); }
+  #btnDive { right: 128px; bottom: 44px; border-color: rgba(255,95,162,.7); }
+  #btnSprint { right: 40px; bottom: 210px; border-color: rgba(255,216,77,.7); }
+  #btnSprint.on { background: rgba(255,216,77,.6); color: #3a2c00; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./assets/vendor/three.module.js",
+    "three/addons/": "./assets/vendor/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="loading" class="screen">
+  <div class="logo" id="loadLogo"></div>
+  <div id="loadBarWrap"><div id="loadBar"></div></div>
+  <div id="loadText"></div>
+</div>
+
+<div id="menu" class="screen hidden">
+  <div class="logo" id="menuLogo"></div>
+  <div class="subtitle" id="menuSub"></div>
+  <input id="nick" maxlength="14" autocomplete="off">
+  <button id="playBtn" class="btn big"></button>
+  <div id="controlsCard"><h3 id="controlsTitle"></h3><table id="controlsRows"></table></div>
+  <div class="version" id="versionLine"></div>
+</div>
+
+<!-- HUD. Every readout is a mono micro-label over a heavy italic value, in the
+     four Neon Asteroids zones: stats top-left, headline top-centre, feed
+     top-right, status bar bottom-left. Icons are inlined lucide glyphs — the
+     same set Asteroids draws — because this frame has no icon font. -->
+<div id="hud" class="hidden">
+  <div id="playersLeft">
+    <div class="hudIcon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+        <path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+      </svg>
+    </div>
+    <div class="hudPanelText">
+      <span class="hudKey" id="playersLeftK"></span>
+      <span class="hudVal" id="playersLeftV">0</span>
+    </div>
+  </div>
+
+  <div id="statCluster">
+    <div id="layerMeter" class="chip">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/>
+        <polyline points="2 12 12 17 22 12"/>
+      </svg>
+      <span class="chipText">
+        <span class="hudKey" id="layerMeterK"></span>
+        <span class="hudVal" id="layerMeterV">1 / 1</span>
+      </span>
+    </div>
+    <div id="timer" class="chip">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/>
+        <circle cx="12" cy="14" r="8"/>
+      </svg>
+      <span class="chipText">
+        <span class="hudKey" id="timerK"></span>
+        <span class="hudVal" id="timerV">0:00</span>
+      </span>
+    </div>
+  </div>
+
+  <div id="hudHint">
+    <span class="hudKey" id="hudHintK"></span>
+    <span id="hudHintText"></span>
+  </div>
+
+  <div id="feed"></div>
+</div>
+
+<div id="spectateBar" class="chip hidden"></div>
+
+<div id="countdown" class="screen hidden"><div id="countNum"></div></div>
+
+<div id="lockOverlay" class="screen hidden"><div id="lockText"></div></div>
+
+<div id="pause" class="screen hidden">
+  <div class="bigWord" id="pauseWord"></div>
+  <button id="resumeBtn" class="btn mid"></button>
+</div>
+
+<div id="end" class="screen hidden">
+  <div id="endTitle"></div>
+  <div id="endSub"></div>
+  <div id="endStats">
+    <div class="stat"><div class="v" id="stTiles">0</div><div class="k" id="stTilesK"></div></div>
+    <div class="stat"><div class="v" id="stBumps">0</div><div class="k" id="stBumpsK"></div></div>
+    <div class="stat"><div class="v" id="stTime">0</div><div class="k" id="stTimeK"></div></div>
+  </div>
+  <div id="endBtns">
+    <button id="spectateBtn" class="btn mid ghost"></button>
+    <button id="againBtn" class="btn mid"></button>
+  </div>
+</div>
+
+<div id="touchUI">
+  <div id="stickBase"><div id="stickKnob"></div></div>
+  <button id="btnSprint" class="tbtn"></button>
+  <button id="btnJump" class="tbtn"></button>
+  <button id="btnDive" class="tbtn"></button>
+</div>
+
+<button id="muteBtn"></button>
+<div id="dev"></div>
+
+<script type="module" src="./assets/game.js"></script>
+</body>
+</html>

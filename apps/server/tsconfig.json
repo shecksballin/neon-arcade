@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "lib": ["ESNext"],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "strict": true,
+    "noEmit": true,
+    "paths": {
+      "@neon/types": ["../../packages/types/src/index.ts"]
+    }
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/types" }
+  ]
+}

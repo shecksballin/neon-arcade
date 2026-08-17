@@ -1,0 +1,421 @@
+/* Space Grotesk is requested from index.html, NOT with an @import here.
+   A CSS @import chains: the browser must download this stylesheet, parse the
+   first line, and only THEN discover the font request — serialising two
+   round-trips before anything can paint. It also duplicated the request
+   index.html already makes. The weight range lives in that one <link>. */
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+
+  /* Tailwind's smallest built-in breakpoint is sm (640px), which is no help
+     when the difference that matters is between a 360px Android and a 430px
+     iPhone Pro Max. `xs` is where the nav wordmark and other second-tier
+     labels come back in. */
+  --breakpoint-xs: 420px;
+}
+
+/* ── Privy modal theming (see pivyWalletDesign.txt) ──
+   Privy reads these custom properties for pixel-level control beyond the
+   appearance config. Set on <body> so they cascade into Privy's portal.
+   These reinforce the neon palette (accent #00FFD1 on the #081616 bg) and,
+   crucially, set the border radius, which the appearance config can't. */
+body {
+  --privy-color-background: #081616;
+  --privy-color-background-2: #0b1e1e;
+  --privy-color-foreground: #d7e5e5;
+  --privy-color-foreground-2: #83958d;
+  --privy-color-accent: #00ffd1;
+  --privy-color-accent-light: #00ffd1;
+  --privy-color-accent-dark: #00382c;
+  --privy-color-border-default: rgba(0, 255, 209, 0.25);
+  --privy-border-radius-sm: 8px;
+  --privy-border-radius-md: 12px;
+  --privy-border-radius-lg: 18px;
+  --privy-border-radius-full: 9999px;
+}
+
+/* Neon frame on the Privy modal card. Privy renders the modal in a portal
+   on <body> and only sets `height` inline on #privy-modal-content, so an
+   id selector + !important cleanly wins. Kept UNLAYERED (not in @layer) so
+   it competes with Privy's own runtime-injected, unlayered CSS-in-JS —
+   anything inside @layer would lose to it regardless of specificity.
+   border = the #00FFD1 stroke; box-shadow = layered outward glow + a soft
+   inner bleed, matching .neon-viewport-glow / .glass-panel elsewhere. */
+#privy-modal-content {
+  border: 2px solid #00ffd1 !important;
+  box-shadow:
+    0 0 18px  rgba(0, 255, 209, 0.45),
+    0 0 45px  rgba(0, 255, 209, 0.30),
+    0 0 100px rgba(0, 255, 209, 0.15),
+    inset 0 0 22px rgba(0, 255, 209, 0.12) !important;
+}
+
+@layer base {
+  ::-webkit-scrollbar {
+    display: none;
+  }
+  * {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* ── MOBILE BASELINE ────────────────────────────────────────────────────
+     Four things every screen needs, set once here rather than per component. */
+
+  html,
+  body {
+    /* Stops the whole page rubber-banding / pull-to-refreshing when a gesture
+       runs past the end of a scroll area. In a game that reads drags as
+       input, a stray downward swipe reloading the page is a lost match. */
+    overscroll-behavior: none;
+  }
+
+  body {
+    /* Rotating a phone makes iOS "helpfully" rescale text, which throws off
+       layouts tuned in fixed pixels — the chess board and the Connect grid
+       most of all. */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  /* iOS Safari zooms the whole viewport when a field smaller than 16px takes
+     focus, and offers no way back — the user is left on a zoomed, sideways-
+     scrolling page. 16px is the threshold, so this is the fix; it applies
+     only on touch devices, leaving desktop's smaller inputs alone. */
+  @media (pointer: coarse) {
+    input:not([type='range']):not([type='checkbox']):not([type='radio']),
+    select,
+    textarea {
+      font-size: max(16px, 1em);
+    }
+  }
+
+  /* Kill the translucent grey box Android paints over a tapped control — it
+     reads as a rendering glitch against the neon palette. (Tap-target SIZE is
+     set per component, where the layout is known; a blanket min-height here
+     would stretch inline controls that are deliberately small.) */
+  @media (pointer: coarse) {
+    button,
+    [role='button'],
+    a[href] {
+      -webkit-tap-highlight-color: transparent;
+    }
+  }
+}
+
+@layer utilities {
+  .neon-text-glow {
+    text-shadow: 0 0 15px rgba(0, 255, 209, 0.7);
+  }
+
+  /* Full-viewport neon frame. A fixed overlay whose inset box-shadow
+     concentrates the #00FFD1 glow at the screen edges and fades toward
+     the centre. pointer-events: none lets every click pass through. */
+  .neon-viewport-glow {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    border-radius: 14px;
+    box-shadow:
+      inset 0 0 1px   rgba(0, 255, 209, 0.9),
+      inset 0 0 12px  rgba(0, 255, 209, 0.45),
+      inset 0 0 45px  rgba(0, 255, 209, 0.22),
+      inset 0 0 110px rgba(0, 255, 209, 0.08);
+  }
+
+  .glass-panel {
+    background: rgba(8, 22, 22, 0.85);
+    backdrop-filter: blur(12px);
+    border: 2px solid #00FFD1;
+    box-shadow: 0 0 15px rgba(0, 255, 209, 0.4), inset 0 0 10px rgba(0, 255, 209, 0.2);
+  }
+
+  .chess-grid {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+  }
+
+  .neon-glow-primary {
+    filter: drop-shadow(0 0 8px rgba(0, 255, 209, 0.4));
+  }
+
+  .neon-glow-white {
+    filter: drop-shadow(0 0 5px rgba(255, 255, 253, 0.3)) drop-shadow(0 0 10px rgba(0, 255, 209, 0.5));
+  }
+
+  .neon-glow-black {
+    filter: drop-shadow(0 0 5px rgba(0, 255, 209, 0.6));
+  }
+
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    user-select: none;
+  }
+
+  .neon-board-container {
+    box-shadow: 0 0 50px rgba(0, 255, 209, 0.4), inset 0 0 30px rgba(0, 255, 209, 0.2);
+    border: 3px solid #00FFD1;
+    background: #041010;
+  }
+
+  .checker-square-light {
+    background-color: rgba(0, 255, 209, 0.05);
+    box-shadow: inset 0 0 20px rgba(0, 255, 209, 0.1);
+  }
+
+  .checker-square-dark {
+    background-color: #081616;
+    background-image: radial-gradient(circle at center, #111e1e 0%, #081616 100%);
+    box-shadow: inset 0 0 25px rgba(0, 0, 0, 0.8);
+  }
+
+  .piece {
+    width: 80%;
+    height: 80%;
+    border-radius: 50%;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+  }
+
+  .piece-cyan {
+    background: linear-gradient(135deg, #00FFD1 0%, #008f75 100%);
+    box-shadow: 
+      0 0 15px rgba(0, 255, 209, 0.6),
+      inset 0 4px 8px rgba(255, 255, 253, 0.5),
+      inset 0 -4px 8px rgba(0, 0, 0, 0.3);
+    border: 2px solid #ffffff;
+  }
+
+  .piece-dark {
+    background: linear-gradient(135deg, #3a4a44 0%, #081616 100%);
+    box-shadow: 
+      0 0 15px rgba(255, 179, 0, 0.5),
+      inset 0 4px 8px rgba(255, 255, 253, 0.1),
+      inset 0 -4px 8px rgba(0, 0, 0, 0.5);
+    border: 2px solid #ffb300;
+  }
+
+  .piece-selected {
+    transform: scale(1.1);
+    z-index: 50;
+  }
+  
+  .piece-selected.piece-cyan {
+    box-shadow: 0 0 30px rgba(0, 255, 209, 0.8);
+  }
+  
+  .piece-selected.piece-dark {
+    box-shadow: 0 0 30px rgba(255, 179, 0, 0.8);
+  }
+
+  .king-crown {
+    color: #ffffff;
+    font-size: 20px !important;
+    text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+    font-weight: 900 !important;
+  }
+
+  .move-indicator {
+    width: 25%;
+    height: 25%;
+    border-radius: 50%;
+    background: rgba(0, 255, 209, 0.4);
+    box-shadow: 0 0 15px #00FFD1;
+    animation: pulse 2s infinite;
+  }
+
+  .capture-indicator {
+    width: 40%;
+    height: 40%;
+    background: rgba(255, 180, 171, 0.4);
+    box-shadow: 0 0 15px #ffb4ab;
+    border: 2px solid #ffb4ab;
+  }
+
+  @keyframes pulse {
+    0% { transform: scale(0.9); opacity: 0.6; }
+    50% { transform: scale(1.1); opacity: 1; }
+    100% { transform: scale(0.9); opacity: 0.6; }
+  }
+
+  .side-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    min-width: 320px;
+  }
+
+  .stats-card, .history-card {
+    background: rgba(17, 30, 30, 0.6);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(0, 255, 209, 0.2);
+    border-radius: 1rem;
+    padding: 1.5rem;
+  }
+
+  .history-card {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    max-height: 500px;
+  }
+
+  .history-list {
+    flex: 1;
+    overflow-y: auto;
+    margin: 1rem 0;
+  }
+
+  .history-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.5rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    font-family: monospace;
+    font-size: 12px;
+  }
+
+  .player-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem;
+    background: rgba(0, 255, 209, 0.03);
+    border-radius: 0.75rem;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+  }
+
+  .player-active {
+    background: rgba(0, 255, 209, 0.08);
+    border-color: rgba(0, 255, 209, 0.3);
+    box-shadow: 0 0 20px rgba(0, 255, 209, 0.1);
+  }
+
+  .player-avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: #111e1e;
+    border: 2px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+
+  .player-avatar.dark { border-color: #ffb300; }
+  .player-avatar.cyan { border-color: #00FFD1; }
+
+  .avatar-piece {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+  }
+
+  .avatar-piece.piece-dark { background: #ffb300; }
+  .avatar-piece.piece-cyan { background: #00FFD1; }
+
+  .thinking-indicator {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .thinking-dot {
+    width: 8px;
+    height: 8px;
+    background: #00FFD1;
+    border-radius: 50%;
+    box-shadow: 0 0 10px #00FFD1;
+    animation: pulse 1s infinite;
+  }
+
+  .btn-ghost {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: #ffffff;
+    font-weight: bold;
+    font-size: 12px;
+    letter-spacing: 1px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .btn-ghost:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: #00FFD1;
+  }
+
+  .btn-primary {
+    background: #00FFD1;
+    color: #081616;
+    font-weight: 900;
+    font-size: 12px;
+    letter-spacing: 1px;
+    box-shadow: 0 0 20px rgba(0, 255, 209, 0.4);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.1);
+    box-shadow: 0 0 30px rgba(0, 255, 209, 0.6);
+  }
+
+  /* ── ErrorScreen (status-code error pages) ── */
+
+  /* CRT scanline overlay drifting slowly downward */
+  .error-scanlines {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      0deg,
+      rgba(0, 255, 209, 0.05) 0px,
+      rgba(0, 255, 209, 0.05) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    animation: scanline-drift 6s linear infinite;
+  }
+
+  @keyframes scanline-drift {
+    to { background-position: 0 6px; }
+  }
+
+  /* Giant status code: chromatic-aberration shadows + occasional jitter */
+  .error-code {
+    text-shadow:
+      3px 0 rgba(255, 0, 128, 0.5),
+      -3px 0 rgba(0, 255, 209, 0.55),
+      0 0 30px rgba(0, 255, 209, 0.35);
+    animation: error-glitch 2.6s steps(1) infinite;
+  }
+
+  @keyframes error-glitch {
+    0%, 84%, 100% { transform: none; }
+    85% { transform: translate(-3px, 1px) skewX(-3deg); }
+    88% { transform: translate(3px, -2px); }
+    91% { transform: translate(-1px, 2px) skewX(2deg); }
+    94% { transform: none; }
+  }
+
+  /* Whole-screen CRT brightness flicker */
+  .error-flicker {
+    animation: crt-flicker 5s linear infinite;
+  }
+
+  @keyframes crt-flicker {
+    0%, 91%, 95%, 100% { opacity: 1; }
+    92% { opacity: 0.85; }
+    93% { opacity: 1; }
+    97% { opacity: 0.92; }
+  }
+}

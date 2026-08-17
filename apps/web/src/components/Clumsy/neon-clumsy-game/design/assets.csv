@@ -1,0 +1,18 @@
+id,role,type,description,size/ratio,style line ref,source
+mummy_model,player and bot character skinned mesh with 9 animation clips (Idle Walk Sprint SprintTurnR SprintTurnL Jump Fall Trip GetUp),3d-model,cartoon mummy rigged via Mixamo merged from user FBX files,~1.5m tall,formula-v1,reference_media[neon clumsy/*.fbx]
+mummy_tex_diffuse,character base color map,texture,cream bandage wraps with black eye-band and yellow eyes,1024x1024,formula-v1,reference_media[neon clumsy/texture_diffuse.png]
+mummy_tex_normal,character normal map,texture,bandage wrap relief,1024x1024,formula-v1,reference_media[neon clumsy/texture_normal.png]
+mummy_tex_roughness,character roughness map,texture,cloth roughness,1024x1024,formula-v1,reference_media[neon clumsy/texture_roughness.png]
+mummy_tex_metallic,character metallic map,texture,non-metal cloth,64x64,formula-v1,reference_media[neon clumsy/texture_metallic.png]
+tile_kit,hex tile prism + neon rim ring materials for 6 layers,procedural-material,candy-gloss hex prisms per-layer colors with pulsing #00FFD1 emissive rims,R=1.15m,formula-v1,code
+slime_pool,elimination hazard surface,procedural-shader,luminous #00FFD1 slime with ripple rings and soft edge falloff,radius 45m,formula-v1,code
+sky_dome,environment backdrop,procedural-shader,indigo-to-pink dusk gradient dome with stars,r=180m,formula-v1,code
+billboards,floating arena signage,canvas-texture,neon signs reading title and tagline from strings.js,4:1,formula-v1,code
+music_loop,background music (looped),audio,upbeat playful synthwave party loop 120 BPM,30s,formula-v1,generate:c4893727-74d4-4551-ba49-d55293902004
+sfx_crumble,tile crumble one-shot,audio,crisp cartoon pop-crack of plastic tile shattering,1s,formula-v1,generate:42f28415-d97b-4943-bc6f-a534182502ed
+sfx_jump,jump one-shot,audio,springy cartoon boing,1s,formula-v1,generate:f46739b1-5d1e-4cea-9614-823afc106521
+sfx_dive,dive one-shot,audio,quick airy whoosh,1s,formula-v1,generate:a422ba10-fe82-4761-b80e-de9d1eec0818
+sfx_splat,elimination splat one-shot,audio,big wet gooey slime splat,2s,formula-v1,generate:c41bf299-10ac-4d8c-8568-2dc3dd904ea4
+sfx_crowd,elimination crowd reaction one-shot,audio,cartoon crowd ohhh + laughter + light cheer,3s,formula-v1,generate:3715d231-be84-454d-b68a-9175ebf00265
+thumbnail,deploy card cover,image,NEON CLUMSY key art mummy mid-trip on glowing hex field,16:9,formula-v1,generate:2d3d2fc6-ea8b-4ad5-babc-f65e277ac0e9
+favicon,deploy card icon,image,mummy face in #00FFD1 neon ring on deep indigo,1:1,formula-v1,generate:3ec9e445-8c88-493d-8c10-94b47b743b0e

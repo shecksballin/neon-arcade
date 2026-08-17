@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neon Pug Shooter</title>
+<style>
+  :root {
+    --teal: #00FFD1;
+    --pink: #FF0080;
+    --night: #050d1c;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--night); }
+  body { font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #e8f6f4; }
+  canvas { display: block; }
+  .hidden { display: none !important; }
+
+  /* ---------- overlays ---------- */
+  #loading, #pause, #match-over, #options {
+    position: fixed; inset: 0; z-index: 40;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; background: radial-gradient(120% 90% at 50% 110%, rgba(0,255,209,.12) 0%, rgba(5,13,28,0) 55%),
+      linear-gradient(180deg, #030812 0%, #071426 60%, #0a2028 100%);
+  }
+  #pause, #match-over, #options { background: rgba(3, 10, 18, 0.82); backdrop-filter: blur(10px); }
+  #options h1 { font-size: 34px; }
+
+  h1 { margin: 0; font-size: 40px; letter-spacing: -0.5px; font-weight: 900; font-style: italic; text-transform: uppercase; }
+  h1 .accent { color: var(--teal); text-shadow: 0 0 24px rgba(0,255,209,.5); }
+  .sub { margin: -10px 0 6px; color: rgba(232,246,244,.55); font-family: var(--mono); font-size: 12px;
+    text-transform: uppercase; letter-spacing: .3em; }
+
+  #loading-track { width: 260px; height: 5px; border-radius: 99px; background: rgba(255,255,255,.08); overflow: hidden; }
+  #loading-bar { height: 100%; width: 0%; background: var(--teal); box-shadow: 0 0 12px var(--teal); transition: width .25s ease; }
+  #loading-label { font-size: 11px; font-family: var(--mono); text-transform: uppercase; letter-spacing: .25em; color: rgba(232,246,244,.55); }
+
+  .settings { display: grid; grid-template-columns: auto 160px 52px; gap: 10px 14px; align-items: center;
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); padding: 16px 20px; border-radius: 14px; }
+  .settings label { font-size: 12px; font-family: var(--mono); text-transform: uppercase; letter-spacing: .1em; color: rgba(232,246,244,.7); }
+  .settings input { width: 100%; accent-color: #00FFD1; }
+  .settings span { font-variant-numeric: tabular-nums; font-size: 12px; color: rgba(232,246,244,.6); }
+
+  button {
+    font: inherit; font-weight: 900; font-style: italic; text-transform: uppercase; letter-spacing: .06em;
+    padding: 12px 36px; border-radius: 999px; border: 0; cursor: pointer;
+    background: var(--teal); color: #04211c; box-shadow: 0 0 30px rgba(0,255,209,.35);
+  }
+  button.ghost { background: rgba(255,255,255,.08); color: #e8f6f4; box-shadow: none; border: 1px solid rgba(255,255,255,.15); }
+  button:hover { filter: brightness(1.08); }
+  kbd { background: rgba(255,255,255,.1); border-radius: 4px; padding: 1px 5px; font: inherit; font-size: 11px; }
+
+  /* ---------- screen glows ----------
+     A rim of light around the whole frame: pink when you're being shot, teal when you're
+     killing. Each new hit or kill restarts the pulse from its bright peak, and the whole
+     thing fades out after three quiet seconds. Sits *under* the HUD so it never washes out
+     the chips it's glowing behind. Pink is the same one the enemy wears in the kill feed
+     and on their health bar; teal is yours. */
+  .screen-glow { position: fixed; inset: 0; pointer-events: none; z-index: 15;
+    opacity: 0; transition: opacity .5s ease; }
+  .screen-glow.on { animation: glow-pulse 1.15s ease-in-out infinite; }
+  @keyframes glow-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .34; } }
+  #hit-glow  { box-shadow: inset 0 0 130px 26px rgba(255, 0, 128, .6); }
+  #kill-glow { box-shadow: inset 0 0 120px 22px rgba(0, 255, 209, .5); }
+
+  /* ---------- hud ---------- */
+  #hud { position: fixed; inset: 0; z-index: 20; pointer-events: none; }
+
+  /* solid cross, #081616 with a neon rim so it survives the dark scene */
+  #crosshair {
+    --arm: 13px;
+    position: absolute; left: 50%; top: 50%; width: 0; height: 0;
+  }
+  #crosshair i {
+    position: absolute; background: #081616;
+    box-shadow: 0 0 0 1px rgba(0,255,209,.55), 0 0 6px rgba(0,255,209,.3);
+    transition: all .1s ease;
+  }
+  #crosshair .v { width: 2px; height: var(--arm); left: -1px; top: calc(var(--arm) / -2); }
+  #crosshair .h { height: 2px; width: var(--arm); top: -1px; left: calc(var(--arm) / -2); }
+  #crosshair.ads { --arm: 11px; }
+
+  /* floating damage numbers — AsteroidsCore's damage indicators, in 3D */
+  #damage-numbers { position: absolute; inset: 0; overflow: hidden; }
+  .dmg-num {
+    position: absolute; transform: translate(-50%, -50%);
+    font: bold 20px/1 sans-serif; color: rgb(239, 68, 68);
+    text-shadow: 0 0 5px rgba(255, 0, 0, .8); white-space: nowrap; will-change: transform, opacity;
+  }
+  .dmg-num.head { font-size: 27px; color: #ff5b5b; text-shadow: 0 0 10px rgba(255, 0, 0, .95); }
+
+  /* "KILLED <name>" — AsteroidsCore kill notification */
+  #kill-notifications {
+    position: absolute; left: calc(50% + 34px); top: calc(50% - 18px);
+    display: flex; flex-direction: column-reverse; gap: 4px;
+  }
+  .kill-note {
+    font: italic 900 16px/1.1 sans-serif; white-space: nowrap;
+    text-shadow: 0 2px 6px rgba(0,0,0,.55); transition: opacity .5s ease;
+  }
+  .kill-note .verb { color: rgb(239, 68, 68); }
+  .kill-note .verb.hs { color: #ff3b3b; text-shadow: 0 0 10px rgba(255,59,59,.7); }
+  .kill-note .who { color: #fff; }
+  .kill-note.fade { opacity: 0; }
+
+  /* points for the kill, sitting directly under the "KILLED <name>" line. This is a
+     running total rather than a per-kill flash — see addKillPoints in ui.js. */
+  #kill-points {
+    position: absolute; left: calc(50% + 34px); top: calc(50% + 6px);
+    font: 900 italic 22px/1 sans-serif; color: var(--teal);
+    text-shadow: 0 0 14px rgba(0,255,209,.55), 0 2px 6px rgba(0,0,0,.6);
+    opacity: 0; transform: translateY(4px);
+    transition: opacity .45s ease, transform .2s ease;
+  }
+  #kill-points.show { opacity: 1; transform: none; animation: pts-pop .26s cubic-bezier(.2,1.6,.4,1); }
+  @keyframes pts-pop { 0% { transform: scale(.75); } 100% { transform: scale(1); } }
+
+  /* achievement badges — rounded squares, icon over the name */
+  /* Up at the top, clear of the stat chips — those are left-anchored but run most of the
+     way to the centre line, so anything higher than this collides with them on a narrower
+     screen. The killstreak banner shares the centre line and now lands below these. */
+  #achievements {
+    position: absolute; left: 50%; top: 190px; transform: translateX(-50%);
+    display: flex; gap: 10px; align-items: flex-start; z-index: 70;
+  }
+  .achv {
+    width: 86px; height: 86px; padding: 9px 6px 8px; border-radius: 18px;
+    background: rgba(0,0,0,.62); border: 1px solid rgba(0,255,209,.35); backdrop-filter: blur(10px);
+    box-shadow: 0 8px 26px rgba(0,0,0,.5), 0 0 26px rgba(0,255,209,.14);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+    opacity: 0; transform: translateY(12px) scale(.84);
+    transition: opacity .18s ease, transform .26s cubic-bezier(.2,1.5,.4,1);
+  }
+  .achv.show { opacity: 1; transform: none; }
+  .achv.fade { opacity: 0; transform: translateY(-8px) scale(.94); transition: opacity .4s ease, transform .4s ease; }
+  .achv-icon { display: flex; color: var(--teal); filter: drop-shadow(0 0 8px rgba(0,255,209,.45)); }
+  .achv-name { font: 900 italic 11px/1 sans-serif; text-transform: uppercase; letter-spacing: .09em;
+    color: #fff; text-align: center; }
+
+  /* headshot kill indicator — pops under the crosshair */
+  #headshot-banner {
+    position: absolute; left: 50%; top: calc(50% + 44px);
+    transform: translateX(-50%) scale(.55); opacity: 0;
+    display: flex; align-items: center; gap: 9px;
+    font: 900 italic 21px/1 sans-serif; letter-spacing: .14em; text-transform: uppercase;
+    color: #ff3b3b; text-shadow: 0 0 20px rgba(255,59,59,.85), 0 2px 6px rgba(0,0,0,.6);
+    transition: opacity .1s ease, transform .12s cubic-bezier(.2,1.6,.4,1);
+  }
+  #headshot-banner svg { filter: drop-shadow(0 0 6px rgba(255,59,59,.8)); }
+  #headshot-banner.show { opacity: 1; transform: translateX(-50%) scale(1); }
+
+  /* ---------- AsteroidsCore HUD ---------- */
+  .hud-card {
+    backdrop-filter: blur(10px); background: rgba(0,0,0,.4);
+    border: 1px solid rgba(0,255,209,.2); border-radius: 16px;
+  }
+  .mono-label { margin: 0; font-family: var(--mono); font-size: 10px; text-transform: uppercase;
+    letter-spacing: .18em; color: rgba(255,255,255,.4); line-height: 1; }
+  .stat-value { margin: 4px 0 0; font-size: 18px; font-weight: 900; font-style: italic;
+    letter-spacing: -.04em; line-height: 1; color: #fff; }
+
+  #hud-top-left { position: absolute; top: 32px; left: 32px; display: flex; flex-direction: column; gap: 14px; z-index: 60; }
+  #profile-card { display: flex; align-items: center; gap: 14px; padding: 14px 16px; }
+  #avatar {
+    width: 48px; height: 48px; border-radius: 50%; border: 2px solid var(--teal);
+    background: rgba(0,255,209,.1); display: flex; align-items: center; justify-content: center;
+    font-size: 24px; overflow: hidden;
+  }
+  #profile-card .mono-label { color: rgba(0,255,209,.6); margin-bottom: 5px; }
+  #profile-name { margin: 0; font-size: 20px; font-weight: 900; font-style: italic; text-transform: uppercase;
+    letter-spacing: -.04em; line-height: 1; color: #fff; }
+
+  .chips { display: flex; gap: 8px; }
+  .chip { display: flex; align-items: center; gap: 11px; padding: 11px 17px; border-radius: 12px; }
+  .chip svg { flex: none; }
+  .chip .stat-value.teal { color: var(--teal); }
+  #chip-speed.active { border-color: #eab308; box-shadow: 0 0 15px rgba(234,179,8,.3); }
+  #chip-speed.active .stat-value { color: #eab308; }
+  #chip-ammo.empty { border-color: #ef4444; animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .55; } }
+
+  #hud-top-center { position: absolute; top: 32px; left: 50%; transform: translateX(-50%); z-index: 60; }
+  #zone-card { display: flex; align-items: center; gap: 20px; padding: 15px 30px; border-radius: 22px;
+    background: rgba(0,0,0,.6); border: 1px solid rgba(255,255,255,.1); backdrop-filter: blur(16px); }
+  #zone-icon { padding: 9px; border-radius: 12px; background: rgba(0,255,209,.2); color: var(--teal); display: flex; }
+  #zone-icon svg { animation: pulse 2s infinite; }
+  #hud-score { min-width: 140px; text-align: center; font-size: 23px; font-weight: 900; font-style: italic;
+    letter-spacing: -.04em; color: #fff; font-variant-numeric: tabular-nums; }
+  #hud-score .team-a { color: var(--teal); }
+  #hud-score .team-b { color: var(--pink); }
+  #hud-score .sep { color: rgba(255,255,255,.3); padding: 0 4px; }
+  #hud-score .target { display: block; font-family: var(--mono); font-style: normal; font-weight: 400;
+    font-size: 9px; letter-spacing: .2em; text-transform: uppercase; color: rgba(255,255,255,.4); margin-top: 4px; }
+
+  #hud-top-right { position: absolute; top: 32px; right: 32px; width: 256px; z-index: 60; }
+  #leaderboard-card { padding: 20px 22px; }
+  #leaderboard-head { display: flex; align-items: center; gap: 11px; margin-bottom: 14px; }
+  #leaderboard-head h3 { margin: 0; font-size: 11px; font-weight: 900; font-style: italic;
+    text-transform: uppercase; letter-spacing: .18em; color: #fff; }
+  .lb-row { display: flex; align-items: center; justify-content: space-between; padding: 7px 9px; margin-top: 6px;
+    border-radius: 9px; font-family: var(--mono); font-size: 10px; border: 1px solid rgba(255,255,255,.05);
+    color: rgba(255,255,255,.35); }
+  .lb-row.me { background: rgba(0,255,209,.1); color: var(--teal); border-color: rgba(0,255,209,.2); }
+  .lb-row .rank { opacity: .5; }
+  .lb-row .name { flex: 1; padding: 0 11px; font-style: italic; text-transform: uppercase;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lb-row .k { font-weight: 700; }
+
+  /* kill feed — killer chip, weapon, victim chip. Side is carried by colour alone, so a
+     row is readable at a glance without stopping to read the names. */
+  #killfeed { position: absolute; top: 328px; right: 32px; display: flex; flex-direction: column;
+    gap: 6px; align-items: flex-end; z-index: 60; }
+  .killfeed-row { display: flex; align-items: center; gap: 8px; transition: opacity .6s ease; }
+  .killfeed-row.fade { opacity: 0; }
+  .kf-name {
+    padding: 4px 10px; border-radius: 7px; max-width: 200px;
+    font: 700 13px/1.3 sans-serif; color: #fff; letter-spacing: .01em;
+    text-shadow: 0 1px 2px rgba(0,0,0,.4); box-shadow: 0 2px 8px rgba(0,0,0,.35);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .kf-name.ally  { background: #2f74c8; }
+  /* the same pink their nameplate health bar uses, so a name in the feed and a body in
+     the world read as the same threat without having to be re-learned */
+  .kf-name.enemy { background: var(--pink); }
+  /* your own name reads as your side, just brighter, so you can find yourself instantly */
+  .kf-name.me { background: #1a9fd6; box-shadow: 0 2px 8px rgba(0,0,0,.35), inset 0 0 0 1.5px rgba(255,255,255,.5); }
+  .kf-icon { display: flex; align-items: center; color: rgba(255,255,255,.9);
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,.5)); }
+  .kf-icon.head { color: #fff; }
+
+  /* who built the map you're standing in. Sits below the corner cards rather than beside
+     them, so it stays clear of the health bar on a narrow screen. */
+  #map-credit {
+    position: absolute; bottom: 11px; left: 50%; transform: translateX(-50%);
+    font: 10px/1 var(--mono); letter-spacing: .22em; color: rgba(232,246,244,.34);
+    text-shadow: 0 1px 3px rgba(0,0,0,.6); white-space: nowrap; z-index: 60;
+  }
+
+  #hud-bottom-left { position: absolute; bottom: 32px; left: 32px; display: flex; align-items: flex-end; gap: 16px; z-index: 60; }
+  #minimap { width: 150px; height: 150px; border-radius: 50%; overflow: hidden; position: relative;
+    background: rgba(0,0,0,.6); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,.1);
+    box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  #minimap canvas { width: 100%; height: 100%; }
+
+  #status-panel { width: 256px; padding: 16px; border-radius: 16px;
+    background: rgba(0,0,0,.6); border: 1px solid rgba(255,255,255,.1); backdrop-filter: blur(16px);
+    box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  #status-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 9px; }
+  #status-head .mono-label { color: var(--teal); }
+  #hud-health2 { font-size: 12px; font-weight: 700; letter-spacing: .1em; color: #fff; font-variant-numeric: tabular-nums; }
+  #status-track { width: 100%; height: 8px; border-radius: 99px; overflow: hidden;
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.05); }
+  #hud-health-bar { height: 100%; width: 100%; background: var(--teal); transition: width .15s linear; position: relative; }
+  #hud-health-bar::after { content: ''; position: absolute; inset: 0; background: rgba(255,255,255,.2); animation: pulse 1.6s infinite; }
+  #hud-health-bar.low { background: #ef4444; }
+
+  #hud-bottom-right { position: absolute; bottom: 32px; right: 32px; z-index: 70; pointer-events: auto; }
+  #hud-menu-btn { padding: 10px 22px; font-size: 12px; border-radius: 12px;
+    background: rgba(0,0,0,.4); color: rgba(255,255,255,.75); border: 1px solid rgba(0,255,209,.2);
+    backdrop-filter: blur(10px); box-shadow: none; }
+  #hud-menu-btn:hover { color: var(--teal); border-color: rgba(0,255,209,.5); }
+
+  #bhop-tag { position: absolute; bottom: 200px; left: 50%; transform: translateX(-50%);
+    font-family: var(--mono); font-size: 11px; letter-spacing: .25em; text-transform: uppercase;
+    color: #eab308; text-shadow: 0 0 12px rgba(234,179,8,.6); opacity: 0; transition: opacity .15s ease; }
+  #bhop-tag.active { opacity: 1; }
+  /* chain established — the timing window is wide open now */
+  #bhop-tag.locked { color: var(--teal); text-shadow: 0 0 14px rgba(0,255,209,.7); }
+
+  /* killstreak banner (AsteroidsCore) */
+  #streak {
+    position: absolute; top: 0; left: 50%; z-index: 150;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    transform: translate(-50%, -100px); opacity: 0;
+    transition: transform .45s cubic-bezier(.2,.8,.25,1), opacity .35s ease;
+  }
+  #streak.show { transform: translate(-50%, 292px); opacity: 1; }
+  #streak-card {
+    background: rgba(0,0,0,.9); backdrop-filter: blur(16px);
+    border: 1px solid rgba(0,255,209,.3); border-radius: 16px;
+    padding: 16px 32px; box-shadow: 0 0 50px rgba(0,255,209,.2);
+    display: flex; align-items: center; gap: 20px;
+  }
+  #streak-icon {
+    padding: 12px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1);
+    border-radius: 12px; box-shadow: inset 0 2px 6px rgba(0,0,0,.5); display: flex;
+  }
+  #streak-label {
+    font: 10px/1 var(--mono); color: rgba(0,255,209,.6);
+    text-transform: uppercase; letter-spacing: .4em; margin-bottom: 6px;
+  }
+  #streak-text {
+    font: 900 italic 36px/1 sans-serif; color: #fff; text-transform: uppercase; letter-spacing: -.02em;
+  }
+  #streak-bar {
+    width: 100%; height: 4px; border-radius: 99px; background: var(--teal);
+    transform-origin: left; box-shadow: 0 0 10px var(--teal); transform: scaleX(1);
+  }
+  #streak.show #streak-bar { transform: scaleX(0); transition: transform 3s linear; }
+
+  /* Killcam keeps the shooter's own feedback on screen — crosshair, damage numbers, kill
+     notifiers — the way Siege does it. Only *your* persistent HUD steps aside. */
+  #hud.cam #hud-top-left, #hud.cam #hud-top-center, #hud.cam #hud-top-right,
+  #hud.cam #hud-bottom-left, #hud.cam #hud-bottom-right, #hud.cam #killfeed,
+  #hud.cam #nameplates, #hud.cam #bhop-tag, #hud.cam #map-credit { opacity: 0; transition: opacity .2s ease; }
+
+  #killcam { position: absolute; inset: 0; }
+
+  /* ---- top banner: record dot + title, centred like a broadcast lower-third ---- */
+  #killcam-header {
+    /* clears the letterbox band rather than hiding behind it */
+    position: absolute; top: calc(7vh + 14px); left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 14px;
+    background: rgba(0,0,0,.6); backdrop-filter: blur(16px);
+    border: 1px solid rgba(255,255,255,.12); border-radius: 16px;
+    padding: 13px 40px; box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  }
+  #killcam-rec { width: 11px; height: 11px; border-radius: 50%; background: #ff2d2d;
+    box-shadow: 0 0 12px rgba(255,45,45,.9); animation: rec-blink 1.15s infinite; }
+  @keyframes rec-blink { 0%, 45% { opacity: 1; } 60%, 100% { opacity: .15; } }
+  #killcam-title { font: 900 italic 26px/1 sans-serif; color: #fff;
+    text-transform: uppercase; letter-spacing: .1em; }
+
+  /* ---- bottom strip: awards · identity · killed by · killed with · clock ---- */
+  #killcam-strip {
+    position: absolute; left: 50%; bottom: calc(7vh + 18px); transform: translateX(-50%);
+    display: flex; align-items: center; gap: 18px;
+    background: rgba(0,0,0,.72); backdrop-filter: blur(16px);
+    border: 1px solid rgba(0,255,209,.2); border-radius: 18px;
+    padding: 12px 20px; box-shadow: 0 12px 44px rgba(0,0,0,.55);
+    white-space: nowrap; max-width: calc(100vw - 32px);
+  }
+  /* narrow viewports: drop the decorative slots before the information */
+  @media (max-width: 1040px) {
+    #killcam-strip { gap: 13px; padding: 10px 15px; }
+    #ks-awards, #killcam-strip .ks-sep:first-of-type { display: none; }
+    #ks-banner { width: 112px; }
+  }
+  @media (max-width: 820px) {
+    #ks-banner .ks-cap { display: none; }
+    #ks-banner { width: 92px; height: 38px; }
+    #ks-pic { width: 36px; height: 36px; font-size: 17px; }
+    .ks-val { font-size: 15px; }
+  }
+  .ks-sep { width: 1px; align-self: stretch; background: rgba(255,255,255,.1); }
+  .ks-cap { margin: 0; font-family: var(--mono); font-size: 9px; text-transform: uppercase;
+    letter-spacing: .2em; color: rgba(255,255,255,.4); line-height: 1; }
+  .ks-val { margin: 5px 0 0; font: 900 italic 17px/1 sans-serif; color: #fff;
+    text-transform: uppercase; letter-spacing: -.02em; }
+  .ks-val.enemy { color: rgb(239, 68, 68); }
+  .ks-val .ks-tag { font-size: 11px; color: var(--teal); font-style: normal;
+    letter-spacing: .12em; margin-left: 7px; }
+
+  /* award / scorestreak slots — placeholders */
+  #ks-awards { display: flex; gap: 7px; }
+  .ks-award { width: 30px; height: 30px; border-radius: 8px;
+    border: 1px dashed rgba(255,255,255,.18); background: rgba(255,255,255,.04);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 9px; color: rgba(255,255,255,.25); }
+
+  /* identity: profile pic + banner + level — all placeholders */
+  #ks-identity { display: flex; align-items: center; gap: 12px; }
+  #ks-pic { width: 42px; height: 42px; border-radius: 50%; border: 2px solid var(--teal);
+    background: rgba(0,255,209,.1); display: flex; align-items: center; justify-content: center;
+    font-size: 20px; overflow: hidden; flex: none; }
+  #ks-pic img { width: 100%; height: 100%; object-fit: cover; }
+  #ks-banner { width: 150px; height: 42px; border-radius: 10px;
+    border: 1px dashed rgba(0,255,209,.35); background: linear-gradient(100deg, rgba(0,255,209,.1), rgba(255,0,128,.08));
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; }
+  #ks-banner .ks-cap { color: rgba(0,255,209,.55); }
+  #ks-banner .ks-name { font: 900 italic 13px/1 sans-serif; color: #fff; text-transform: uppercase; }
+  #ks-level { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    min-width: 46px; height: 42px; padding: 0 9px; border-radius: 10px;
+    background: rgba(0,255,209,.12); border: 1px solid rgba(0,255,209,.3); }
+  #ks-level b { font: 900 italic 18px/1 sans-serif; color: var(--teal); }
+
+  #ks-timer { display: flex; align-items: center; gap: 8px; color: #fff; }
+  #ks-timer svg { color: var(--teal); }
+  #ks-time { font: 900 italic 18px/1 sans-serif; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+
+  /* letterbox — both the death cam and the final kill get the cinematic framing */
+  #killcam.cinematic::before, #killcam.cinematic::after {
+    content: ''; position: absolute; left: 0; right: 0; height: 7vh; background: #000; pointer-events: none;
+  }
+  #killcam.cinematic::before { top: 0; }
+  #killcam.cinematic::after { bottom: 0; }
+
+  /* final kill only: teal title, no skip prompt */
+  #killcam.final #killcam-header { border-color: rgba(0,255,209,.45); box-shadow: 0 0 44px rgba(0,255,209,.18); }
+  #killcam.final #killcam-title { color: var(--teal); text-shadow: 0 0 24px rgba(0,255,209,.6); }
+  #killcam.final #killcam-bar i { background: var(--teal); box-shadow: 0 0 10px var(--teal); }
+
+  /* skip prompt: a slot in the strip, not a floating box over the replay */
+  #killcam-hint .ks-val { display: flex; align-items: center; gap: 6px; font-size: 13px;
+    color: rgba(255,255,255,.75); }
+  #killcam-hint kbd { background: rgba(255,255,255,.12); border-radius: 4px; padding: 2px 7px;
+    font: 700 11px/1 var(--mono); color: #fff; font-style: normal; letter-spacing: .05em; }
+  #killcam-hint .ks-skip-word { font-style: italic; }
+  #killcam-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(255,255,255,.15); }
+  #killcam-bar i { display: block; height: 100%; width: 0%; background: #ff2d2d; box-shadow: 0 0 10px #ff2d2d; }
+
+  /* nameplates */
+  #nameplates { position: absolute; inset: 0; }
+  .nameplate { position: absolute; transform: translate(-50%, -100%); text-align: center; }
+  .nameplate .np-name { display: block; font-size: 11.5px; font-weight: 700; color: #fff;
+    text-shadow: 0 1px 3px rgba(0,0,0,.65); }
+  .nameplate.enemy .np-name { color: #ffb3c8; }
+  .nameplate.ally .np-name { color: #b8f7eb; }
+  .nameplate .np-bar { display: block; width: 44px; height: 3px; margin: 2px auto 0; border-radius: 2px;
+    background: rgba(0,0,0,.45); overflow: hidden; }
+  .nameplate .np-bar i { display: block; height: 100%; background: var(--pink); }
+  .nameplate.ally .np-bar i { background: var(--teal); }
+
+  /* respawn (no-replay fallback) */
+  #respawn { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(3, 8, 16, .55); color: #fff; text-shadow: 0 2px 8px rgba(0,0,0,.5); }
+  #respawn .big { font-size: 34px; font-weight: 900; font-style: italic; text-transform: uppercase; }
+  #respawn-timer { font-size: 46px; font-weight: 900; font-variant-numeric: tabular-nums; color: var(--teal); }
+
+  /* ---------- scoreboard ----------
+     One card, two hosts: the Tab overlay and the results screen. Rows are separate bars
+     rather than table lines, with the numbers gathered into their own inset block on the
+     right — free-for-all runs as one continuous list, team modes split into blocks. */
+  #scoreboard { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 80; }
+  .sb-card {
+    background: rgba(0,0,0,.82); backdrop-filter: blur(16px);
+    border: 1px solid rgba(0,255,209,.22); border-radius: 20px;
+    padding: 20px; width: min(560px, calc(100vw - 32px));
+    box-shadow: 0 0 60px rgba(0,255,209,.12);
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .sb-title { display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    padding: 0 4px 12px; border-bottom: 1px solid rgba(255,255,255,.08); }
+  .sb-title h3 { margin: 0; font: 900 italic 19px/1 sans-serif; color: #fff;
+    text-transform: uppercase; letter-spacing: -.02em; }
+  .sb-sub { margin: 0; font-family: var(--mono); font-size: 10px; text-transform: uppercase;
+    letter-spacing: .2em; color: rgba(0,255,209,.6); white-space: nowrap; }
+
+  .sb-group { display: flex; flex-direction: column; gap: 4px; }
+  /* the only thing dividing the two sides is the gap — same as the reference */
+  .sb-group + .sb-group { margin-top: 14px; }
+  .sb-group-head { display: flex; align-items: center; gap: 10px; padding: 0 6px 6px; }
+  .sb-group-name { font-family: var(--mono); font-size: 10px; text-transform: uppercase;
+    letter-spacing: .22em; color: var(--teal); }
+  .sb-group.enemy .sb-group-name { color: var(--pink); }
+  .sb-group-head .sb-rule { flex: 1; height: 1px; background: rgba(255,255,255,.09); }
+  .sb-group-score { font: 900 italic 17px/1 sans-serif; color: #fff; font-variant-numeric: tabular-nums; }
+
+  .sb-row {
+    display: grid; grid-template-columns: 22px 10px 1fr 60px 40px 40px 52px;
+    align-items: center; gap: 10px; padding: 9px 12px; border-radius: 10px;
+    background: rgba(255,255,255,.045); border: 1px solid transparent;
+    font-variant-numeric: tabular-nums;
+  }
+  .sb-row.sb-head { background: none; padding: 0 12px 2px; }
+  .sb-head span { font-family: var(--mono); font-size: 9px; text-transform: uppercase;
+    letter-spacing: .18em; color: rgba(255,255,255,.35); }
+  .sb-rank { font-family: var(--mono); font-size: 11px; color: rgba(255,255,255,.3); }
+  .sb-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dot, #fff);
+    box-shadow: 0 0 8px var(--dot, #fff); }
+  .sb-name { font: 900 italic 15px/1 sans-serif; color: rgba(255,255,255,.9);
+    text-transform: uppercase; letter-spacing: -.02em; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .sb-num { text-align: right; font: 700 14px/1 sans-serif; color: rgba(255,255,255,.72); }
+  .sb-num.sb-score { font-weight: 900; font-style: italic; font-size: 15px; color: #fff; }
+  .sb-num.sb-kd { color: rgba(255,255,255,.45); font-size: 13px; }
+
+  /* your own row, the way the reference calls it out */
+  .sb-row.me { background: rgba(0,255,209,.14); border-color: rgba(0,255,209,.45);
+    box-shadow: 0 0 26px rgba(0,255,209,.14); }
+  .sb-row.me .sb-name, .sb-row.me .sb-num, .sb-row.me .sb-rank { color: var(--teal); }
+  .sb-row.me .sb-num.sb-kd { color: rgba(0,255,209,.6); }
+
+  @media (max-width: 620px) {
+    .sb-row { grid-template-columns: 18px 10px 1fr 52px 34px 34px; gap: 8px; padding: 8px 10px; }
+    .sb-row .sb-kd { display: none; }
+  }
+
+  /* ---------- results ---------- */
+  /* scrolls rather than clipping once the board is on it; margin:auto keeps it centred
+     whenever there is room to spare */
+  #match-over { justify-content: flex-start; overflow-y: auto; padding: 24px; }
+  #mo-inner { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  #match-over h1 { font-size: 52px; }
+  .mo-actions { display: flex; gap: 14px; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<!-- loading -->
+<div id="loading">
+  <h1>Neon <span class="accent">Pug</span> Shooter</h1>
+  <div id="loading-track"><div id="loading-bar"></div></div>
+  <div id="loading-label">starting…</div>
+</div>
+
+<!-- The main menu lived here; the arcade's React lobby (PugShooterLobby) replaced it.
+     Mode, map and difficulty arrive on the query string — see src/main.js. -->
+
+<!-- screen glows: pink while you're under fire, teal while you're on a run -->
+<div id="hit-glow" class="screen-glow"></div>
+<div id="kill-glow" class="screen-glow"></div>
+
+<!-- hud -->
+<div id="hud" class="hidden">
+  <div id="crosshair"><i class="v"></i><i class="h"></i></div>
+
+  <div id="damage-numbers"></div>
+
+  <div id="kill-notifications"></div>
+  <div id="kill-points"></div>
+  <div id="achievements"></div>
+
+  <div id="headshot-banner">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ff3b3b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a8 8 0 0 0-8 8c0 2.5 1.2 4.7 3 6.1V19a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-2.9c1.8-1.4 3-3.6 3-6.1a8 8 0 0 0-8-8Z"/><circle cx="9" cy="11" r="1"/><circle cx="15" cy="11" r="1"/><path d="M10 17h4"/></svg>
+    <span>Headshot</span>
+  </div>
+
+  <!-- top left: profile + stat chips -->
+  <div id="hud-top-left">
+    <div id="profile-card" class="hud-card">
+      <div id="avatar">🐶</div>
+      <div>
+        <p class="mono-label">Interceptor</p>
+        <p id="profile-name">Vanguard</p>
+      </div>
+    </div>
+    <div class="chips">
+      <div class="chip hud-card">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00FFD1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a8 8 0 0 0-8 8c0 2.5 1.2 4.7 3 6.1V19a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-2.9c1.8-1.4 3-3.6 3-6.1a8 8 0 0 0-8-8Z"/><circle cx="9" cy="11" r="1"/><circle cx="15" cy="11" r="1"/><path d="M10 17h4"/></svg>
+        <div><p class="mono-label">Kills</p><p id="hud-kills" class="stat-value teal">0</p></div>
+      </div>
+      <div class="chip hud-card">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FF0080" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z"/></svg>
+        <div><p class="mono-label">Health</p><p id="hud-health" class="stat-value">100%</p></div>
+      </div>
+      <div id="chip-speed" class="chip hud-card">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00FFD1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z"/></svg>
+        <div><p class="mono-label">Speed</p><p id="hud-speed" class="stat-value teal">0.0</p></div>
+      </div>
+      <div id="chip-ammo" class="chip hud-card">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00aaff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+        <div><p class="mono-label" id="hud-ammo-label">Ammo <kbd>PRESS R</kbd></p><p id="hud-ammo" class="stat-value">30 / ∞</p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- top center: match status -->
+  <div id="hud-top-center">
+    <div id="zone-card">
+      <div id="zone-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="3 11 22 2 13 21 11 13 3 11"/></svg>
+      </div>
+      <div>
+        <p class="mono-label" style="text-align:center; letter-spacing:.2em;">Match</p>
+        <div id="hud-score"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- top right: leaderboard -->
+  <div id="hud-top-right">
+    <div id="leaderboard-card" class="hud-card">
+      <div id="leaderboard-head">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#eab308" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>
+        <h3>Leaderboard</h3>
+      </div>
+      <div id="leaderboard-rows"></div>
+    </div>
+  </div>
+
+  <div id="killfeed"></div>
+
+  <div id="map-credit"></div>
+
+  <!-- bottom left: minimap + health -->
+  <div id="hud-bottom-left">
+    <div id="minimap"><canvas id="minimap-canvas" width="150" height="150"></canvas></div>
+    <div id="status-panel">
+      <div id="status-head">
+        <span class="mono-label">Health</span>
+        <span id="hud-health2">100%</span>
+      </div>
+      <div id="status-track"><div id="hud-health-bar"></div></div>
+    </div>
+  </div>
+
+  <!-- bottom right: menu -->
+  <div id="hud-bottom-right">
+    <button id="hud-menu-btn">Menu</button>
+  </div>
+
+  <div id="bhop-tag"></div>
+
+  <div id="streak">
+    <div id="streak-card">
+      <div id="streak-icon"></div>
+      <div>
+        <div id="streak-label">Killstreak Acquired</div>
+        <div id="streak-text"></div>
+      </div>
+    </div>
+    <div id="streak-bar"></div>
+  </div>
+
+  <div id="killcam" class="hidden">
+    <div id="killcam-header">
+      <span id="killcam-rec"></span>
+      <span id="killcam-title">Killcam</span>
+    </div>
+
+    <div id="killcam-strip">
+      <!-- award / scorestreak slots (placeholders) -->
+      <div id="ks-awards">
+        <div class="ks-award">1</div>
+        <div class="ks-award">2</div>
+        <div class="ks-award">3</div>
+        <div class="ks-award">4</div>
+      </div>
+      <div class="ks-sep"></div>
+
+      <!-- identity: profile pic, banner, level (all placeholders for now) -->
+      <div id="ks-identity">
+        <div id="ks-pic">🐶</div>
+        <div id="ks-banner">
+          <span class="ks-cap">Player Banner</span>
+          <span class="ks-name">Vanguard</span>
+        </div>
+        <div id="ks-level">
+          <span class="ks-cap">Lvl</span>
+          <b id="ks-level-value">245</b>
+        </div>
+      </div>
+      <div class="ks-sep"></div>
+
+      <div>
+        <p class="ks-cap">Killed by</p>
+        <p class="ks-val enemy" id="ks-killer">—</p>
+      </div>
+      <div class="ks-sep"></div>
+
+      <div>
+        <p class="ks-cap">Killed with</p>
+        <p class="ks-val" id="ks-weapon">—</p>
+      </div>
+      <div class="ks-sep"></div>
+
+      <div id="ks-timer">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        <span id="ks-time">0:00</span>
+      </div>
+
+      <!-- skip prompt lives in the strip; nothing floats over the replay itself -->
+      <div class="ks-sep" id="ks-skip-sep"></div>
+      <div id="killcam-hint">
+        <p class="ks-cap">Respawning</p>
+        <p class="ks-val"><kbd>Space</kbd> <span class="ks-skip-word">skip</span></p>
+      </div>
+    </div>
+
+    <div id="killcam-bar"><i></i></div>
+  </div>
+
+  <div id="nameplates"></div>
+
+  <div id="respawn" class="hidden">
+    <div class="big">you died</div>
+    <div id="respawn-timer">3.0</div>
+    <div>respawning…</div>
+  </div>
+
+  <div id="scoreboard" class="hidden">
+    <div class="sb-card" id="scoreboard-card"></div>
+  </div>
+</div>
+
+<!-- pause -->
+<div id="pause" class="hidden">
+  <h1>Paused</h1>
+  <button id="resume-button">Resume</button>
+  <button id="pause-options-button" class="ghost">Options</button>
+  <button id="quit-button" class="ghost">Quit to lobby</button>
+</div>
+
+<!-- options — reached from the pause screen -->
+<div id="options" class="hidden">
+  <h1>Options</h1>
+  <div class="settings">
+    <label for="sensitivity">Sensitivity</label>
+    <input id="sensitivity" type="range" min="0.2" max="3" step="0.05">
+    <span id="sensitivity-label"></span>
+
+    <label for="fov">Field of view</label>
+    <input id="fov" type="range" min="80" max="120" step="1">
+    <span id="fov-label"></span>
+
+    <label for="stretch">Stretch</label>
+    <input id="stretch" type="range" min="1" max="1.7" step="0.01">
+    <span id="stretch-label"></span>
+
+    <label for="volume">Volume</label>
+    <input id="volume" type="range" min="0" max="1" step="0.05">
+    <span id="volume-label"></span>
+  </div>
+  <button id="options-back">Back</button>
+</div>
+
+<!-- results -->
+<div id="match-over" class="hidden">
+  <div id="mo-inner">
+    <h1 id="match-over-title">Victory</h1>
+    <p id="match-over-detail" class="sub"></p>
+    <div class="sb-card" id="match-over-board"></div>
+    <div class="mo-actions">
+      <button id="again-button">Back to lobby</button>
+      <button id="rematch-button">Rematch</button>
+    </div>
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/",
+    "howler": "https://esm.sh/howler@2.2.4",
+    "@dimforge/rapier3d-compat": "https://esm.sh/@dimforge/rapier3d-compat@0.14.0"
+  }
+}
+</script>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>

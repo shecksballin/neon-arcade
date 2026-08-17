@@ -1,0 +1,107 @@
+# Stylized "Summer Afternoon" Look — Implementation Plan (Three.js)
+
+> Goal: Recreate the painterly, Ghibli-esque summer aesthetic (reference: Vladimir Lucendo's
+> "Summer Afternoon" demo) in our Three.js game. This document is a task-oriented plan for
+> engineering agents. Work top-to-bottom; each phase is independently testable.
+
+## Aesthetic summary
+Flat, low-contrast pastel colors; cel/matcap shaded surfaces; warm soft afternoon sun with
+long soft shadows; atmospheric fog blending distant geometry into a bright sky; dense
+wind-animated instanced grass/foliage; a light post-processing grade. Assets are low-poly and
+stylized rather than detailed.
+
+## Tech stack assumptions
+- three (r150+ for `outputColorSpace`)
+- three/addons `EffectComposer`, `RenderPass`, `SMAAPass`, custom `ShaderPass`
+- Build tool with ES module imports (Vite recommended)
+
+---
+
+## Phase 1 — Color pipeline (highest impact)
+Establishes ~60% of the vibe. Do this first.
+- [ ] Create `WebGLRenderer` with `antialias: true`, `setPixelRatio(min(devicePixelRatio, 2))`.
+- [ ] Set `renderer.outputColorSpace = SRGBColorSpace`.
+- [ ] Set `renderer.toneMapping = NoToneMapping` (keeps colors flat/pastel — do NOT use ACES).
+- [ ] Set `scene.background` to a bright warm sky blue (start `#87c5f0`, tune per art direction).
+- [ ] Keep all albedo colors desaturated and slightly warm; avoid pure black/white.
+**Acceptance:** Untextured scene reads as flat and pastel; highlights do not blow out.
+
+## Phase 2 — Fog & atmosphere
+- [ ] Add `scene.fog = new Fog(skyColor, near, far)` with fog color == background color.
+- [ ] Tune near/far so distant hills fade smoothly into the sky.
+- [ ] (Optional) Evaluate `FogExp2` for a softer falloff.
+**Acceptance:** Distant geometry dissolves into the sky; sense of depth/haze.
+
+## Phase 3 — Lighting
+- [ ] `DirectionalLight` as the sun: warm color (`#fff4e0`), low angle, `castShadow = true`.
+- [ ] `shadowMap.enabled = true`, `type = PCFSoftShadowMap`, shadow map 2048², tuned frustum.
+- [ ] `HemisphereLight` (sky vs ground tint) for soft fill.
+- [ ] Low-intensity `AmbientLight` to lift shadows.
+**Acceptance:** Long, soft warm shadows; gentle sky-to-ground gradient on surfaces.
+
+## Phase 4 — Materials
+- [ ] Adopt `MeshToonMaterial` with a small gradient map for cel-banded surfaces.
+- [ ] Adopt `MeshMatcapMaterial` for foliage/props (bake or source matcap textures matching palette).
+- [ ] Reserve `MeshStandardMaterial` only where PBR is genuinely needed.
+- [ ] Define a shared palette module so all materials stay consistent.
+**Acceptance:** Surfaces look hand-shaded; foliage shading consistent regardless of camera.
+
+## Phase 5 — Instanced wind-animated foliage
+- [ ] Build grass/plants as `InstancedMesh` (target tens of thousands of instances).
+- [ ] Scatter per-instance transforms across the ground (random pos/rot/scale).
+- [ ] Inject wind into the material via `onBeforeCompile`: a `uTime` uniform driving a
+      `sin()` sway in the vertex shader, weighted by `pow(uv.y, 2.0)` so tips bend more than base.
+- [ ] Advance `uTime` from a shared `Clock` in the render loop.
+**Acceptance:** Dense grass sways naturally; tips move more than roots; stable framerate.
+
+## Phase 6 — Post-processing
+- [ ] Replace `renderer.render()` with `EffectComposer.render()`.
+- [ ] `RenderPass` → `SMAAPass` for anti-aliasing.
+- [ ] Custom `ShaderPass`: subtle warm color grade + gentle vignette.
+- [ ] Keep effects understated — the grade should unify, not dominate.
+**Acceptance:** Final frame is cohesive and painterly; edges clean.
+
+## Phase 7 — Assets & art direction
+- [ ] Model/import low-poly stylized assets (no high-frequency detail).
+- [ ] Use hand-painted-style or flat textures.
+- [ ] Verify everything reads consistently under the Phase 1–3 pipeline.
+
+---
+
+## Build order rationale
+Color pipeline → fog → lighting → materials → grass → post → assets.
+Each phase is visible on its own, so validate before moving on.
+
+## Reference docs
+threejs.org pages: `MeshToonMaterial`, `MeshMatcapMaterial`, `InstancedMesh`, `Fog`,
+and the post-processing / instancing examples.
+
+## Notes & pitfalls
+- Do NOT enable ACES/Reinhard tone mapping — it kills the flat pastel look.
+- Match fog color to background exactly, or seams appear at the horizon.
+- Matcaps bake lighting; if the sun direction changes dramatically they can look wrong —
+  choose matcaps whose baked light roughly matches the sun angle.
+
+How to make GLBs match the look
+After loading, you traverse the model and override things. Something like:
+jsimport { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+new GLTFLoader().load('tree.glb', (gltf) => {
+  gltf.scene.traverse((child) => {
+    if (child.isMesh) {
+      // 1. Enable shadows (GLBs import with these off)
+      child.castShadow = true;
+      child.receiveShadow = true;
+
+      // 2. Swap to your stylized material to match the painted look
+      child.material = new THREE.MeshToonMaterial({
+        color: child.material.color,      // reuse the GLB's base color
+        map: child.material.map,          // keep its texture if it has one
+        gradientMap: sharedGradientMap,
+      });
+
+      // (optional) re-apply the wind shader here if it's foliage
+    }
+  });
+  scene.add(gltf.scene);
+});
