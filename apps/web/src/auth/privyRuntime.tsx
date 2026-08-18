@@ -49,7 +49,48 @@ const MAINNET_WS_URL = "wss://api.mainnet-beta.solana.com";
 // the app still renders and plays, wallet login just stays disabled.
 // trim() guards against stray whitespace sneaking into the secret value
 const appId: string | undefined = import.meta.env.VITE_PRIVY_APP_ID?.trim();
-const PLACEHOLDER_APP_ID = "privy-app-id-not-set-xxxx"; // exactly 25 chars
+
+/** Privy hard-throws on anything that is not a 25-character id. */
+const hasValidAppId = !!appId && appId.length === 25;
+
+/**
+ * Warned once per page load, not once per render. `PrivyRuntime` re-renders
+ * whenever the bridge publishes state, and the old `console.error` inside the
+ * component body fired every time — three identical errors on a cold load in
+ * the deployed preview, which read like three separate faults.
+ */
+let warnedAboutAppId = false;
+function warnMissingAppId() {
+  if (warnedAboutAppId) return;
+  warnedAboutAppId = true;
+  console.warn(
+    "[Privy] VITE_PRIVY_APP_ID is missing or malformed — wallet login is disabled. " +
+      "Add the 25-character app id from dashboard.privy.io to Doppler (VITE_PRIVY_APP_ID) or apps/web/.env.",
+  );
+}
+
+/**
+ * The auth state published when there is no usable app id.
+ *
+ * `loaded: true` is deliberate and load-bearing: it tells the app the auth
+ * question has been ANSWERED (the answer being "wallet login is unavailable
+ * here") rather than leaving it waiting forever on an SDK that is never
+ * coming. App.tsx gates on `authLoaded` before deciding what to show a
+ * visitor, so a permanently-false value would strand the sign-in UI in its
+ * loading state.
+ */
+const DISABLED_STATE: AuthState = {
+  loaded: true,
+  loading: false,
+  ready: true,
+  authenticated: false,
+  wallets: [],
+  login: () => warnMissingAppId(),
+  logout: async () => {},
+  signMessage: null,
+  exportWallet: null,
+  getPrivyTokens: async () => ({ accessToken: null, identityToken: null }),
+};
 
 interface RuntimeProps {
   onState: (s: AuthState) => void;
@@ -59,16 +100,32 @@ interface RuntimeProps {
 }
 
 export function PrivyRuntime(props: RuntimeProps) {
-  if (!appId || appId.length !== 25) {
-    console.error(
-      "[Privy] VITE_PRIVY_APP_ID is missing or malformed — wallet login is disabled. " +
-        "Add the 25-character app id from dashboard.privy.io to Doppler (VITE_PRIVY_APP_ID) or apps/web/.env.",
-    );
-  }
+  /**
+   * THE GUARD HAS TO SHORT-CIRCUIT, not just complain.
+   *
+   * It used to log and then mount the provider anyway with a 25-character
+   * placeholder id, because Privy throws on a malformed one. But a provider
+   * with a placeholder id is still a REAL provider: it initialised, called
+   * out to auth.privy.io/api/v1/apps/privy-app-id-not-set-xxxx, waited ~445 ms
+   * and failed — a guaranteed-doomed network request on every load of any
+   * deployment without the id set, which is every preview deployment.
+   *
+   * Not rendering the provider at all means the SDK never initialises. The
+   * app is told plainly that wallet login is unavailable (DISABLED_STATE) and
+   * everything that does not need a wallet keeps working.
+   */
+  const { onState } = props;
+  React.useEffect(() => {
+    if (hasValidAppId) return;
+    warnMissingAppId();
+    onState(DISABLED_STATE);
+  }, [onState]);
+
+  if (!hasValidAppId) return null;
 
   return (
     <PrivyProvider
-      appId={appId && appId.length === 25 ? appId : PLACEHOLDER_APP_ID}
+      appId={appId as string}
       config={{
         // Which login options appear in the modal
         loginMethods: ["wallet", "email", "google"],
@@ -242,6 +299,7 @@ function PrivyBridge({
   React.useEffect(() => {
     onState({
       loaded: true,
+      loading: false,
       ready,
       authenticated,
       wallets,

@@ -22,6 +22,45 @@ interface SplashCursorProps {
   position?: 'fixed' | 'absolute';
 }
 
+/**
+ * THE DEFAULT BACK COLOUR MUST LIVE AT MODULE SCOPE. Read this before moving
+ * it back inline.
+ *
+ * It is in the effect's dependency array. Written as a default parameter
+ * (`BACK_COLOR = { r: 0.5, g: 0, b: 0 }`) it was a BRAND-NEW OBJECT on every
+ * render of the parent — and App re-renders plenty (auth resolving, the
+ * active-users socket, notifications). So React saw the deps change, ran the
+ * cleanup, and re-ran the effect.
+ *
+ * That was not merely wasteful, it was fatal: the cleanup deliberately calls
+ * `WEBGL_lose_context.loseContext()` to hand the GPU context back, and
+ * `canvas.getContext('webgl2')` on the same canvas afterwards returns THE
+ * SAME, NOW-LOST CONTEXT. On a lost context every framebuffer probe fails, so
+ * `getSupportedFormat` returned null and `initFramebuffers` threw
+ *
+ *   TypeError: Cannot read properties of null (reading 'internalFormat')
+ *
+ * — the error SafeErrorBoundary was catching on every single page load. The
+ * same lost context is why `getShaderInfoLog` returned null, which is what
+ * the (now removed) `console.trace(null)` spam was printing.
+ *
+ * One shared frozen object keeps the identity stable, so the simulation is
+ * built ONCE per mount.
+ */
+const DEFAULT_BACK_COLOR = Object.freeze({ r: 0.5, g: 0, b: 0 });
+
+/**
+ * How long after the last pointer activity the simulation keeps stepping.
+ *
+ * The dye fades by `1 / (1 + DENSITY_DISSIPATION * dt)` per frame, so at the
+ * landing page's dissipation of 2 it is down to ~0.3% of its original value
+ * after three seconds — visually gone. Past that point every frame is the
+ * GPU re-rendering an empty black screen, which is exactly the continuous
+ * per-frame WebGL work that held the page at ~41fps while nothing moved.
+ * Four seconds leaves a margin over the three the maths needs.
+ */
+const IDLE_AFTER_MS = 4000;
+
 class Pointer {
   id: number = -1;
   texcoordX: number = 0;
@@ -48,7 +87,7 @@ export function SplashCursor({
   SPLAT_FORCE = 6000,
   SHADING = true,
   COLOR_UPDATE_SPEED = 10,
-  BACK_COLOR = { r: 0.5, g: 0, b: 0 },
+  BACK_COLOR = DEFAULT_BACK_COLOR,
   TRANSPARENT = true,
   RAINBOW_MODE = true,
   COLOR = '#00FFEA',
@@ -57,12 +96,41 @@ export function SplashCursor({
 }: SplashCursorProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationFrameId = useRef<number | null>(null);
+  /**
+   * Pending "give the GPU context back" timer — see the cleanup for why the
+   * release is deferred rather than immediate. Held in a ref so it survives
+   * the cleanup → re-init boundary that StrictMode creates.
+   */
+  const releaseTimer = useRef<number | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     let isActive = true;
+    /** Set by reportGlFailure so a broken context warns once, not per shader. */
+    let glFailureReported = false;
+
+    /**
+     * CANCEL A PENDING CONTEXT RELEASE — this is what makes the component
+     * survive React StrictMode.
+     *
+     * StrictMode (src/main.tsx) deliberately runs every effect twice in
+     * development, on the SAME DOM node: mount → cleanup → mount. Our cleanup
+     * hands the WebGL context back, and `getContext` afterwards returns that
+     * same dead object — so a naive teardown means the fluid silently never
+     * renders in `bun run dev`, with nothing in the console to explain it.
+     *
+     * The release is therefore deferred by a macrotask (see the cleanup) and
+     * cancelled here. A genuine unmount has no second run to cancel it, so
+     * the context is still released and the leak the teardown comment
+     * describes stays fixed; a StrictMode remount simply reuses the live
+     * context it was about to drop.
+     */
+    if (releaseTimer.current !== null) {
+      clearTimeout(releaseTimer.current);
+      releaseTimer.current = null;
+    }
 
     let config = {
       SIM_RESOLUTION,
@@ -110,6 +178,24 @@ export function SplashCursor({
       }
       if (!glCtx) return null;
 
+      /**
+       * A LOST CONTEXT IS NOT A USABLE CONTEXT — and getContext() hands one
+       * back regardless. Once loseContext() has been called on this canvas,
+       * every later getContext() returns that same dead object: probes fail,
+       * shaders do not compile, and every info-log reads null. Building the
+       * simulation on it produced the `internalFormat` crash. Bail out here
+       * instead; the caller renders nothing, which is the correct outcome for
+       * a decorative effect. (See DEFAULT_BACK_COLOR for why re-init happened
+       * at all — that cause is fixed, this is the guard that keeps it fixed.)
+       */
+      if (glCtx.isContextLost()) {
+        // Say so. This is the bail that fires in exactly the situation the
+        // rewrite is about, and a blank canvas with a clean console is
+        // indistinguishable from "HEAVY_FX gated it off".
+        reportGlFailure(null);
+        return null;
+      }
+
       let halfFloat: any;
       let supportLinearFiltering: any;
       if (isWebGL2) {
@@ -134,6 +220,27 @@ export function SplashCursor({
         formatRGBA = getSupportedFormat(glCtx, glCtx.RGBA, glCtx.RGBA, halfFloatTexType);
         formatRG = getSupportedFormat(glCtx, glCtx.RGBA, glCtx.RGBA, halfFloatTexType);
         formatR = getSupportedFormat(glCtx, glCtx.RGBA, glCtx.RGBA, halfFloatTexType);
+      }
+
+      /**
+       * getSupportedFormat returns NULL when it runs out of fallbacks — an
+       * old GPU with no renderable half-float format, or a context that has
+       * gone away underneath us. initFramebuffers would then dereference null
+       * and throw. A decorative fluid simulation has no business throwing, so
+       * treat "no usable format" the same as "no WebGL": render nothing.
+       */
+      if (!formatRGBA || !formatRG || !formatR) {
+        // Hand the context back before giving up. Bailing while holding it
+        // would leak one of the browser's ~16 contexts for the lifetime of
+        // the page — the exact failure the teardown comment at the bottom of
+        // this effect exists to prevent.
+        try {
+          glCtx.getExtension('WEBGL_lose_context')?.loseContext();
+        } catch {
+          /* nothing more we can do */
+        }
+        reportGlFailure(null);
+        return null;
       }
 
       return {
@@ -227,7 +334,11 @@ export function SplashCursor({
       gl.attachShader(program, vertexShader);
       gl.attachShader(program, fragmentShader);
       gl.linkProgram(program);
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) console.trace(gl.getProgramInfoLog(program));
+      // A link failure used to console.trace() the info log. On a lost
+      // context that log is null, so the page filled with `console.trace(null)`
+      // stack dumps that said nothing about the actual problem. Report it once,
+      // with something readable, and only when there is something to say.
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) reportGlFailure(gl.getProgramInfoLog(program));
       return program;
     }
 
@@ -250,8 +361,26 @@ export function SplashCursor({
       if (!shader) return null;
       gl.shaderSource(shader, parsedSource);
       gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) console.trace(gl.getShaderInfoLog(shader));
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) reportGlFailure(gl.getShaderInfoLog(shader));
       return shader;
+    }
+
+    /**
+     * One warning per mount, whatever goes wrong.
+     *
+     * Every shader in the simulation is compiled in a row, so a context that
+     * has gone bad produced ~20 identical traces — each with a null info log,
+     * because that is what a dead context returns. Neither the repetition nor
+     * the stack traces told anyone anything, and they buried the real errors
+     * in the console.
+     */
+    function reportGlFailure(infoLog: string | null) {
+      if (glFailureReported) return;
+      glFailureReported = true;
+      console.warn(
+        '[SplashCursor] WebGL setup failed — the cursor effect is disabled for this page load.' +
+          (infoLog ? ` ${infoLog}` : ' (no driver info available; the GL context is most likely lost)')
+      );
     }
 
     function addKeywords(source: string, keywords: string[] | null) {
@@ -719,12 +848,60 @@ export function SplashCursor({
     }
 
     updateKeywords();
+    // SIZE THE CANVAS BEFORE ALLOCATING ANYTHING. A <canvas> with only CSS
+    // dimensions has a 300×150 backing store until something sets width/height,
+    // and initFramebuffers reads gl.drawingBuffer* to size every buffer. Sizing
+    // first means the framebuffers are allocated once, at the right aspect
+    // ratio, and the pointer handlers (which divide by canvas.width/height)
+    // compute texture coordinates that are actually on the texture — without
+    // this the very first splat lands off-screen and is never seen.
+    resizeCanvas();
     initFramebuffers();
     let lastUpdateTime = Date.now();
     let colorUpdateTimer = 0.0;
 
+    /**
+     * Timestamp of the last thing worth simulating (a pointer move or click).
+     *
+     * Seeded to NOW rather than 0. The component is mounted in response to a
+     * pointer moving (App.tsx's usePointerAwake gate), and that triggering
+     * event is already spent by the time this chunk has downloaded — our own
+     * listeners are attached below, after it. Starting at 0 would leave the
+     * simulation idle until the visitor moved a SECOND time, so someone who
+     * flicks the mouse once towards a button would see nothing at all.
+     * Seeding it here means "there was activity just now", which is true.
+     */
+    let lastActivityAt = Date.now();
+
+    /** Called from every input handler; wakes the loop back up. */
+    function noteActivity() {
+      lastActivityAt = Date.now();
+    }
+
     function updateFrame() {
       if (!isActive) return;
+
+      // ── THE IDLE GATE ──────────────────────────────────────────────────
+      // A hidden tab has nothing to show, and a fluid that finished
+      // dissipating IDLE_AFTER_MS ago is redrawing an empty screen over and
+      // over. In both cases skip the simulation and the draw — the GPU work,
+      // which is the expensive part — while keeping the rAF ticking so the
+      // effect resumes on the very next pointer move. (To be precise: this
+      // removes the per-frame GPU cost, not the callback itself; the loop
+      // still wakes, it just does nothing until there is something to show.)
+      const idle = document.hidden || Date.now() - lastActivityAt > IDLE_AFTER_MS;
+      if (idle) {
+        // A window resized while idle must still be honoured, or the fluid
+        // comes back stretched when the pointer next moves. Cheap: two layout
+        // reads, and initFramebuffers only runs when the size really changed.
+        if (resizeCanvas()) initFramebuffers();
+        // Reset the clock so the first frame after waking gets a sane dt
+        // rather than one the size of however long the page sat untouched.
+        lastUpdateTime = Date.now();
+        animationFrameId.current = requestAnimationFrame(updateFrame);
+        return;
+      }
+
       const dt = calcDeltaTime();
       if (resizeCanvas()) initFramebuffers();
       updateColors(dt);
@@ -890,6 +1067,7 @@ export function SplashCursor({
     }
 
     function updatePointerDownData(pointer: Pointer, id: number, posX: number, posY: number) {
+      noteActivity(); // wakes the idle gate in updateFrame
       pointer.id = id;
       pointer.down = true;
       pointer.moved = false;
@@ -903,6 +1081,7 @@ export function SplashCursor({
     }
 
     function updatePointerMoveData(pointer: Pointer, posX: number, posY: number, color: { r: number; g: number; b: number }) {
+      noteActivity(); // wakes the idle gate in updateFrame
       pointer.prevTexcoordX = pointer.texcoordX;
       pointer.prevTexcoordY = pointer.texcoordY;
       pointer.texcoordX = posX / canvas.width;
@@ -1001,8 +1180,21 @@ export function SplashCursor({
       else return { width: min, height: max };
     }
 
+    /**
+     * DPR IS CAPPED AT 2 FOR THE SIMULATION.
+     *
+     * The display pass covers the whole viewport, so its cost scales with
+     * devicePixelRatio SQUARED: on a 3× retina panel a 1534×894 window means
+     * 4602×2682 = 12.3 M pixels shaded every frame, nine times the DPR-1
+     * machine the 41fps was measured on. For a soft, blurred fluid nobody can
+     * tell 2× from 3× — the dye is diffuse by construction — so the extra
+     * pixels buy nothing but heat.
+     *
+     * Only the simulation is capped. The rest of the page still renders at
+     * the device's native ratio; this function is local to this effect.
+     */
     function scaleByPixelRatio(input: number) {
-      const pixelRatio = window.devicePixelRatio || 1;
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
       return Math.floor(input * pixelRatio);
     }
 
@@ -1072,6 +1264,27 @@ export function SplashCursor({
     window.addEventListener('touchmove', handleTouchMove, false);
     window.addEventListener('touchend', handleTouchEnd);
 
+    /**
+     * STOP IF THE GPU TAKES THE CONTEXT BACK.
+     *
+     * Browsers cap live WebGL contexts (Chrome ~16) and reclaim the oldest
+     * when the cap is hit — a failure this app has actually seen (see the
+     * teardown note at the end of this effect). Without this handler the loop
+     * would carry on issuing ~30 draw passes per frame into a dead context:
+     * every call a silent no-op, nothing drawn, nothing logged, the rAF chain
+     * running at full rate forever.
+     */
+    const handleContextLost = (event: Event) => {
+      event.preventDefault(); // allows a restore, and stops the default spew
+      isActive = false;
+      if (animationFrameId.current) {
+        cancelAnimationFrame(animationFrameId.current);
+        animationFrameId.current = null;
+      }
+      reportGlFailure(null);
+    };
+    canvas.addEventListener('webglcontextlost', handleContextLost);
+
     updateFrame();
 
     return () => {
@@ -1087,6 +1300,7 @@ export function SplashCursor({
       window.removeEventListener('touchstart', handleTouchStart);
       window.removeEventListener('touchmove', handleTouchMove);
       window.removeEventListener('touchend', handleTouchEnd);
+      canvas.removeEventListener('webglcontextlost', handleContextLost);
 
       /**
        * RELEASE THE WEBGL CONTEXT. Stopping the render loop is not the
@@ -1105,12 +1319,24 @@ export function SplashCursor({
        * Asking for the context back explicitly makes teardown
        * deterministic. Wrapped because the extension is optional and a
        * failure here must not break unmounting.
+       *
+       * DEFERRED BY ONE MACROTASK, and that delay is load-bearing. React
+       * StrictMode runs this cleanup between two mounts of the SAME canvas
+       * in development, and a context released here cannot be got back —
+       * `getContext` just returns the dead one, so the effect's second run
+       * would find a lost context and render nothing, silently, forever.
+       * Deferring lets the re-init cancel the release (see the top of the
+       * effect). On a REAL unmount nothing cancels it and the context is
+       * released a tick later, exactly as before.
        */
-      try {
-        gl.getExtension('WEBGL_lose_context')?.loseContext();
-      } catch {
-        /* extension unavailable — nothing more we can do */
-      }
+      releaseTimer.current = window.setTimeout(() => {
+        releaseTimer.current = null;
+        try {
+          gl.getExtension('WEBGL_lose_context')?.loseContext();
+        } catch {
+          /* extension unavailable — nothing more we can do */
+        }
+      }, 0);
     };
   }, [
     SIM_RESOLUTION,

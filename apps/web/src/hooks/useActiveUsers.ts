@@ -1,11 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
-import { SOCKET_URL } from "./useGameSocket";
+import { SOCKET_URL, warnNoSocketServer } from "./useGameSocket";
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
 // Presence lives on its own anonymous namespace on the game server.
-const PRESENCE_URL = `${SOCKET_URL}/presence`;
+// Null when the build has no configured server origin (see SOCKET_URL) — this
+// hook runs on the LANDING PAGE for every visitor, so connecting to a URL that
+// cannot answer would cost every single one of them a retry storm.
+const PRESENCE_URL = SOCKET_URL ? `${SOCKET_URL}/presence` : null;
 const HEARTBEAT_INTERVAL_MS = 20_000;  // send heartbeat every 20s
 const RECONNECT_BASE_DELAY_MS = 1_000; // start retry at 1s
 const RECONNECT_MAX_DELAY_MS = 30_000; // cap retry at 30s
@@ -73,6 +76,13 @@ export function useActiveUsers({
 
   const connect = useCallback(() => {
     if (!enabled) return;
+    // Nothing to connect to. Returning here is also what stops the retry
+    // storm: scheduleReconnect is only ever reached from the connect_error /
+    // disconnect handlers, which can no longer fire.
+    if (!PRESENCE_URL) {
+      warnNoSocketServer();
+      return;
+    }
     if (socketRef.current?.connected) return;
 
     const socket = io(PRESENCE_URL, {

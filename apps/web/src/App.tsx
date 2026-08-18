@@ -134,7 +134,7 @@ import TrueFocus from "./components/TrueFocus";
 // Auth comes from our own deferred context, not from Privy's hooks — the SDK
 // is fetched on idle and mounted outside this tree so it can't block first
 // paint. src/auth/index.tsx explains the arrangement.
-import { useAuth, useOnLoginComplete } from "./auth";
+import { useAuth, useOnLoginComplete, prefetchAuth } from "./auth";
 import { refreshSession, endSession, AUTH_TOKEN_KEY } from "./hooks/useBackendAuth";
 // LAZY for the same reason as SidebarMenu: it's a modal that nobody has
 // opened yet, and it reaches @solana/kit for the balance readout.
@@ -501,6 +501,16 @@ export default function App() {
   // the real value take over the instant it arrives. Read once: this is about
   // the initial render, and re-reading localStorage per render would let a
   // sign-out mid-session be masked by a stale token.
+  /**
+   * "We heard you, the sign-in is on its way."
+   *
+   * True only in the window between a first-time visitor pressing a sign-in
+   * control and the wallet chunk arriving. It exists because that window used
+   * to be invisible — the SDK was prefetched on idle, so a click was instant;
+   * now the click is what pays for it.
+   */
+  const [signInPending, setSignInPending] = React.useState(false);
+
   const hadSession = React.useMemo(() => !!localStorage.getItem(AUTH_TOKEN_KEY), []);
   const showSignedIn = authenticated || (!authLoaded && hadSession);
 
@@ -528,6 +538,13 @@ export default function App() {
     const id = window.setTimeout(warm, 1500);
     return () => clearTimeout(id);
   }, [view]);
+
+  // The pending indicator's only job is to cover the chunk fetch, so it ends
+  // the moment the SDK reports in — whatever it reports. From there Privy's
+  // own modal (or the account screen) is the feedback.
+  React.useEffect(() => {
+    if (authLoaded && signInPending) setSignInPending(false);
+  }, [authLoaded, signInPending]);
 
   // DEFERRED-AUTH REPLAY. Clicking a tile in the first moment after load —
   // before the auth chunk has landed — parks the destination in pendingDest
@@ -597,6 +614,14 @@ export default function App() {
       // early click is never silently swallowed.
       if (!authLoaded || !privyReady || !authenticated) {
         pendingDest.current = dest;
+        // TELL THEM SOMETHING IS HAPPENING. The wallet SDK is no longer
+        // downloaded on page load (see src/auth/index.tsx), so for a
+        // first-time visitor this click is what fetches it — and on a slow
+        // connection that is seconds during which `login()` changes nothing
+        // any pixel reflects. Without this the primary call-to-action looks
+        // broken and people tap it again. Cleared when the modal actually
+        // opens (authLoaded flips) — see the effect below.
+        if (!authLoaded) setSignInPending(true);
         login();
         return;
       }
@@ -736,6 +761,22 @@ export default function App() {
     <div className="font-sans selection:bg-cyan-500/30 selection:text-cyan-200 h-[100dvh] overflow-hidden bg-[#081616] text-[#d7e5e5]">
       <LiquidFilter />
       <NeonViewportGlow />
+
+      {/* SIGN-IN IS ON ITS WAY. Covers the one-off wallet-SDK download that a
+          first-time visitor's first sign-in click now triggers (see
+          signInPending). Deliberately a small corner toast rather than a
+          blocking overlay: nothing is broken, the page stays usable, and if
+          the chunk is already cached this never appears at all. */}
+      {signInPending && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-6 left-1/2 z-[60] -translate-x-1/2 rounded-full border border-[#00FFD1]/40 bg-[#04120f]/90 px-5 py-2.5 font-mono text-[10px] uppercase tracking-[0.2em] text-[#00FFD1] shadow-[0_0_30px_rgba(0,255,209,0.25)] backdrop-blur-md"
+        >
+          <span className="mr-2 inline-block h-2 w-2 animate-pulse rounded-full bg-[#00FFD1] align-middle" />
+          Opening sign-in…
+        </div>
+      )}
       {(view === "landing" ||
         view === "arcade" ||
         view === "neonconnect" ||
@@ -934,6 +975,11 @@ export default function App() {
                     // would show nothing. Route through the gate instead —
                     // it queues the intent and resolves once Privy is up.
                     onClick={() => (authenticated ? setShowWallet(true) : requireAccount(view))}
+                    /* This button also falls through to the sign-in gate while
+                       the SDK is still absent (see the comment above), so it
+                       warms the chunk on intent exactly like Connect does. */
+                    onPointerEnter={prefetchAuth}
+                    onFocus={prefetchAuth}
                     title="Open your wallet"
                     className="flex items-center gap-2 bg-gradient-to-r from-[#00FFD1] to-[#00e0b7] text-[#00382c] px-4 md:px-5 py-2 md:py-2.5 rounded-full font-bold text-[10px] md:text-sm transition-all shadow-[0_0_40px_rgba(0,255,209,0.5)] hover:scale-105 active:scale-95 ml-1 md:ml-2 relative z-20 cursor-pointer"
                   >
@@ -945,6 +991,14 @@ export default function App() {
                     // Gated: Privy popup now, username + PIN + authenticator
                     // right after sign-in (stays on the current page).
                     onClick={() => requireAccount(view)}
+                    /* INTENT PREFETCH. A signed-out visitor never downloads
+                       the 1.26 MB wallet SDK on load any more (see
+                       src/auth/index.tsx), so start fetching it the moment
+                       someone looks like they are about to sign in. Hover and
+                       keyboard focus both count; by the time the click lands
+                       the modal usually opens with no wait at all. */
+                    onPointerEnter={prefetchAuth}
+                    onFocus={prefetchAuth}
                     title="Log in"
                     className="flex items-center gap-2 bg-gradient-to-r from-[#00FFD1] to-[#00e0b7] text-[#00382c] px-4 md:px-5 py-2 md:py-2.5 rounded-full font-bold text-[10px] md:text-sm transition-all shadow-[0_0_40px_rgba(0,255,209,0.5)] hover:scale-105 active:scale-95 ml-1 md:ml-2 relative z-20 cursor-pointer"
                   >
@@ -1267,6 +1321,50 @@ const HEAVY_FX =
   !window.matchMedia("(pointer: coarse) and (hover: none)").matches &&
   (navigator.hardwareConcurrency ?? 8) > 4;
 
+/**
+ * True once the visitor has actually moved a pointer.
+ *
+ * HEAVY_FX answers "CAN this machine run the decorations". This answers
+ * "does it MEAN anything yet", and the two are different questions. Both
+ * effects follow the cursor, so before the first pointer movement they are
+ * an invisible three.js download — 256 kB gzip, fetched during the cold load,
+ * to render something nobody is interacting with. That download was the
+ * second-largest item on the landing page.
+ *
+ * Waiting for one `pointermove` moves it off the critical path entirely
+ * without taking the effect away from anyone who will actually see it: on a
+ * desktop the pointer moves within a second or two of arriving, the chunk
+ * arrives quietly after the page has loaded, and the blob fades in behind the
+ * cursor as it always did. Someone who reads the page without touching the
+ * mouse and clicks straight through never pays for it at all.
+ *
+ * `once: true` — the listener removes itself, and `passive` keeps it off the
+ * scroll path.
+ */
+function usePointerAwake(enabled: boolean): boolean {
+  const [awake, setAwake] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!enabled || awake) return;
+    const wake = () => setAwake(true);
+    // Pointer events are the obvious trigger, but they are not the only one
+    // that matters: CursorBlob3D also draws a retrowave sun that is centred
+    // and fully visible before any cursor input. Waking on keyboard, focus
+    // and scroll too means a keyboard-only or switch-access visitor still
+    // gets the landing page's hero background instead of a flat gradient —
+    // while the chunk stays off the cold-load critical path either way.
+    const EVENTS = ["pointermove", "pointerdown", "keydown", "focusin", "scroll"] as const;
+    for (const type of EVENTS) {
+      window.addEventListener(type, wake, { once: true, passive: true });
+    }
+    return () => {
+      for (const type of EVENTS) window.removeEventListener(type, wake);
+    };
+  }, [enabled, awake]);
+
+  return awake;
+}
+
 function LandingView({
   onExplore,
   onPlayNow,
@@ -1276,13 +1374,17 @@ function LandingView({
   onPlayNow: () => void;
   activeUsers: number;
 }) {
+  // Capability (HEAVY_FX) AND intent (a pointer that has moved) — see
+  // usePointerAwake. Keeps three.js out of the cold-load waterfall.
+  const showHeavyFx = usePointerAwake(HEAVY_FX);
+
   return (
     <>
       {/* Background. The gradient + GlassPanel below carry the look on their
           own; the two WebGL layers are an enhancement for pointer devices
           that can afford them (see HEAVY_FX). */}
       <div className="fixed inset-0 z-0 bg-[#081616]">
-        {HEAVY_FX && (
+        {showHeavyFx && (
           <>
             <SafeErrorBoundary>
               <React.Suspense fallback={null}>
@@ -1354,6 +1456,10 @@ function LandingView({
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 md:gap-6 mb-12 md:mb-16">
             <button
               onClick={onPlayNow}
+              /* Play Now runs the same sign-in gate as Connect, so warm the
+                 wallet chunk on intent here too — see prefetchAuth. */
+              onPointerEnter={prefetchAuth}
+              onFocus={prefetchAuth}
               className="w-full sm:w-auto group relative px-8 md:px-10 py-4 md:py-5 bg-gradient-to-r from-[#00FFD1] to-[#00e0b7] text-[#00382c] font-black uppercase tracking-[0.3em] rounded-full overflow-hidden transition-all hover:scale-105 active:scale-95 shadow-[0_0_40px_rgba(0,255,209,0.5)] cursor-pointer"
             >
               Play Now

@@ -36,8 +36,15 @@ export function useWalletAddress(): {
   address: string | null
   ready: boolean
   authenticated: boolean
+  /**
+   * The wallet SDK is on its way. Passed through so callers can tell
+   * "connecting" from "nothing is coming" — the SDK is only fetched for a
+   * returning session or on an explicit sign-in intent, so `!ready` on its
+   * own no longer implies anything is loading. See AuthState.loading.
+   */
+  loading: boolean
 } {
-  const { ready, authenticated, wallets } = useAuth()
+  const { ready, authenticated, wallets, loading } = useAuth()
 
   const wallet = pickPrimaryWallet(wallets)
 
@@ -45,5 +52,6 @@ export function useWalletAddress(): {
     address: wallet?.address ?? null,
     ready,
     authenticated,
+    loading,
   }
 }
