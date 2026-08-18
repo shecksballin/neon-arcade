@@ -4,15 +4,19 @@
  * The bridge between Privy (proves wallet ownership) and OUR backend
  * (issues the JWT the Hono API trusts).
  *
- * Flow:
- * 1. Get a one-time nonce from the backend (2-minute expiry)
- * 2. Sign it with the Privy wallet — proves we own the address.
- *    Embedded wallets show a small Privy confirmation UI; external
- *    wallets (Phantom) pop their own signature prompt.
- * 3. Backend verifies the ed25519 signature — AND the Privy tokens sent
- *    alongside it, which say which PERSON this is rather than only which
- *    wallet — then resolves both to the one account they own and mints a
- *    JWT for it.
+ * Flow (popup-free path first, signature as fallback):
+ * 1. Present the Privy access + identity tokens to /api/auth/verify.
+ *    The server checks them against Privy's JWKS and, when the identity
+ *    token's verified linked wallets include the address, mints the JWT
+ *    with NO wallet interaction at all. This is the common case on every
+ *    returning device.
+ * 2. Only if the server answers `signature_required` (stale identity
+ *    token, Privy outage, server without PRIVY_APP_ID): get a one-time
+ *    nonce (2-minute expiry), sign it with the Privy wallet — embedded
+ *    wallets show a small Privy confirmation UI; external wallets
+ *    (Phantom) pop their own prompt — and send wallet+signature+nonce.
+ * 3. Either way the backend resolves wallet + identity to the one
+ *    account this person owns and mints a JWT for it.
  * 4. The JWT is stored and lib/api.ts attaches it as
  *    `Authorization: Bearer` on every request from then on.
  *
@@ -154,14 +158,45 @@ export function useBackendAuth() {
   const { signMessage, wallets, getPrivyTokens } = useAuth()
 
   async function doSignIn(options: SignInOptions = {}): Promise<string> {
-    // Only reachable if a caller runs sign-in before the auth chunk has
-    // landed. AccountSetup already waits for a wallet, which implies a loaded
-    // SDK, so this is a guard rather than an expected path.
-    if (!signMessage) throw new Error('Wallet not ready yet')
     const wallet = pickPrimaryWallet(wallets)
     if (!wallet) throw new Error('No wallet available')
 
     const address = wallet.address
+
+    // ── FIRST: sign in on the Privy session alone — no popup ──────────
+    // Privy already proved this person owns this wallet (SIWS at link
+    // time for external wallets; custody for embedded ones), and the
+    // identity token carries that attestation in a form the server
+    // verifies against Privy's JWKS. When that holds, asking the wallet
+    // to sign our nonce as well proves nothing new — and the signature
+    // prompt is the one step that regularly never appears (blocked
+    // embedded-wallet iframe, swallowed extension popup: the exact
+    // "your wallet never asked you to sign" failure). So the popup-free
+    // path goes first, and the signature exchange becomes the fallback
+    // rather than the toll gate.
+    //
+    // Tokens are fetched ONCE, up front, and reused by the fallback.
+    const privyTokens = await getPrivyTokens()
+    if (privyTokens.accessToken && privyTokens.identityToken) {
+      try {
+        const { token } = await authApi.verifyWithPrivy(address, privyTokens)
+        localStorage.setItem(AUTH_TOKEN_KEY, token)
+        return token
+      } catch (err) {
+        // Only a server-side "no" (401 signature_required; or a 400 from
+        // a server predating this path) falls through to the signature
+        // exchange. A network-level failure (status 0) dooms the
+        // fallback's own round trips just the same, so surface it now
+        // instead of asking the wallet to sign into a void.
+        if (!(err instanceof ApiError) || err.status === 0) throw err
+      }
+    }
+
+    // ── FALLBACK: the nonce + signature exchange ───────────────────────
+    // Only reachable if a caller runs sign-in before the auth chunk has
+    // landed. AccountSetup already waits for a wallet, which implies a loaded
+    // SDK, so this is a guard rather than an expected path.
+    if (!signMessage) throw new Error('Wallet not ready yet')
 
     // 1. One-time nonce from the backend
     const { nonce } = await authApi.getNonce(address)
@@ -186,7 +221,6 @@ export function useBackendAuth() {
     //    account they already own, if they own one.
     const { default: bs58 } = await import('bs58')
     const signature = bs58.encode(result.signature)
-    const privyTokens = await getPrivyTokens()
     const { token } = await authApi.verify(address, signature, nonce, privyTokens)
 
     // 4. Store it for authenticated API calls

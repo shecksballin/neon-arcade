@@ -216,6 +216,20 @@ export const authApi = {
     }),
 
   /**
+   * Sign in on the strength of the Privy session alone — no nonce, no
+   * wallet signature, no popup. The server verifies both tokens against
+   * Privy's JWKS and requires the identity token's verified linked
+   * wallets to include `wallet`; when it cannot vouch, it answers 401
+   * with code `signature_required` and the caller falls back to
+   * `verify` above. See useBackendAuth for the ordering.
+   */
+  verifyWithPrivy: (wallet: string, privyTokens: PrivyTokenPair) =>
+    api<SessionResponse>('/api/auth/verify', {
+      method: 'POST',
+      body: JSON.stringify({ wallet, ...privyTokenBody(privyTokens) }),
+    }),
+
+  /**
    * Sign in to an existing account with the PIN and the 6-digit code from
    * the authenticator app that scanned the setup QR — the way back in when
    * the wallet path lands on the wrong (or a brand-new) address.

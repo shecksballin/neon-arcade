@@ -4,19 +4,42 @@
  * Two ways into an account, both ending in one of OUR session JWTs. Every
  * protected route and socket trusts only that JWT from then on.
  *
- * 1. WALLET SIGN-IN — the everyday path. Privy owns the login UI and the
- *    wallets on the frontend (embedded wallets + Phantom etc.). The client
- *    PROVES it owns a wallet address by signing a one-time nonce, and we
- *    verify the ed25519 signature ourselves:
- *      a. GET  /api/auth/nonce?wallet=...          → { nonce }  (2-min expiry)
- *      b. client signs  "Sign in to Neon Arcade\nNonce: <nonce>"
- *      c. POST /api/auth/verify {wallet,signature,nonce,privyToken?}
- *                                                   → { token, account }
- *      d. GET  /api/auth/me  (Authorization: Bearer) → the authed user
+ * 1. WALLET SIGN-IN — the everyday path, in two flavours, tried in order:
  *
- *    Why a nonce at all? Without one, a captured signature could be
- *    replayed forever to mint fresh tokens. The nonce is single-use and
- *    expires in 2 minutes, so a signature is only good for one sign-in.
+ *    1a. PRIVY-SESSION SIGN-IN (no wallet popup). Every login in this app
+ *        goes through Privy, and Privy already proved wallet ownership at
+ *        link time (SIWS for external wallets; embedded wallets are
+ *        custodied per user). The client presents the Privy access +
+ *        identity tokens; we verify BOTH against Privy's public JWKS
+ *        (lib/privyIdentity.ts) and require the claimed wallet to appear
+ *        in the identity token's verified `linked_accounts`:
+ *          POST /api/auth/verify {wallet,privyToken,privyIdentityToken}
+ *                                                   → { token, account }
+ *        No nonce is needed: nothing is signed by the client, and the
+ *        Privy tokens are short-lived and audience-bound, so a captured
+ *        body dies with them. This is the same attestation the account
+ *        matcher below already trusts to MERGE accounts — trusting it to
+ *        sign in is not a new grant. What it removes is the wallet's
+ *        signature UI, the one step with no upper bound: on devices where
+ *        the embedded-wallet iframe never comes up, the prompt simply
+ *        never appeared and sign-in hung until the 60s client timeout.
+ *
+ *    1b. NONCE + SIGNATURE (fallback, and the pre-existing path). For
+ *        sessions the tokens cannot vouch for — a stale identity token
+ *        that does not yet list a just-created wallet, a Privy outage, or
+ *        this server running without PRIVY_APP_ID:
+ *          a. GET  /api/auth/nonce?wallet=...        → { nonce } (2-min expiry)
+ *          b. client signs  "Sign in to Neon Arcade\nNonce: <nonce>"
+ *          c. POST /api/auth/verify {wallet,signature,nonce,privyToken?}
+ *                                                    → { token, account }
+ *
+ *        Why a nonce here? Without one, a captured signature could be
+ *        replayed forever to mint fresh tokens. The nonce is single-use
+ *        and expires in 2 minutes, so a signature is only good for one
+ *        sign-in.
+ *
+ *    Either way:
+ *      d. GET  /api/auth/me  (Authorization: Bearer) → the authed user
  *
  * 2. PIN + AUTHENTICATOR — POST /api/auth/login {username,pin,code}.
  *    The credentials set up during account creation, used to reach an
@@ -190,14 +213,24 @@ const PrivyTokenSchema = z.string().min(20).max(8192).optional()
 
 const VerifySchema = z.object({
   wallet: WalletSchema,
-  // base58 of a 64-byte ed25519 signature (~86–88 chars)
-  signature: z.string().min(64).max(120).regex(BASE58),
-  nonce: z.string().uuid(),
+  // base58 of a 64-byte ed25519 signature (~86–88 chars). Optional as a
+  // PAIR with `nonce`: both present = the signature path, both absent =
+  // the Privy-session path. One without the other is a malformed client.
+  signature: z.string().min(64).max(120).regex(BASE58).optional(),
+  nonce: z.string().uuid().optional(),
   /** Privy access token — carries the stable Privy user id (DID). */
   privyToken: PrivyTokenSchema,
   /** Privy identity token — carries verified emails and linked wallets. */
   privyIdentityToken: PrivyTokenSchema,
 })
+
+/**
+ * The machine-readable "no" of the Privy-session path. The client treats
+ * exactly this code as "fall back to the signature exchange" — anything
+ * else (rate limit, malformed body, server misconfiguration) is a real
+ * error that a second popup would not fix.
+ */
+const SIGNATURE_REQUIRED = 'signature_required'
 
 /** Mint a session JWT for `wallet`. The ONLY place tokens are created. */
 async function mintSessionToken(wallet: string): Promise<string> {
@@ -227,6 +260,57 @@ auth.post('/verify', async (c) => {
     return c.json({ error: 'Too many requests — try again later' }, 429)
   }
 
+  // A signature without its nonce (or the reverse) is not a flavour of
+  // either path — it is a client bug, and guessing which path was meant
+  // would mask it.
+  if (!!signature !== !!nonce) {
+    return c.json({ error: 'signature and nonce must be sent together' }, 400)
+  }
+
+  // ── PATH 1a: PRIVY-SESSION SIGN-IN (no signature) ────────────────────
+  // Nothing was signed for us, so the burden of proof sits entirely on
+  // the Privy tokens: both must verify against Privy's JWKS, and the
+  // identity token's linked_accounts — Privy's own verified record of
+  // which wallets this person owns — must include the claimed address.
+  // The ACCESS token alone is never enough: it proves who is calling,
+  // not that they own `wallet`.
+  //
+  // Every rejection here uses SIGNATURE_REQUIRED, because every cause
+  // (no tokens, unverifiable tokens, stale linked_accounts, no
+  // PRIVY_APP_ID on this server) has the same remedy: prove the wallet
+  // the old way instead.
+  if (!signature || !nonce) {
+    let identity = null
+    try {
+      identity = await verifyPrivyIdentity(privyToken, privyIdentityToken)
+    } catch (err) {
+      console.warn('[auth] Privy identity check failed on token sign-in:', err)
+    }
+
+    if (!identity || !identity.wallets.includes(wallet)) {
+      return c.json(
+        {
+          error: 'This Privy session could not vouch for that wallet — sign with the wallet instead',
+          code: SIGNATURE_REQUIRED,
+        },
+        401
+      )
+    }
+
+    const account = await resolveSignIn(wallet, identity)
+    const token = await mintSessionToken(account.wallet)
+
+    return c.json({
+      token,
+      account: {
+        username: account.username,
+        totpEnabled: account.totpEnabled,
+        matchedExistingAccount: account.matchedExistingAccount,
+      },
+    })
+  }
+
+  // ── PATH 1b: NONCE + SIGNATURE ───────────────────────────────────────
   // Consume the nonce FIRST (single-use, whatever happens next). A
   // failed signature check must still burn it, or it could be
   // brute-forced with repeated attempts.
