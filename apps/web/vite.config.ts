@@ -33,6 +33,33 @@ function vendorChunk(id: string): string | undefined {
   const seg = tail.split('/');
   const pkg = seg[0].startsWith('@') ? `${seg[0]}/${seg[1]}` : seg[0];
 
+  /**
+   * SHARED MICRO-DEPENDENCIES — the subtlest trap in this file.
+   *
+   * `zustand` is a dependency of BOTH @react-three/fiber and
+   * @privy-io/react-auth. Left unbucketed, Rollup cannot put one module in
+   * two manual chunks, so it folded zustand into `wallet` and made the
+   * `three` chunk STATICALLY IMPORT `wallet` for one symbol
+   * (`import{c as H1}from"./wallet-BVAn_Eak.js"` — zustand's store factory).
+   *
+   * The consequence was invisible in the source and enormous in the network
+   * tab: the landing page's decorative cursor blob pulled in three.js, which
+   * dragged the entire 1.26 MB gzip wallet SDK (and solana behind it) with
+   * it, on every cold load. No amount of deferring the Privy provider could
+   * have fixed that — the edge was in the chunk graph, not the auth code.
+   *
+   * Giving these shared leaves their own chunk costs one ~1 kB request and
+   * breaks the edge: three and wallet now both import `shared`, and neither
+   * imports the other. If you ever add a package used by two different
+   * vendor buckets, it belongs here too — otherwise it silently welds those
+   * buckets together.
+   *
+   * (`use-sync-external-store` is a shared leaf too, but it stays in the
+   * `react` bucket below on purpose — it reaches into React's internals, so
+   * it must ship in the same chunk as the renderer.)
+   */
+  if (pkg === 'zustand') return 'shared';
+
   // React must be ONE chunk with everything that shares its internals, or two
   // copies of the renderer end up loaded.
   if (/^(react|react-dom|scheduler|use-sync-external-store)$/.test(pkg)) return 'react';

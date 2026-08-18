@@ -799,7 +799,9 @@ function truncateAddress(address: string): string {
  *   RPC failed           → an em dash + the hook's error, with a retry
  */
 function WalletFace() {
-  const { address, ready, authenticated } = useWalletAddress()
+  // `loading` here is the WALLET SDK arriving; `loading` from useSolBalance is
+  // the balance request. Two different waits, so the first is renamed.
+  const { address, ready, authenticated, loading: authLoading } = useWalletAddress()
   const { balance, loading, error, refresh } = useSolBalance(address)
   const { currency, fromSol, formatSolAs, isNative } = useCurrency()
   const [copied, setCopied] = useState(false)
@@ -815,8 +817,13 @@ function WalletFace() {
     }
   }
 
-  if (!ready) return <WalletNote text="Connecting…" />
-  if (!authenticated) return <WalletNote text="Sign in to see your wallet" />
+  // "Connecting…" ONLY when something really is on its way. The wallet SDK is
+  // no longer downloaded on every page load, so for a signed-out visitor
+  // `ready` stays false indefinitely — this branch used to spin for ever and
+  // never tell them what to do. `loading` is what distinguishes a session
+  // being restored from nothing having been asked for.
+  if (!ready && authLoading) return <WalletNote text="Connecting…" />
+  if (!ready || !authenticated) return <WalletNote text="Sign in to see your wallet" />
   if (!address) return <WalletNote text="No wallet connected yet" />
 
   // The balance is READ in SOL and only DISPLAYED in the chosen currency.

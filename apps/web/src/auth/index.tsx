@@ -47,11 +47,22 @@
  *
  * WHEN THE CHUNK LOADS
  * --------------------
- * On idle right after first paint, so a returning user's session is restored
- * almost immediately and the deferral is invisible — or instantly on the first
- * `login()` if the user beats the idle callback to it. `login()` before the
- * SDK is up is not dropped: it is remembered and replayed by the bridge the
- * moment Privy reports ready (see `pendingLogin`).
+ * It depends on whether this browser has a session to restore — see
+ * `hasPriorSession` below, which is where the policy actually lives:
+ *
+ *   RETURNING USER (a stored session)   on idle right after first paint, so
+ *                                       their signed-in state appears almost
+ *                                       immediately and the deferral is
+ *                                       invisible.
+ *   FIRST-TIME VISITOR (no session)     NOT AT ALL until they show intent —
+ *                                       `prefetchAuth()` on hovering Connect,
+ *                                       or `login()` on clicking it.
+ *
+ * The old behaviour was "on idle, for everyone", which meant every visitor
+ * downloaded 1.26 MB gzip of wallet SDK to look at a menu.
+ *
+ * `login()` before the SDK is up is never dropped: it is remembered and
+ * replayed by the bridge the moment Privy reports ready (see `pendingLogin`).
  */
 
 import React from "react";
@@ -63,6 +74,19 @@ import type { ConnectedStandardSolanaWallet } from "@privy-io/react-auth/solana"
 export interface AuthState {
   /** The Privy chunk has mounted and its hooks are reporting. */
   loaded: boolean;
+  /**
+   * The wallet chunk is ON ITS WAY but not here yet.
+   *
+   * Needed because "not loaded" stopped meaning "loading". The SDK is no
+   * longer fetched on every page load, so `loaded: false` now covers two very
+   * different situations, and UI that cannot tell them apart gets it wrong:
+   *   loading: true   → a session is being restored / a sign-in was asked for
+   *                     → "Connecting…" is honest
+   *   loading: false  → nobody has asked for the wallet and nothing is coming
+   *                     → say "Sign in", not "Connecting…", which would spin
+   *                       for ever.
+   */
+  loading: boolean;
   /** Privy's own `ready` — false until it has restored any prior session. */
   ready: boolean;
   authenticated: boolean;
@@ -125,6 +149,111 @@ function requestLogin() {
   startLoad?.();
 }
 
+/**
+ * Warm the wallet chunk on INTENT, without mounting anything.
+ *
+ * Call it from `onPointerEnter` / `onFocus` of any control that leads to
+ * sign-in. By the time the click lands the module is already in the module
+ * map, so `login()` opens the modal with no download to wait for — even
+ * though a visitor who never goes near those controls downloaded nothing.
+ *
+ * DOWNLOAD ONLY, DELIBERATELY. It does not call `startLoad()`, because that
+ * would render `<PrivyRuntime>` and initialise the SDK — which makes a real
+ * request to auth.privy.io. Hovering a button should not talk to anyone's
+ * server; it should only fetch a file. The mount still happens on click.
+ *
+ * Deduped, so hovering ten times starts one download, and failures are
+ * swallowed: a prefetch that does not arrive is not an error, it just means
+ * the click pays for the fetch as it would have anyway.
+ */
+let prefetching: Promise<unknown> | null = null;
+export function prefetchAuth() {
+  prefetching ??= loadPrivyRuntime().catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// Should we load the wallet SDK without being asked?
+// ---------------------------------------------------------------------------
+/**
+ * The storage key our own backend session token lives under. Duplicated
+ * rather than imported: hooks/useBackendAuth.ts imports `useAuth` from this
+ * module, so importing its constant back would be a cycle. lib/api.ts reads
+ * the same literal for the Authorization header — if it ever changes, it
+ * changes in three places.
+ */
+const BACKEND_TOKEN_KEY = 'token';
+
+/**
+ * Is there any evidence this browser has signed in before?
+ *
+ * THIS IS THE WHOLE POLICY. The wallet SDK is 1.26 MB gzipped — by a wide
+ * margin the heaviest thing the app can download — and a first-time visitor
+ * looking at the landing page needs exactly none of it. It used to load on
+ * idle for EVERYONE, which put that 1.26 MB on the critical path of every
+ * cold load in exchange for a faster signed-in badge for the minority who
+ * had a session to restore.
+ *
+ * So: restore eagerly for people who have something to restore, and let
+ * everyone else pay nothing until they show intent (clicking Connect, or
+ * merely hovering it — see prefetchAuth).
+ *
+ * The signals, cheapest first, all readable without touching the SDK:
+ *   - our own backend JWT, written after a completed arcade sign-in;
+ *   - Privy's persisted session keys, written when Privy has a session of
+ *     its own to restore. `privy:caid` is deliberately NOT one of them: it
+ *     is a device id Privy writes for anonymous visitors too, so treating it
+ *     as evidence would re-load the SDK for everybody and undo all of this.
+ *
+ * Wrapped in try/catch because localStorage throws outright in some privacy
+ * modes and inside partitioned third-party contexts. Failing closed (no
+ * auto-load) is the right default: the user can still click Connect.
+ */
+function hasPriorSession(): boolean {
+  try {
+    /**
+     * THE RETURN LEG OF A REDIRECT LOGIN — check this FIRST.
+     *
+     * "Google" is one of the configured login methods, and Privy's OAuth is a
+     * full-page navigation, not a popup: the browser leaves the arcade, comes
+     * back to `/?privy_oauth_code=…&privy_oauth_state=…`, and the SDK
+     * completes the sign-in by exchanging that code on init.
+     *
+     * At that instant the visitor has NO session yet — that is the whole
+     * point of the round trip — so every token check below is false. Without
+     * this branch the SDK would never load, the code would never be
+     * exchanged, and anyone signing in with Google would be dumped back on a
+     * signed-out landing page with a stale code in the URL. This is a load
+     * where the wallet chunk is mandatory, not optional.
+     *
+     * Param and key names read from @privy-io/react-auth 3.35.2.
+     */
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('privy_oauth_code') || params.has('privy_oauth_state')) return true;
+    // The other half of the same flow: Privy stashes the PKCE verifier and
+    // state before navigating away, so their presence means a login is
+    // mid-flight even if the query string has already been cleaned up.
+    if (
+      window.localStorage.getItem('privy:code_verifier') ||
+      window.localStorage.getItem('privy:state_code')
+    ) {
+      return true;
+    }
+
+    if (window.localStorage.getItem(BACKEND_TOKEN_KEY)) return true;
+    // The exact keys @privy-io/react-auth 3.x writes for a live session,
+    // read out of the installed package rather than assumed. `privy:caid` is
+    // deliberately NOT among them: that one is a device id Privy writes for
+    // anonymous visitors too, so treating it as evidence would auto-load the
+    // SDK for everybody and undo this entire change.
+    for (const key of ['privy:token', 'privy:refresh_token', 'privy:id_token']) {
+      if (window.localStorage.getItem(key)) return true;
+    }
+  } catch {
+    /* storage unavailable — treat as "no session", i.e. do not auto-load */
+  }
+  return false;
+}
+
 /** Bridge-only: take the pending login intent, if there is one. */
 function consumePendingLogin(): boolean {
   const had = pendingLogin;
@@ -139,6 +268,7 @@ function markPendingLogin() {
 
 const UNLOADED: AuthState = {
   loaded: false,
+  loading: false,
   ready: false,
   authenticated: false,
   wallets: [],
@@ -148,6 +278,14 @@ const UNLOADED: AuthState = {
   exportWallet: null,
   getPrivyTokens: async () => NO_PRIVY_TOKENS,
 };
+
+/**
+ * Same as UNLOADED, but the chunk is in flight. A separate module constant
+ * rather than a computed object so the context value stays referentially
+ * stable for the whole pre-load window — consumers must not re-render just
+ * because the loading flag was recreated.
+ */
+const UNLOADED_LOADING: AuthState = { ...UNLOADED, loading: true };
 
 const AuthCtx = React.createContext<AuthState>(UNLOADED);
 
@@ -253,10 +391,27 @@ export function DeferredAuthProvider({ children }: { children: React.ReactNode }
   React.useEffect(() => {
     startLoad = () => setShouldLoad(true);
 
-    // Idle, not immediate: let the landing page paint and settle first. The
-    // 2s timeout is the ceiling — on a busy main thread requestIdleCallback
-    // can otherwise wait a long time, and a returning user should not see
-    // their signed-in state appear late.
+    /**
+     * ONLY returning users pay for the SDK up front.
+     *
+     * A visitor with no stored session gets nothing here: the chunk is
+     * fetched when they hover or click Connect (requestLogin / prefetchAuth).
+     * That is the difference between a 1.26 MB cold load and a 0 MB one, and
+     * it costs a first-time visitor nothing they can perceive — they were
+     * never going to be signed in anyway.
+     *
+     * For someone WITH a session the old behaviour is exactly preserved:
+     * load on idle so their signed-in state appears almost immediately. The
+     * 2s timeout is the ceiling — on a busy main thread requestIdleCallback
+     * can otherwise wait a long time, and a returning user should not see
+     * their signed-in state appear late.
+     */
+    if (!hasPriorSession()) {
+      return () => {
+        startLoad = null;
+      };
+    }
+
     const w = window as typeof window & {
       requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
       cancelIdleCallback?: (id: number) => void;
@@ -276,11 +431,12 @@ export function DeferredAuthProvider({ children }: { children: React.ReactNode }
     };
   }, []);
 
-  // UNLOADED itself, not a copy: its `login` is already `requestLogin` (which
-  // queues the intent and kicks off the load), and returning the shared
-  // constant keeps the context value referentially stable for the whole
-  // pre-load window, so consumers don't re-render for nothing.
-  const value = state.loaded ? state : UNLOADED;
+  // A shared constant, not a copy: its `login` is already `requestLogin`
+  // (which queues the intent and kicks off the load), and returning the same
+  // object keeps the context value referentially stable for the whole
+  // pre-load window, so consumers don't re-render for nothing. Which of the
+  // two it is tells consumers whether anything is actually coming.
+  const value = state.loaded ? state : shouldLoad ? UNLOADED_LOADING : UNLOADED;
 
   return (
     <AuthCtx.Provider value={value}>
