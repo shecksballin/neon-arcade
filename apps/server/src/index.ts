@@ -23,12 +23,29 @@ const allowedOrigins = new Set(
 const LOOPBACK_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/
 
 /**
+ * Preview deployments of THIS project. Vercel mints a fresh random
+ * subdomain for every build (neon-arcade-f1d9q27t5-…, -kmh80bcsy-…), so
+ * naming them in CLIENT_ORIGIN one at a time is a treadmill — a tester on
+ * a per-deployment URL got "Connection trouble" on every API call while
+ * the exact same build worked on the branch alias. The pattern is pinned
+ * to the account + project prefix, so ONLY this project's own deployments
+ * match — this is not a wildcard over vercel.app, which would readmit the
+ * "never *" rule this file exists to enforce.
+ */
+const PREVIEW_ORIGIN =
+  /^https:\/\/neon-arcade-[a-z0-9-]+-shecksballins-projects\.vercel\.app$/
+
+/**
  * THE origin predicate — the HTTP API's CORS callback and the socket
  * engine's handshake gate both use this one function, so the allowlist
  * can never drift between the two transports.
  */
 export function isAllowedOrigin(origin: string): boolean {
-  return allowedOrigins.has(origin) || LOOPBACK_ORIGIN.test(origin)
+  return (
+    allowedOrigins.has(origin) ||
+    LOOPBACK_ORIGIN.test(origin) ||
+    PREVIEW_ORIGIN.test(origin)
+  )
 }
 
 app.use(
@@ -80,7 +97,7 @@ const io = new Server()
 const engine = new BunEngine({
   path: '/socket.io/',
   cors: {
-    origin: [...allowedOrigins, LOOPBACK_ORIGIN],
+    origin: [...allowedOrigins, LOOPBACK_ORIGIN, PREVIEW_ORIGIN],
     credentials: true,
   },
   // Belt and braces: CORS headers only steer BROWSERS, so also refuse any
