@@ -256,15 +256,25 @@ auth.post('/verify', async (c) => {
   }
   const { wallet, signature, nonce, privyToken, privyIdentityToken } = parsed.data
 
-  if (rateLimited(`verify:${wallet}`)) {
-    return c.json({ error: 'Too many requests — try again later' }, 429)
-  }
-
   // A signature without its nonce (or the reverse) is not a flavour of
   // either path — it is a client bug, and guessing which path was meant
-  // would mask it.
+  // would mask it. Checked before rate limiting: rejecting a malformed
+  // body costs nothing, and it must not spend the caller's budget.
   if (!!signature !== !!nonce) {
     return c.json({ error: 'signature and nonce must be sent together' }, 400)
+  }
+
+  // Each path gets its OWN budget (same window, same cap, different key).
+  // With a shared key, every fallback sign-in — token attempt answered
+  // signature_required, then the signature exchange — cost two slots, so
+  // the retry budget a struggling player actually experiences was halved;
+  // and against a server without PRIVY_APP_ID (where the token path can
+  // never succeed) it stayed halved forever. Split keys keep each path
+  // bounded at exactly the pre-existing rate while a fallback costs one
+  // slot from each.
+  const rateKey = signature ? `verify:${wallet}` : `verify:tokens:${wallet}`
+  if (rateLimited(rateKey)) {
+    return c.json({ error: 'Too many requests — try again later' }, 429)
   }
 
   // ── PATH 1a: PRIVY-SESSION SIGN-IN (no signature) ────────────────────

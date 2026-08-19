@@ -44,7 +44,7 @@ import { settleRanked1v1 } from '../../services/rankService'
 import { publicRating, type PublicRating } from '../../services/eloService'
 // Stats are written from the same endGame() funnel, under the same
 // `eloSettled` guard, so a rally can only ever be recorded once.
-import { recordResults } from '../../services/statsService'
+import { recordAndEmitProgression } from './progression'
 // Shared, idempotent, never-silent matchmaking queue.
 import {
   joinQueue,
@@ -361,31 +361,41 @@ async function endGame(
       newRatings = { p1: publicRating(settled.a), p2: publicRating(settled.b) }
     }
 
-    // STATS — one row per player. Volley has no kills/deaths; `score` is the
-    // player's own rally score, and `mode` is the regulation (classic /
-    // bestof3 / sudden) so per-mode win rates stay separable. The opponent
-    // field is the registered username only (never a wallet).
+    // STATS + PROGRESSION — one row per player. Volley has no kills/deaths;
+    // `score` is the player's own rally score, and `mode` is the regulation
+    // (classic / bestof3 / sudden) so per-mode win rates stay separable. The
+    // opponent field is the registered username only (never a wallet). Same
+    // stats write as before, but each player's XP award and own settle
+    // result now ride out on `match:progression` (games/progression.ts).
     const durationMs = Date.now() - game.startedAt
-    void recordResults([
+    void recordAndEmitProgression(io, 'volley', [
       {
-        matchId: game.gameId, // queue matchId (uuid); non-uuids are dropped
-        wallet: game.p1.wallet,
-        gameKey: 'volley',
-        mode: game.matchMode,
-        result: winnerSide === 'p1' ? 'win' : 'loss',
-        score: game.score.p1,
-        opponentUsername: game.p2.name,
-        durationMs,
+        socketId: game.p1.socketId,
+        ranked: settled?.a ?? null,
+        input: {
+          matchId: game.gameId, // queue matchId (uuid); non-uuids are dropped
+          wallet: game.p1.wallet,
+          gameKey: 'volley',
+          mode: game.matchMode,
+          result: winnerSide === 'p1' ? 'win' : 'loss',
+          score: game.score.p1,
+          opponentUsername: game.p2.name,
+          durationMs,
+        },
       },
       {
-        matchId: game.gameId,
-        wallet: game.p2.wallet,
-        gameKey: 'volley',
-        mode: game.matchMode,
-        result: winnerSide === 'p2' ? 'win' : 'loss',
-        score: game.score.p2,
-        opponentUsername: game.p1.name,
-        durationMs,
+        socketId: game.p2.socketId,
+        ranked: settled?.b ?? null,
+        input: {
+          matchId: game.gameId,
+          wallet: game.p2.wallet,
+          gameKey: 'volley',
+          mode: game.matchMode,
+          result: winnerSide === 'p2' ? 'win' : 'loss',
+          score: game.score.p2,
+          opponentUsername: game.p1.name,
+          durationMs,
+        },
       },
     ])
   }

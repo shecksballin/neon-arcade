@@ -9,6 +9,9 @@ import { SearchingForMatch } from '../common/SearchingForMatch';
 import { Question } from './TriviaQuestions';
 import { Socket } from 'socket.io-client';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
+// The per-player "+XP / rank change" event, chained after the results screen.
+import { PostGameProgression } from '../common/PostGameProgression';
+import { useMatchProgression } from '../../hooks/useGameSocket';
 import { useNeonBucks } from '../../NeonBucksStore';
 
 interface TriviaGameProps {
@@ -36,6 +39,10 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
   const [selectedOption, setSelectedOption] = useState<number | null>(null);
   const [isCorrect, setIsCorrect] = useState<boolean | null>(null);
   const [winner, setWinner] = useState<string | null>(null);
+  // One-line story under the results verdict (forfeit wins).
+  const [endNote, setEndNote] = useState<string | null>(null);
+  // Per-player "+XP / rank change" from the server, chained post-results.
+  const { progression, clear: clearProgression } = useMatchProgression();
   const [opponentScore, setOpponentScore] = useState(0);
   const [players, setPlayers] = useState<any[]>([]);
   const [gameId, setGameId] = useState<string | null>(null);
@@ -291,6 +298,10 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
         setGameState('ended');
         setWinner(data.winner);
         setPlayers(data.results);
+        // Forfeit ending: the server already awarded the win — say so.
+        if (data.reason === 'opponent_left') {
+          setEndNote('Your opponent left the game — you win by forfeit');
+        }
       };
 
       const onGameAuthError = (data: any) => {
@@ -564,6 +575,7 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
               gameMode={mode === 'practice' ? 'Self-Wager' : 'Online'}
               // Online stakes nothing — hide the Wagered/Payout rows.
               moneyless={mode !== 'practice'}
+              note={mode === 'multiplayer' ? endNote : null}
               questionsRight={correctCount /* multiplayer counts arrive via triviaAnswerResult */}
               onRematch={() => {
                    if (mode === 'practice') {
@@ -583,6 +595,9 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
             />
           )}
         </AnimatePresence>
+
+        {/* Level/rank progression, chained after the results screen. */}
+        <PostGameProgression progression={progression} onDone={clearProgression} />
       </div>
 
       {/* Floating Controls */}

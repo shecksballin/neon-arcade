@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import type {
   KillRewardPayload,
@@ -167,6 +167,87 @@ export function useSocketConnection(token?: string | null) {
   }, [token]);
 
   return { socket: getSocket(), isConnected };
+}
+
+// ---------------------------------------------------------------------------
+// MATCH PROGRESSION — the per-player "+XP / rank change" event
+// ---------------------------------------------------------------------------
+/**
+ * What the server sends each player's OWN socket after a match settles
+ * (`match:progression`, emitted by apps/server/src/socket/games/
+ * progression.ts). The shapes mirror the server services:
+ *   xp   → xpService's XpAward (amount, before/after, leveledUp, level info)
+ *   rank → eloService's PublicRating (rp/rpChange, rankBefore/rank, promoted)
+ * Typed structurally here — only the fields the progression UI reads — so
+ * the client compiles without importing server code.
+ */
+export interface MatchProgressionXp {
+  amount: number;
+  xpBefore: number;
+  xpAfter: number;
+  levelBefore: number;
+  levelAfter: number;
+  leveledUp: boolean;
+  level: {
+    level: number;
+    progressPct: number;
+    xpToNextLevel: number;
+    isMaxLevel: boolean;
+    band: string;
+    color: string;
+    label: string;
+  };
+}
+
+export interface MatchProgressionRank {
+  rp: number;
+  rpChange: number;
+  rpBefore: number;
+  outcome: 'win' | 'loss' | 'draw';
+  promoted: boolean;
+  demoted: boolean;
+  rankBefore: { label: string; color: string; gradient: string; progressPct: number };
+  rank: { label: string; color: string; gradient: string; progressPct: number };
+}
+
+export interface MatchProgression {
+  gameKey: string;
+  xp: MatchProgressionXp | null;
+  rank: MatchProgressionRank | null;
+}
+
+/**
+ * Capture the latest `match:progression` payload while a game screen is
+ * mounted. The event lands a beat AFTER the game's own end event (the
+ * server fires it from the settle path), which is exactly when the results
+ * screen is up and the progression overlays want to run.
+ *
+ * `clear()` resets for the next match — call it when the overlays finish
+ * or when a rematch starts, or the previous match's numbers would replay.
+ */
+export function useMatchProgression(): {
+  progression: MatchProgression | null;
+  clear: () => void;
+} {
+  const [progression, setProgression] = useState<MatchProgression | null>(null);
+
+  useEffect(() => {
+    const socket = getSocket();
+    const onProgression = (payload: MatchProgression) => {
+      // Minimal shape check — a malformed payload must not crash a game.
+      if (payload && typeof payload === 'object') setProgression(payload);
+    };
+    socket.on('match:progression', onProgression);
+    return () => {
+      socket.off('match:progression', onProgression);
+    };
+  }, []);
+
+  // Stable identity: `clear` sits in reset-path useCallbacks (rematch
+  // handlers) — a fresh closure every render would churn their deps.
+  const clear = useCallback(() => setProgression(null), []);
+
+  return { progression, clear };
 }
 
 /**

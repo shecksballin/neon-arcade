@@ -72,12 +72,14 @@ const VolleyGame = ({ onExit, profile, onGameStatusChange }: VolleyGameProps) =>
       setGameMode('multiplayer');
       setGameState('playing');
     };
-    const onOpponentDisconnected = () => {
-      if (gameState === 'playing') {
-        alert('Opponent disconnected');
-        setGameState('lobby');
-      }
-    };
+    // A mid-match disconnect is handled ENTIRELY by the server's
+    // `volleyEnded { reason: 'disconnect' }` — PingPongGame renders the
+    // forfeit win on its results screen. This listener only exists for the
+    // legacy event name: it must NOT blocking-alert() and dump the player to
+    // the lobby past the results screen (and on the shared socket, chess
+    // emits the same event name — a volley player must never eat a chess
+    // game's alert).
+    const onOpponentDisconnected = () => {};
     const onConnectError = (err: Error) => {
       // Auth rejection while queueing would leave us stuck on the radar
       // screen forever — bail back to the lobby.

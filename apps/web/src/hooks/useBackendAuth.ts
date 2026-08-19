@@ -174,8 +174,6 @@ export function useBackendAuth() {
     // "your wallet never asked you to sign" failure). So the popup-free
     // path goes first, and the signature exchange becomes the fallback
     // rather than the toll gate.
-    //
-    // Tokens are fetched ONCE, up front, and reused by the fallback.
     const privyTokens = await getPrivyTokens()
     if (privyTokens.accessToken && privyTokens.identityToken) {
       try {
@@ -183,19 +181,28 @@ export function useBackendAuth() {
         localStorage.setItem(AUTH_TOKEN_KEY, token)
         return token
       } catch (err) {
-        // Only a server-side "no" (401 signature_required; or a 400 from
-        // a server predating this path) falls through to the signature
-        // exchange. A network-level failure (status 0) dooms the
-        // fallback's own round trips just the same, so surface it now
-        // instead of asking the wallet to sign into a void.
-        if (!(err instanceof ApiError) || err.status === 0) throw err
+        // Fall through to the signature exchange ONLY when the server
+        // said "prove it the old way": a 401 carrying the
+        // signature_required code, or a 400 from a server that predates
+        // the token path (its schema rejects the signature-less body).
+        // Everything else — network failure, rate limit, a 503 from a
+        // misconfigured server — would doom the fallback's own round
+        // trips just the same, so asking the wallet for a signature
+        // first would burn a popup (and the user's trust in popups) on
+        // a request that cannot succeed. Surface the real error now.
+        const shouldFallBack =
+          err instanceof ApiError &&
+          ((err.status === 401 && err.code === 'signature_required') ||
+            err.status === 400)
+        if (!shouldFallBack) throw err
       }
     }
 
     // ── FALLBACK: the nonce + signature exchange ───────────────────────
-    // Only reachable if a caller runs sign-in before the auth chunk has
-    // landed. AccountSetup already waits for a wallet, which implies a loaded
-    // SDK, so this is a guard rather than an expected path.
+    // The guard is for the one unexpected caller that runs sign-in before
+    // the auth chunk has landed. AccountSetup already waits for a wallet,
+    // which implies a loaded SDK, so in practice signMessage is set by the
+    // time anything reaches this line.
     if (!signMessage) throw new Error('Wallet not ready yet')
 
     // 1. One-time nonce from the backend
@@ -219,9 +226,19 @@ export function useBackendAuth() {
     // 3. Backend verifies the signature — plus Privy's own tokens, which
     //    tell it which PERSON this is — and mints our session JWT for the
     //    account they already own, if they own one.
+    //
+    //    The tokens are fetched AGAIN here, not reused from the attempt
+    //    above: the signature wait is up to 60 seconds of a human finding
+    //    a popup, easily long enough for a short-lived access token to
+    //    expire. Sending a stale one would not fail the sign-in — the
+    //    server quietly degrades to wallet-only matching — which is worse
+    //    than failing: it is exactly the duplicate-account path this
+    //    whole mechanism exists to close. getAccessToken() refreshes
+    //    internally, so the re-fetch is cheap.
     const { default: bs58 } = await import('bs58')
     const signature = bs58.encode(result.signature)
-    const { token } = await authApi.verify(address, signature, nonce, privyTokens)
+    const freshTokens = await getPrivyTokens()
+    const { token } = await authApi.verify(address, signature, nonce, freshTokens)
 
     // 4. Store it for authenticated API calls
     localStorage.setItem(AUTH_TOKEN_KEY, token)

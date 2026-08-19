@@ -16,6 +16,7 @@
 // runs the exact zone a practice ECLIPSE·SLAYER run runs. That table lives in
 // CellsDifficultySelector.tsx ONCE — this file only translates.
 import React, { useMemo, useState, useRef } from "react";
+import { LobbyLevelStrip } from '../common/LobbyLevelStrip';
 import { Cpu, Globe, Swords } from 'lucide-react';
 import CellsDifficultySelector, {
   CELLS_DEFAULT_ONLINE_DIFFICULTY,
@@ -224,6 +225,9 @@ const CellsLobby = ({
             NEON CELLS
           </h1>
         </div>
+        
+        {/* Level progression — compact strip under the title. */}
+        <LobbyLevelStrip />
 
                 <div className="w-full">
           {view === 'cards' && (

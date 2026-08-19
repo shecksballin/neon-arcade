@@ -90,6 +90,27 @@ const SERVER_END_REASONS: Record<string, string> = {
   conflict:     'Conflicting reports — game voided',
 };
 
+/**
+ * Winner-aware caption. The bare map above is what BOTH clients receive —
+ * but "Opponent resigned" is only true on the survivor's screen (the
+ * resigner gets the same event). The forfeit story is told only to the
+ * player it happened TO; everyone else keeps the neutral caption.
+ */
+function serverEndCaption(
+  reason: string,
+  winner: 'white' | 'black' | 'draw',
+  playerColor: 'white' | 'black'
+): string {
+  const iWon = winner !== 'draw' && winner === playerColor;
+  if (reason === 'disconnect' && iWon) {
+    return 'Opponent left the game — you win by forfeit';
+  }
+  if (reason === 'resign') {
+    return iWon ? 'Opponent resigned — you win' : 'You resigned';
+  }
+  return SERVER_END_REASONS[reason] ?? reason;
+}
+
 export default function OnlineGame({
   playerColor      = 'white',
   onSendMove,
@@ -172,7 +193,7 @@ export default function OnlineGame({
     ? {
         status:  serverGameEnd.winner === 'draw' ? 'draw' : 'checkmate',
         winner:  serverGameEnd.winner === 'draw' ? null : serverGameEnd.winner,
-        message: SERVER_END_REASONS[serverGameEnd.reason] ?? serverGameEnd.reason,
+        message: serverEndCaption(serverGameEnd.reason, serverGameEnd.winner, playerColor),
       }
     : gameResult;
 

@@ -99,6 +99,18 @@ let cachedAt = 0
 /** One in-flight fetch shared by concurrent sign-ins. */
 let keysInFlight: Promise<JsonWebKeyWithKid[]> | null = null
 
+/**
+ * Floor between FORCED refetches (the `kid`-miss path). The tokens-only
+ * sign-in made this function reachable without any prior proof, so a
+ * spray of garbage tokens with made-up `kid`s must not become a lever
+ * for hammering Privy's JWKS endpoint one fetch per request. Inside the
+ * cooldown the stale key set is the answer — an unknown `kid` then just
+ * fails verification, which every caller already treats as "no
+ * identity". A real key rotation still lands within one cooldown.
+ */
+const FORCED_REFETCH_COOLDOWN_MS = 30 * 1000
+let lastForcedFetchAt = 0
+
 function jwksUri(appId: string): string {
   return `https://auth.privy.io/api/v1/apps/${appId}/jwks.json`
 }
@@ -128,6 +140,16 @@ async function fetchKeys(appId: string): Promise<JsonWebKeyWithKid[]> {
 async function getKeys(appId: string, force = false): Promise<JsonWebKeyWithKid[]> {
   const fresh = cachedKeys && Date.now() - cachedAt < JWKS_TTL_MS
   if (!force && fresh) return cachedKeys!
+
+  // A forced refetch inside the cooldown answers from the cache it was
+  // trying to bypass (see FORCED_REFETCH_COOLDOWN_MS). Only when there
+  // is a cache to answer from — the very first fetch must always run.
+  if (force && cachedKeys) {
+    if (Date.now() - lastForcedFetchAt < FORCED_REFETCH_COOLDOWN_MS) {
+      return cachedKeys
+    }
+    lastForcedFetchAt = Date.now()
+  }
 
   // Collapse a thundering herd of sign-ins onto one fetch.
   if (!keysInFlight) {

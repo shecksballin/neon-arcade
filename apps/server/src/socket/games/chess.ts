@@ -45,7 +45,7 @@ import { settleRanked1v1 } from '../../services/rankService'
 import { publicRating, type PublicRating } from '../../services/eloService'
 // Stats live next to the rating settle: the same exactly-once guard covers
 // both, so a rating change and a match_results row can never disagree.
-import { recordResults } from '../../services/statsService'
+import { recordAndEmitProgression } from './progression'
 // Shared matchmaking queue — idempotent and NEVER silent (socket/queue.ts).
 // Chess used to run its own array-based queue whose "one slot per wallet,
 // replace" path returned without emitting anything, so a second `findGame`
@@ -284,33 +284,43 @@ async function endGame(
       }
     }
 
-    // STATS — one row per player, written under the SAME eloSettled guard so
-    // a game can never be double-recorded (and the void path below, which
-    // deliberately skips settlement, records nothing either: a conflicted
-    // result is not a result).
+    // STATS + PROGRESSION — one row per player, written under the SAME
+    // eloSettled guard so a game can never be double-recorded (and the void
+    // path below, which deliberately skips settlement, records nothing
+    // either: a conflicted result is not a result).
     //
     // Chess has no kills/deaths and no score; opponentUsername is the
     // registered handshake username, which is the only public identifier
-    // (never a wallet). Fire-and-forget: recordResults never throws.
+    // (never a wallet). Fire-and-forget: the same stats write recordResults
+    // performed, except each player's XP award is kept and delivered to
+    // their own socket as `match:progression` (see games/progression.ts).
     const durationMs = Date.now() - game.startedAt
-    void recordResults([
+    void recordAndEmitProgression(io, 'chess', [
       {
-        matchId: game.gameId, // queue matchId is a uuid; non-uuids are dropped
-        wallet: game.white.wallet,
-        gameKey: 'chess',
-        mode: '1v1',
-        result: winner === 'white' ? 'win' : winner === 'black' ? 'loss' : 'draw',
-        opponentUsername: game.black.name,
-        durationMs,
+        socketId: game.white.socketId,
+        ranked: settled?.a ?? null,
+        input: {
+          matchId: game.gameId, // queue matchId is a uuid; non-uuids are dropped
+          wallet: game.white.wallet,
+          gameKey: 'chess',
+          mode: '1v1',
+          result: winner === 'white' ? 'win' : winner === 'black' ? 'loss' : 'draw',
+          opponentUsername: game.black.name,
+          durationMs,
+        },
       },
       {
-        matchId: game.gameId,
-        wallet: game.black.wallet,
-        gameKey: 'chess',
-        mode: '1v1',
-        result: winner === 'black' ? 'win' : winner === 'white' ? 'loss' : 'draw',
-        opponentUsername: game.white.name,
-        durationMs,
+        socketId: game.black.socketId,
+        ranked: settled?.b ?? null,
+        input: {
+          matchId: game.gameId,
+          wallet: game.black.wallet,
+          gameKey: 'chess',
+          mode: '1v1',
+          result: winner === 'black' ? 'win' : winner === 'white' ? 'loss' : 'draw',
+          opponentUsername: game.white.name,
+          durationMs,
+        },
       },
     ])
   }

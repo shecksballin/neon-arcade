@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Globe, Cpu, LogOut, Users, Trophy, TrendingUp, Settings, Award, MessageSquare, History } from 'lucide-react';
+import { Globe, Cpu, LogOut } from 'lucide-react';
 import { ParticleCard } from '../glass/MagicGameTile';
+// The real arcade menu column (rank card, drawer deep-links, live friends) —
+// replaces the old static ChessNavSidebar mock-up.
+import { GameNavSidebar } from '../common/GameNavSidebar';
 // Shared matchmaking screen — identical copy/look in every online game.
 import SearchingForMatch from '../common/SearchingForMatch';
 import GameLobby from './GameLobby';
@@ -11,7 +14,9 @@ import { useComputerMove } from './useComputerMove';
 import { DEFAULT_SKILL_LEVEL } from './difficulty';
 // Shared authed game socket — connects lazily when the player enters online
 // mode (connectGameSocket), never at module import.
-import { connectGameSocket, getSocket } from '../../hooks/useGameSocket';
+import { connectGameSocket, getSocket, useMatchProgression } from '../../hooks/useGameSocket';
+// Level/rank progression overlays, chained after the game-over overlay.
+import { PostGameProgression } from '../common/PostGameProgression';
 
 interface ChessGameProps {
   onExit: () => void;
@@ -25,123 +30,6 @@ export interface ServerGameEnd {
   reason: string;
 }
 
-// Internal component for the left nav sidebar (based on SidebarMenu)
-function ChessNavSidebar({ 
-  gameTitle = "Neon Chess",
-  onReturn, 
-  onExit,
-  gameMode, 
-  onPlayOnline, 
-  onPlayComputer, 
-  onPlayLocal,
-  profile
-}: { 
-  gameTitle?: string;
-  onReturn: () => void;
-  onExit: () => void;
-  gameMode: string | null;
-  onPlayOnline: () => void;
-  onPlayComputer: () => void;
-  onPlayLocal: () => void;
-  profile: { name: string; avatarUrl: string } | null;
-}) {
-  return (
-    <div className="hidden lg:flex w-64 border-r border-[#00FFD1]/20 bg-[#040b0b] flex-col h-[100dvh] sticky top-0 overflow-hidden shrink-0 z-50">
-      <div className="flex items-center justify-between p-4 border-b border-[#00ffd1]/20 bg-gradient-to-r from-[#00ffd1]/10 to-transparent">
-        <h2 className="text-lg font-black text-[#00ffd1] uppercase tracking-[0.2em]">{gameTitle} Menu</h2>
-      </div>
-
-      <div className="flex-1 p-2.5 flex flex-col gap-2.5">
-        {/* Rank Section */}
-        <div className="p-3 border border-[#00ffd1]/20 rounded-xl bg-black/40">
-          <div className="flex items-center gap-2 mb-1.5">
-            <Trophy size={18} className="text-[#00ffd1] shrink-0" />
-            <div>
-              <div className="text-[10px] text-[#00ffd1]/60 uppercase tracking-widest leading-none mt-0.5">Current Rank</div>
-              <div className="text-base mt-1 text-white font-bold tracking-wider leading-none">DIAMOND I</div>
-            </div>
-          </div>
-          <div className="w-full bg-black/60 h-1.5 rounded-full mt-2 overflow-hidden">
-            <div className="bg-[#00ffd1] h-full w-[75%] shadow-[0_0_10px_#00ffd1]"></div>
-          </div>
-        </div>
-
-        {/* Navigation Items */}
-        <div className="space-y-1">
-          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
-            <Users size={16} />
-            <span className="uppercase tracking-wider text-xs flex-1 text-left">Friends</span>
-            <span className="bg-[#00ffd1]/20 text-[#00ffd1] text-[9px] px-1.5 py-0.5 rounded flex items-center justify-center font-bold">5</span>
-          </button>
-          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
-            <MessageSquare size={16} />
-            <span className="uppercase tracking-wider text-xs flex-1 text-left">Messages</span>
-            <span className="bg-[#00ffd1]/20 text-[#00ffd1] text-[9px] px-1.5 py-0.5 rounded flex items-center justify-center font-bold">2</span>
-          </button>
-          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
-            <History size={16} />
-            <span className="uppercase tracking-wider text-xs flex-1 text-left">{gameTitle} History</span>
-          </button>
-          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
-            <Award size={16} />
-            <span className="uppercase tracking-wider text-xs flex-1 text-left">Leaderboard</span>
-          </button>
-          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
-            <TrendingUp size={16} />
-            <span className="uppercase tracking-wider text-xs flex-1 text-left">Stats</span>
-          </button>
-          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
-            <Settings size={16} />
-            <span className="uppercase tracking-wider text-xs flex-1 text-left">Settings</span>
-          </button>
-        </div>
-
-        {/* Placeholder Friends List */}
-        <div className="pt-2 border-t border-[#00ffd1]/20 flex-1 flex flex-col min-h-0 pb-4">
-          <div className="text-[10px] text-white/40 uppercase tracking-[0.2em] mb-2 pl-2 shrink-0">Online Friends</div>
-          <div className="space-y-1 overflow-y-auto custom-scrollbar flex-1">
-            <div className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 cursor-pointer transition-colors group">
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#00ffd1]/40 to-blue-500/40 border border-[#00ffd1]/20" />
-                  <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#081616] bg-purple-500" />
-                </div>
-                <div className="text-left">
-                  <div className="text-sm text-white/90 group-hover:text-white transition-colors tracking-wide leading-none">CyberNinja</div>
-                  <div className="text-[10px] text-purple-400 mt-1">In Game</div>
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 cursor-pointer transition-colors group">
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#00ffd1]/40 to-blue-500/40 border border-[#00ffd1]/20" />
-                  <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#081616] bg-green-500" />
-                </div>
-                <div className="text-left">
-                  <div className="text-sm text-white/90 group-hover:text-white transition-colors tracking-wide leading-none">GlitchMatrix</div>
-                  <div className="text-[10px] text-green-400 mt-1">Online</div>
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 cursor-pointer transition-colors group">
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#00ffd1]/40 to-blue-500/40 border border-[#00ffd1]/20" />
-                  <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#081616] bg-yellow-500" />
-                </div>
-                <div className="text-left">
-                  <div className="text-sm text-white/90 group-hover:text-white transition-colors tracking-wide leading-none">NeonRider</div>
-                  <div className="text-[10px] text-yellow-400 mt-1">Away</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function GameMenuPanel({ 
   onReturn, 
@@ -250,6 +138,9 @@ import { WagerMenu } from '../NeonBucks/WagerMenu';
 
 export default function ChessGame({ onExit, profile, onGameStatusChange }: ChessGameProps) {
   const [gameState, setGameState] = useState<'lobby' | 'waiting' | 'playing' | 'ended' | 'practice_wager'>('lobby');
+  // Per-player "+XP / rank change" from the server, chained after the
+  // GameOverOverlay (arrives with the gameEnded settle, online only).
+  const { progression, clear: clearProgression } = useMatchProgression();
   const [playerData, setPlayerData] = useState<any>(null);
   const [gameData, setGameData] = useState<any>(null);
   const [gameMode, setGameMode] = useState<'multiplayer' | 'computer' | 'local' | null>(null);
@@ -502,17 +393,12 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
 
   return (
     <div className="min-h-[100dvh] flex bg-[#081616] overflow-hidden">
-      {/* Permanent Left Sidebar (Nav & Actions) */}
-      <ChessNavSidebar 
-        gameTitle="Neon Chess" 
-        onReturn={handleReturnToLobby}
-        onExit={handleExitApp}
-        gameMode={gameMode}
-        onPlayOnline={gameMode === 'multiplayer' ? () => {} : handleFindGame}
-        onPlayComputer={gameMode === 'computer' ? () => {} : handlePlayComputer}
-        onPlayLocal={gameMode === 'local' ? () => {} : handlePlayLocal}
-        profile={profile}
-      />
+      {/* Permanent Left Sidebar — the REAL arcade menu (rank, friends,
+          deep-links into the drawer), not the old static mock-up. */}
+      <GameNavSidebar gameTitle="Neon Chess" />
+
+      {/* Level/rank progression, chained after the game-over overlay. */}
+      <PostGameProgression progression={progression} onDone={clearProgression} />
 
       {/* Main Content Area */}
       <div className="flex-1 overflow-y-auto h-[100dvh] relative">

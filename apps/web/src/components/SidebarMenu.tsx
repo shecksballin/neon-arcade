@@ -125,7 +125,7 @@ const LeaderboardPanel = optionalPanel('LeaderboardPanel')
 const HistoryPanel = optionalPanel('HistoryPanel')
 
 /** Which panel the drawer is showing (null = the menu itself). */
-type PanelId = 'friends' | 'messages' | 'history' | 'leaderboard' | 'stats'
+export type PanelId = 'friends' | 'messages' | 'history' | 'leaderboard' | 'stats'
 
 /**
  * "Open the drawer already on this panel." Set by a notification row in the
@@ -138,7 +138,12 @@ type PanelId = 'friends' | 'messages' | 'history' | 'leaderboard' | 'stats'
  * menu.
  */
 export interface SidebarOpenTarget {
-  panel: 'friends' | 'messages'
+  /**
+   * Any drawer panel. Notification rows only ever ask for friends/messages,
+   * but the in-game nav sidebars (Chess/Connect) deep-link the rest —
+   * History, Leaderboard, Stats — through the same mechanism.
+   */
+  panel: PanelId
   /** Messages only: the conversation to open. */
   username?: string
 }

@@ -19,12 +19,17 @@ import { ChevronLeft,
   Swords,
   Plus } from 'lucide-react';
 import GameBackButton from '../common/GameBackButton';
+// The real arcade menu column (rank card, drawer deep-links, live friends) —
+// replaces the old static ConnectNavSidebar mock-up.
+import { GameNavSidebar } from '../common/GameNavSidebar';
+import { LobbyLevelStrip } from '../common/LobbyLevelStrip';
 import PrivateWagerRoom from "../social/PrivateWagerRoom";
 import { usePrivateWagerStarted } from "../social/PrivateWagerInvite";
 // Shared authed game socket — connects lazily when entering online mode,
 // never at import (the old per-effect bare io() reconnected on every
 // myPlayerId/gameStatus change and re-queued freshly-matched players).
-import { connectGameSocket, getSocket } from "../../hooks/useGameSocket";
+import { connectGameSocket, getSocket, useMatchProgression } from "../../hooks/useGameSocket";
+import { PostGameProgression } from "../common/PostGameProgression";
 // The one matchmaking screen every online game shows while queued.
 import { SearchingForMatch } from "../common/SearchingForMatch";
 import { LibraryBlob } from "../glass/LibraryBlob";
@@ -118,122 +123,6 @@ function ConnectHistoryPanel({
   );
 }
 
-function ConnectNavSidebar({ 
-  gameTitle = "Neon Connect",
-  onReturn, 
-  onExit,
-  gameMode, 
-  onPlayOnline, 
-  onPlayComputer, 
-  onPlayLocal,
-  profile
-}: { 
-  gameTitle?: string;
-  onReturn: () => void;
-  onExit: () => void;
-  gameMode: string | null;
-  onPlayOnline: () => void;
-  onPlayComputer: () => void;
-  onPlayLocal: () => void;
-  profile: { name: string; avatarUrl: string } | null;
-}) {
-  return (
-    <div className="hidden lg:flex w-64 border-r border-[#00FFD1]/20 bg-[#040b0b] flex-col h-[100dvh] sticky top-0 overflow-hidden shrink-0 z-50">
-      <div className="flex items-center justify-between p-4 border-b border-[#00ffd1]/20 bg-gradient-to-r from-[#00ffd1]/10 to-transparent">
-        <h2 className="text-lg font-black text-[#00ffd1] uppercase tracking-[0.2em]">{gameTitle} Menu</h2>
-      </div>
-
-      <div className="flex-1 p-2.5 flex flex-col gap-2.5">
-        {/* Rank Section */}
-        <div className="p-3 border border-[#00ffd1]/20 rounded-xl bg-black/40">
-          <div className="flex items-center gap-2 mb-1.5">
-            <Trophy size={18} className="text-[#00ffd1] shrink-0" />
-            <div>
-              <div className="text-[10px] text-[#00ffd1]/60 uppercase tracking-widest leading-none mt-0.5">Current Rank</div>
-              <div className="text-base mt-1 text-white font-bold tracking-wider leading-none">DIAMOND I</div>
-            </div>
-          </div>
-          <div className="w-full bg-black/60 h-1.5 rounded-full mt-2 overflow-hidden">
-            <div className="bg-[#00ffd1] h-full w-[75%] shadow-[0_0_10px_#00ffd1]"></div>
-          </div>
-        </div>
-
-        {/* Navigation Items */}
-        <div className="space-y-1">
-          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
-            <Users size={16} />
-            <span className="uppercase tracking-wider text-xs flex-1 text-left">Friends</span>
-            <span className="bg-[#00ffd1]/20 text-[#00ffd1] text-[9px] px-1.5 py-0.5 rounded flex items-center justify-center font-bold">5</span>
-          </button>
-          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
-            <MessageSquare size={16} />
-            <span className="uppercase tracking-wider text-xs flex-1 text-left">Messages</span>
-            <span className="bg-[#00ffd1]/20 text-[#00ffd1] text-[9px] px-1.5 py-0.5 rounded flex items-center justify-center font-bold">2</span>
-          </button>
-          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
-            <History size={16} />
-            <span className="uppercase tracking-wider text-xs flex-1 text-left">{gameTitle} History</span>
-          </button>
-          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
-            <Award size={16} />
-            <span className="uppercase tracking-wider text-xs flex-1 text-left">Leaderboard</span>
-          </button>
-          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
-            <TrendingUp size={16} />
-            <span className="uppercase tracking-wider text-xs flex-1 text-left">Stats</span>
-          </button>
-          <button className="w-full flex items-center gap-2 p-2 rounded-lg hover:bg-[#00ffd1]/10 text-white/70 hover:text-[#00ffd1] transition-colors border border-transparent hover:border-[#00ffd1]/30 cursor-pointer">
-            <Settings size={16} />
-            <span className="uppercase tracking-wider text-xs flex-1 text-left">Settings</span>
-          </button>
-        </div>
-
-        {/* Placeholder Friends List */}
-        <div className="pt-2 border-t border-[#00ffd1]/20 flex-1 flex flex-col min-h-0 pb-4">
-          <div className="text-[10px] text-white/40 uppercase tracking-[0.2em] mb-2 pl-2 shrink-0">Online Friends</div>
-          <div className="space-y-1 overflow-y-auto custom-scrollbar flex-1">
-            <div className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 cursor-pointer transition-colors group">
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#00ffd1]/40 to-blue-500/40 border border-[#00ffd1]/20" />
-                  <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#081616] bg-purple-500" />
-                </div>
-                <div className="text-left">
-                  <div className="text-sm text-white/90 group-hover:text-white transition-colors tracking-wide leading-none">CyberNinja</div>
-                  <div className="text-[10px] text-purple-400 mt-1">In Game</div>
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 cursor-pointer transition-colors group">
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#00ffd1]/40 to-blue-500/40 border border-[#00ffd1]/20" />
-                  <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#081616] bg-green-500" />
-                </div>
-                <div className="text-left">
-                  <div className="text-sm text-white/90 group-hover:text-white transition-colors tracking-wide leading-none">GlitchMatrix</div>
-                  <div className="text-[10px] text-green-400 mt-1">Online</div>
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center justify-between p-2 rounded-lg hover:bg-white/5 cursor-pointer transition-colors group">
-              <div className="flex items-center gap-3">
-                <div className="relative">
-                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#00ffd1]/40 to-blue-500/40 border border-[#00ffd1]/20" />
-                  <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#081616] bg-yellow-500" />
-                </div>
-                <div className="text-left">
-                  <div className="text-sm text-white/90 group-hover:text-white transition-colors tracking-wide leading-none">NeonRider</div>
-                  <div className="text-[10px] text-yellow-400 mt-1">Away</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function GameMenuPanel({ 
   onReturn, 
@@ -371,6 +260,11 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
   const [animatingColumn, setAnimatingColumn] = useState<number | null>(null);
   const [canPlay, setCanPlay] = useState(true);
   const [onlineOpponent, setOnlineOpponent] = useState<string | null>(null);
+  // One-line story under the results verdict ("opponent left — forfeit win").
+  const [endNote, setEndNote] = useState<string | null>(null);
+  // The server's per-player "+XP / rank change" event, chained after the
+  // results screen as the level/rank progression overlays.
+  const { progression, clear: clearProgression } = useMatchProgression();
   // OPTIMISTIC MATCHMAKING FLAG. Set the instant an online mode is CLICKED —
   // never from a server ack — so a dropped/absent reply can't leave the player
   // staring at a dead board. Cleared only by `neonconnect_match` (or cancel).
@@ -760,7 +654,11 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
     setMoveHistory([]);
     setAnimatingColumn(null);
     setCanPlay(true);
-  }, []);
+    setEndNote(null);
+    // A rematch inside the progression overlay's 1.4s lead-in must not let
+    // the LAST round's "+XP / RANKED UP" play over a fresh board.
+    clearProgression();
+  }, [clearProgression]);
 
   // "New Game" — online it is a two-sided rematch handshake: we only ASK the
   // server; the board clears when the room-broadcast neonconnect_reset lands
@@ -878,6 +776,11 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
         setWinner(data.winner);
       }
       setCanPlay(false);
+      // Forfeit endings carry the story onto the results screen: the
+      // opponent walked (or dropped) and the win was awarded server-side.
+      if (data.reason === "forfeit") {
+        setEndNote("Your opponent left the game — you win by forfeit");
+      }
     };
 
     // Room-broadcast rematch: BOTH players requested a reset — clear the
@@ -924,6 +827,9 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
       setWinner(myPlayerIdRef.current);
       setCanPlay(false);
       setOnlineOpponent((prev) => (prev ? `${prev} (DISCONNECTED)` : null));
+      // Belt-and-braces beside the neonconnect_ended('forfeit') the server
+      // now also sends — whichever lands first tells the same story.
+      setEndNote("Your opponent left the game — you win by forfeit");
     };
 
     const onGameAuthError = (data: any) => {
@@ -1011,6 +917,9 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
               NEON CONNECT
             </h1>
           </motion.div>
+
+          {/* Level progression — compact strip under the title. */}
+          <LobbyLevelStrip />
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full text-left">
             {/* ONLINE ENTRY — no wager, no stake, no browser dialogs.
@@ -1178,19 +1087,9 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
         .glass-panel { backdrop-filter: blur(20px); background: rgba(42, 55, 55, 0.6); }
       `}</style>
 
-      {/* Permanent Left Sidebar (Nav & Actions) */}
-      {/* Mode switches use applyLocalReset, NOT resetGame — resetGame while
-          online emits a rematch request instead of clearing the board. */}
-      <ConnectNavSidebar
-        gameTitle="Neon Connect"
-        onReturn={() => { applyLocalReset(); setMode("lobby"); }}
-        onExit={onExit}
-        gameMode={mode}
-        onPlayOnline={enterOnlineMatchmaking}
-        onPlayComputer={() => { applyLocalReset(); setMode("local"); }}
-        onPlayLocal={() => { applyLocalReset(); setMode("local_coop"); }}
-        profile={profile}
-      />
+      {/* Permanent Left Sidebar — the REAL arcade menu (rank, friends,
+          deep-links into the drawer), not the old static mock-up. */}
+      <GameNavSidebar gameTitle="Neon Connect" />
 
       <div className="flex-1 overflow-y-auto h-[100dvh] relative">
         {/* STACKED below lg. The side panel is a fixed 280px and the board is
@@ -1305,6 +1204,7 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
                       gameMode={mode === "local" ? "Practice" : (mode === "online" ? "Online" : "Local")}
                       // Online stakes nothing — hide the Wagered/Payout rows.
                       moneyless={mode === "online"}
+                      note={mode === "online" ? endNote : null}
                       onRematch={resetGame}
                       onExit={() => {
                         applyLocalReset();
@@ -1313,13 +1213,23 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
                     />
                   )}
                 </AnimatePresence>
+
+                {/* Level/rank progression, chained after the results screen.
+                    Renders nothing until the server's match:progression
+                    event lands (a beat after neonconnect_ended). */}
+                <PostGameProgression progression={progression} onDone={clearProgression} />
               </div>
             </div>
           </div>
         </div>
 
-        {/* Right Side Panel */}
-        <div style={{ width: 300, height: 652, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 12 }} className="mt-[40px]">
+        {/* Right Side Panel — move history. `order-3` is load-bearing: its
+            siblings carry explicit orders (menu order-2 lg:order-1, board
+            order-1 lg:order-2), so without one this panel defaulted to
+            order 0 and sorted to the far LEFT on desktop and to the TOP on
+            mobile. order-3 places it to the RIGHT of the board on desktop
+            and after the menu in the mobile stack. */}
+        <div style={{ width: 300, height: 652, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 12 }} className="order-3 mt-[40px]">
           {mode === 'local' && (
             <div style={{ background: '#041010', border: '1px solid rgba(0,255,209,0.2)', borderRadius: 8, padding: '12px 10px', flexShrink: 0 }}>
               <DifficultySelector

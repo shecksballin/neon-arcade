@@ -65,6 +65,7 @@ import {
   getSkill,
   settleRanked1v1,
   settleRankedFfa,
+  type RankedResult,
   type RankedStanding,
 } from '../../services/rankService'
 // eloService is now only the wire projection: it strips `wallet`, `mu` and
@@ -79,7 +80,8 @@ import {
 } from '../queue'
 // Stats are written wherever the rating settles, guarded by the SAME
 // teardown() (status flips to 'ended' before any await).
-import { recordResults, type RecordResultInput } from '../../services/statsService'
+import { type RecordResultInput } from '../../services/statsService'
+import { recordAndEmitProgression, type ProgressionEntry } from './progression'
 import { MU_0 } from '../../services/trueskill'
 
 // ---------------------------------------------------------------------------
@@ -504,10 +506,14 @@ function broadcastStart(io: Server, game: TriviaGame) {
  * rule rankService uses. Only usernames are stored — never a wallet.
  */
 function recordTriviaResults(
+  io: Server,
   game: TriviaGame,
   /** Forfeit path: this wallet WON regardless of score (the opponent left);
    *  everyone else loses. Omitted for a natural end. */
-  forcedWinnerWallet?: string
+  forcedWinnerWallet?: string,
+  /** Raw settle results keyed by wallet, so each player's own rank change
+   *  can ride out on their `match:progression` event. Null when unrated. */
+  rankedByWallet?: Map<string, RankedResult> | null
 ): void {
   const durationMs = Date.now() - game.createdAt
   const entries = game.players.map((p) => ({
@@ -528,7 +534,7 @@ function recordTriviaResults(
       ? (entries.find((e) => e.player.wallet !== wallet)?.player.name ?? null)
       : null
 
-  const rows: RecordResultInput[] = entries.map(({ player, score }) => {
+  const progression: ProgressionEntry[] = entries.map(({ player, score }) => {
     // Forfeit: the survivor wins outright, the leaver takes the loss — the
     // scoreboard has no say (it mirrors settleRanked1v1(survivor, leaver, 'a')).
     const isForfeit = forcedWinnerWallet !== undefined
@@ -542,7 +548,7 @@ function recordTriviaResults(
       !isForfeit &&
       placement === 1 &&
       entries.filter((e) => placementOf(e.score) === 1).length > 1
-    return {
+    const input: RecordResultInput = {
       // gameId is a uuid, and match_results.matchId is deliberately NOT a
       // foreign key — it just groups the rows of one quiz together.
       matchId: game.gameId,
@@ -556,9 +562,17 @@ function recordTriviaResults(
       opponentUsername: opponentOf(player.wallet),
       durationMs,
     }
+    return {
+      socketId: player.socketId,
+      input,
+      ranked: rankedByWallet?.get(player.wallet) ?? null,
+    }
   })
 
-  void recordResults(rows) // fire-and-forget; never throws
+  // Same stats write as the old recordResults batch (one row per player),
+  // plus each player's XP award and rank change delivered to their own
+  // socket as `match:progression`. Fire-and-forget; never throws.
+  void recordAndEmitProgression(io, GAME_KEY, progression)
 }
 
 /** Natural end (last question elapsed). Settles ELO and broadcasts
@@ -576,6 +590,9 @@ async function endGame(io: Server, game: TriviaGame) {
   const winner = results[0]?.name ?? ''
 
   let newRatings: NewRatings = null
+  // Raw settle results keyed by wallet — recordTriviaResults hands each
+  // player their OWN entry on the `match:progression` event.
+  let rankedByWallet: Map<string, RankedResult> | null = null
   if (game.mode === '1v1' && game.players.length === 2) {
     const [a, b] = game.players
     const scoreA = game.scores[a.name] ?? 0
@@ -594,6 +611,10 @@ async function endGame(io: Server, game: TriviaGame) {
     )
     if (settled) {
       newRatings = { a: publicRating(settled.a), b: publicRating(settled.b) }
+      rankedByWallet = new Map([
+        [settled.a.wallet, settled.a],
+        [settled.b.wallet, settled.b],
+      ])
     }
   } else if (game.mode === 'ffa') {
     // Only still-connected players get rated (leavers forfeit — we no
@@ -614,6 +635,9 @@ async function endGame(io: Server, game: TriviaGame) {
     )
     // publicRating strips wallet AND the hidden mu/sigma before broadcast.
     newRatings = settled ? settled.map(publicRating) : null
+    if (settled) {
+      rankedByWallet = new Map(settled.map((r) => [r.wallet, r]))
+    }
   }
 
   // STATS — recorded for exactly the endings that settle (teardown() above
@@ -627,7 +651,7 @@ async function endGame(io: Server, game: TriviaGame) {
     (game.mode === '1v1' && game.players.length === 2) ||
     (game.mode === 'ffa' && game.players.length >= 2)
   ) {
-    recordTriviaResults(game)
+    recordTriviaResults(io, game, undefined, rankedByWallet)
   }
 
   io.to(game.room).emit('triviaEnded', { winner, results, newRatings })
@@ -667,7 +691,17 @@ async function endByOpponentLeft(
     }
     // STATS — same condition as settlement: a lobby-phase abort (questions
     // still generating) is not a played match and records nothing.
-    recordTriviaResults(game, survivor.wallet)
+    recordTriviaResults(
+      io,
+      game,
+      survivor.wallet,
+      settled
+        ? new Map([
+            [settled.a.wallet, settled.a],
+            [settled.b.wallet, settled.b],
+          ])
+        : null
+    )
   }
 
   io.to(game.room).emit('triviaEnded', {

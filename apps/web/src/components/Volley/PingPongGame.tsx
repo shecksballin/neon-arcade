@@ -5,6 +5,9 @@ import { ChevronLeft, Trophy, User, Zap, Maximize2 } from 'lucide-react';
 import GameBackButton from '../common/GameBackButton';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
 import { useNeonBucks } from '../../NeonBucksStore';
+// The per-player "+XP / rank change" event, chained after the results screen.
+import { useMatchProgression } from '../../hooks/useGameSocket';
+import { PostGameProgression } from '../common/PostGameProgression';
 
 interface PingPongGameProps {
   socket: Socket;
@@ -42,6 +45,8 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
   const gameContainerRef = useRef<HTMLDivElement>(null);
   const [endReason, setEndReason] = useState<{ reason: string; details?: string } | null>(null);
   const [rematchStatus, setRematchStatus] = useState<'none' | 'sent' | 'offered'>('none');
+  // Per-player "+XP / rank change" from the server, chained post-results.
+  const { progression, clear: clearProgression } = useMatchProgression();
   
   // Sound FX (Web Audio API for zero latency)
   const audioContext = useRef<AudioContext | null>(null);
@@ -518,6 +523,9 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
       setEndReason(null);
       setRematchStatus('none');
       ballPos.current = data.ballPos;
+      // A rematch inside the progression overlay's lead-in must not let the
+      // LAST rally's "+XP / RANKED UP" play over the fresh one.
+      clearProgression();
     };
 
     socket.on('volleyUpdate', onVolleyUpdate);
@@ -711,11 +719,26 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
                 gameMode={mode === 'computer' ? 'Practice' : 'Online'}
                 // Online stakes nothing — hide the Wagered/Payout rows.
                 moneyless={mode !== 'computer'}
+                // Server end reasons finally reach the player: a forfeit win
+                // ("Opponent disconnected") or a resignation is said out
+                // loud instead of living in never-rendered state.
+                note={
+                  endReason?.reason === 'disconnect'
+                    ? 'Your opponent left the game — you win by forfeit'
+                    : endReason?.reason === 'resignation'
+                      ? iWon
+                        ? 'Your opponent resigned — you win'
+                        : null
+                      : endReason?.details ?? null
+                }
                 onRematch={handleRematchRequest}
                 onExit={handleExitMatch}
               />
             )}
          </AnimatePresence>
+
+         {/* Level/rank progression, chained after the results screen. */}
+         <PostGameProgression progression={progression} onDone={clearProgression} />
       </div>
 
       {!settings.minimalistMode && (

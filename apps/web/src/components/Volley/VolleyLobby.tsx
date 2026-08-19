@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { LobbyLevelStrip } from '../common/LobbyLevelStrip';
 import { ChevronLeft,
   Globe,
   Cpu,
@@ -105,6 +106,9 @@ const VolleyLobby = ({
             NEON VOLLEY
           </h1>
         </div>
+        
+        {/* Level progression — compact strip under the title. */}
+        <LobbyLevelStrip />
 
         <div className="space-y-6">
           <div className="flex flex-col items-center gap-3">

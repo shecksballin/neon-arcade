@@ -268,7 +268,10 @@ export default function App() {
    * mid-flight would bounce the user back to the menu).
    */
   const [sidebarTarget, setSidebarTarget] = React.useState<
-    { panel: "friends" | "messages"; username?: string } | null
+    {
+      panel: "friends" | "messages" | "history" | "leaderboard" | "stats";
+      username?: string;
+    } | null
   >(null);
 
   const openSidebarPanel = React.useCallback(
@@ -353,8 +356,24 @@ export default function App() {
       }
     }
 
-    // Set up custom event listener to toggle modern navigation menu from game HUDs
-    const handleOpenMenu = () => setMenuOpen(true);
+    // Set up custom event listener to toggle modern navigation menu from game
+    // HUDs. The event may carry a detail:
+    //   { panel: 'friends'|'messages'|'history'|'leaderboard'|'stats' }
+    //     → open the drawer already on that panel (same SidebarOpenTarget
+    //       mechanism the notification rows use), or
+    //   { settings: true } → skip the drawer and open Profile Settings.
+    // A bare event (Cells, Asteroids) still just opens the menu.
+    const handleOpenMenu = (e: Event) => {
+      const detail = (e as CustomEvent).detail as
+        | { panel?: "friends" | "messages" | "history" | "leaderboard" | "stats"; settings?: boolean }
+        | undefined;
+      if (detail?.settings) {
+        setShowSettings(true);
+        return;
+      }
+      if (detail?.panel) setSidebarTarget({ panel: detail.panel });
+      setMenuOpen(true);
+    };
     window.addEventListener("open-neon-arcade-menu", handleOpenMenu);
 
     // Initial global sound configuration

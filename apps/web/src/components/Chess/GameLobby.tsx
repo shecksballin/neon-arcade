@@ -1,4 +1,5 @@
 import React, { useRef, useState } from "react";
+import { LobbyLevelStrip } from '../common/LobbyLevelStrip';
 import { Globe, Cpu, Users, Swords } from 'lucide-react';
 import GameBackButton from '../common/GameBackButton';
 import { LibraryBlob } from "../glass/LibraryBlob";
@@ -66,6 +67,9 @@ const GameLobby = ({
             NEON CHESS
           </h1>
         </div>
+        
+        {/* Level progression — compact strip under the title. */}
+        <LobbyLevelStrip />
 
         <div className="w-full">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full text-left">

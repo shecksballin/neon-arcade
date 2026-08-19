@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { LobbyLevelStrip } from '../common/LobbyLevelStrip';
 import { Globe, Cpu, Swords } from 'lucide-react';
 import { LibraryBlob } from "../glass/LibraryBlob";
 import { ParticleCard, GlobalSpotlight } from "../glass/MagicGameTile";
@@ -48,6 +49,9 @@ const ClumsyLobby = ({ onFindGame, onPlayComputer, error }: ClumsyLobbyProps) =>
             NEON CLUMSY
           </h1>
         </div>
+        
+        {/* Level progression — compact strip under the title. */}
+        <LobbyLevelStrip />
         <div className="w-full">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full text-left">
             <ParticleCard

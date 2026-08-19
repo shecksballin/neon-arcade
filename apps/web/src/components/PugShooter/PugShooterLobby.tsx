@@ -1,4 +1,5 @@
 import React, { useRef, useState } from "react";
+import { LobbyLevelStrip } from '../common/LobbyLevelStrip';
 import { Cpu, Globe, Settings, Swords, X } from "lucide-react";
 import { DifficultySelector } from "../common/DifficultySelector";
 import { LibraryBlob } from "../glass/LibraryBlob";
@@ -123,13 +124,20 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
 
       <div ref={containerRef} className="relative z-10 text-center space-y-8 max-w-2xl w-full my-auto py-8">
         <div className="space-y-2">
-          <h1 className="text-6xl md:text-8xl font-black text-[#FFFFFD] drop-shadow-[0_0_20px_rgba(0,255,209,0.6)] uppercase tracking-tighter italic">
+          {/* One size step below the sibling lobbies (8xl → 7xl): sixteen
+              characters at 8xl overflow the max-w-2xl column and wrapped to
+              two rows. nowrap + the smaller cap keeps the title on one row
+              at every breakpoint instead of relying on luck. */}
+          <h1 className="text-5xl md:text-7xl font-black text-[#FFFFFD] drop-shadow-[0_0_20px_rgba(0,255,209,0.6)] uppercase tracking-tighter italic whitespace-nowrap">
             NEON PUG SHOOTER
           </h1>
           <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
             third person · stretched fov · bunny hop
           </p>
         </div>
+        
+        {/* Level progression — compact strip under the title. */}
+        <LobbyLevelStrip />
 
         <div className="space-y-6">
           <div className="flex flex-col items-center gap-3">

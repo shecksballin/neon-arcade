@@ -37,7 +37,7 @@ import { z } from 'zod'
 import { getSkill, settleRanked1v1 } from '../../services/rankService'
 // Stats ride along with the rating settle inside settleOnce(), so both are
 // covered by the same exactly-once guard (`eloSettled`).
-import { recordResults } from '../../services/statsService'
+import { recordAndEmitProgression } from './progression'
 // Connect keeps its OWN queue (its per-player `neonconnect_match` payload
 // doesn't fit the shared handoff), but it reuses the shared skill-selection
 // maths so every 1v1 in the arcade pairs by the same rule.
@@ -227,40 +227,61 @@ function isDraw(board: number[]): boolean {
  * un-double-recordable — including across a rematch, which deliberately
  * clears the flag so the NEW game settles on its own.
  */
-function settleOnce(game: ConnectGame, winner: ConnectWinner): void {
+function settleOnce(io: Server, game: ConnectGame, winner: ConnectWinner): void {
   if (game.eloSettled) return
   game.eloSettled = true
   const result = winner === 'draw' ? 'draw' : winner === 1 ? 'a' : 'b'
-  // Nothing is broadcast from here (Connect's `neonconnect_ended` payload has
-  // no ratings field in the client contract), so there is no wire projection
-  // to do — the result is persisted and read back by the profile/rank API.
-  // `game.gameId` is the SAME id the stats row below uses, so elo_history and
-  // match_results are joinable (rankService drops anything non-uuid).
-  void settleRanked1v1('connect', game.p1.wallet, game.p2.wallet, result, game.gameId)
-
-  // STATS — one row per player. Connect 4 has no kills/deaths/score, and the
-  // opponent field carries the registered username only (never a wallet).
   const durationMs = Date.now() - game.startedAt
-  void recordResults([
-    {
-      matchId: game.gameId, // randomUUID above — a valid uuid for the row
-      wallet: game.p1.wallet,
-      gameKey: 'connect',
-      mode: '1v1',
-      result: winner === 'draw' ? 'draw' : winner === 1 ? 'win' : 'loss',
-      opponentUsername: game.p2.name,
-      durationMs,
-    },
-    {
-      matchId: game.gameId,
-      wallet: game.p2.wallet,
-      gameKey: 'connect',
-      mode: '1v1',
-      result: winner === 'draw' ? 'draw' : winner === 2 ? 'win' : 'loss',
-      opponentUsername: game.p1.name,
-      durationMs,
-    },
-  ])
+
+  // Fire-and-forget as before — nothing in the end path waits on the DB.
+  // The settle result used to be discarded here (Connect's
+  // `neonconnect_ended` payload has no ratings field in the client
+  // contract); it is now kept just long enough to ride out on each
+  // player's own `match:progression` event, alongside the XP award the
+  // stats write produces. `game.gameId` is the SAME id the stats rows use,
+  // so elo_history and match_results stay joinable (rankService drops
+  // anything non-uuid).
+  void (async () => {
+    const settled = await settleRanked1v1(
+      'connect',
+      game.p1.wallet,
+      game.p2.wallet,
+      result,
+      game.gameId
+    )
+
+    // STATS + PROGRESSION — one row per player. Connect 4 has no
+    // kills/deaths/score, and the opponent field carries the registered
+    // username only (never a wallet).
+    await recordAndEmitProgression(io, 'connect', [
+      {
+        socketId: game.p1.socketId,
+        ranked: settled?.a ?? null,
+        input: {
+          matchId: game.gameId, // randomUUID above — a valid uuid for the row
+          wallet: game.p1.wallet,
+          gameKey: 'connect',
+          mode: '1v1',
+          result: winner === 'draw' ? 'draw' : winner === 1 ? 'win' : 'loss',
+          opponentUsername: game.p2.name,
+          durationMs,
+        },
+      },
+      {
+        socketId: game.p2.socketId,
+        ranked: settled?.b ?? null,
+        input: {
+          matchId: game.gameId,
+          wallet: game.p2.wallet,
+          gameKey: 'connect',
+          mode: '1v1',
+          result: winner === 'draw' ? 'draw' : winner === 2 ? 'win' : 'loss',
+          opponentUsername: game.p1.name,
+          durationMs,
+        },
+      },
+    ])
+  })()
 }
 
 /**
@@ -278,7 +299,7 @@ function finishGame(
   game.status = 'ended'
   game.winner = winner
   io.to(game.room).emit('neonconnect_ended', { winner, reason })
-  settleOnce(game, winner)
+  settleOnce(io, game, winner)
 }
 
 /** Drop the game from every registry and pull both sockets out of the room. */
@@ -606,7 +627,17 @@ export function registerConnect(io: Server, socket: Socket): void {
     if (game.status === 'active' && playerId) {
       game.status = 'ended'
       game.winner = playerId === 1 ? 2 : 1
-      settleOnce(game, game.winner)
+      // The SERVER-declared result, not just the bare quit signal: the
+      // survivor's client renders the same authoritative end every other
+      // finish gets, with the reason attached ("opponent left — you win").
+      // Opponent only — the leaver is mid-navigation to a fresh lobby and
+      // an ended event would corrupt that state (same rule as the quit
+      // event above).
+      io.to(opponent.socketId).emit('neonconnect_ended', {
+        winner: game.winner,
+        reason: 'forfeit',
+      })
+      settleOnce(io, game, game.winner)
     }
 
     destroyGame(io, game) // also clears both gameBySocket bindings
@@ -629,11 +660,17 @@ export function registerConnect(io: Server, socket: Socket): void {
 
     // Mid-game quit forfeits: the opponent wins and ELO settles exactly
     // ONCE (settleOnce guard). A game already 'ended' was settled when it
-    // finished — nothing more to pay out here.
+    // finished — nothing more to pay out here. The room emit is safe: the
+    // disconnected socket has already left it, so only the survivor hears
+    // the authoritative forfeit result.
     if (game.status === 'active' && playerId) {
       game.status = 'ended'
       game.winner = playerId === 1 ? 2 : 1
-      settleOnce(game, game.winner)
+      io.to(game.room).emit('neonconnect_ended', {
+        winner: game.winner,
+        reason: 'forfeit',
+      })
+      settleOnce(io, game, game.winner)
     }
 
     destroyGame(io, game)

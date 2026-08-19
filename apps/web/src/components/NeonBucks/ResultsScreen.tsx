@@ -17,6 +17,12 @@ interface ResultsScreenProps {
    * computer / Self-Wager screen keeps its Neon Bucks rows unchanged.
    */
   moneyless?: boolean;
+  /**
+   * One-line story under the verdict — "Your opponent left the game — you
+   * win by forfeit". Only rendered when provided, so every existing screen
+   * is untouched.
+   */
+  note?: string | null;
   onRematch: () => void;
   onExit: () => void;
 }
@@ -29,6 +35,7 @@ export function ResultsScreen({
   kills,
   questionsRight,
   moneyless = false,
+  note = null,
   onRematch,
   onExit
 }: ResultsScreenProps) {
@@ -61,6 +68,12 @@ export function ResultsScreen({
             won ? "Victory!" : (winnings > 0 ? "Match Over" : "Defeat")
           )}
         </h2>
+
+        {note && (
+          <p className="mb-6 -mt-1 px-4 font-mono text-[11px] uppercase tracking-[0.25em] text-[#00FFD1]/70">
+            {note}
+          </p>
+        )}
 
         <div className="bg-[#040b0b] border border-[#00FFD1]/30 rounded-xl p-6 w-full max-w-sm mb-8">
           <div className="space-y-4 font-mono text-sm uppercase tracking-widest text-[#00FFD1]/80">
