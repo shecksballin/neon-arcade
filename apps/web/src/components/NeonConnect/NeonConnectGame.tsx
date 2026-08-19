@@ -30,6 +30,7 @@ import { usePrivateWagerStarted } from "../social/PrivateWagerInvite";
 // myPlayerId/gameStatus change and re-queued freshly-matched players).
 import { connectGameSocket, getSocket, useMatchProgression } from "../../hooks/useGameSocket";
 import { PostGameProgression } from "../common/PostGameProgression";
+import { usePracticeXp } from "../../hooks/usePracticeXp";
 // The one matchmaking screen every online game shows while queued.
 import { SearchingForMatch } from "../common/SearchingForMatch";
 import { LibraryBlob } from "../glass/LibraryBlob";
@@ -265,6 +266,9 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
   // The server's per-player "+XP / rank change" event, chained after the
   // results screen as the level/rank progression overlays.
   const { progression, clear: clearProgression } = useMatchProgression();
+  // Practice (vs-AI) twin of the same overlay — self-reported XP, no rank.
+  const { practiceProgression, armRound, reportRound, clearPracticeProgression } =
+    usePracticeXp("connect");
   // OPTIMISTIC MATCHMAKING FLAG. Set the instant an online mode is CLICKED —
   // never from a server ack — so a dropped/absent reply can't leave the player
   // staring at a dead board. Cleared only by `neonconnect_match` (or cancel).
@@ -410,10 +414,19 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
         mode === "online" ? winner === myPlayerId : winner === HUMAN;
       playResultSound(isVictory && gameStatus === "won");
       soundPlayedRef.current = true;
+      // PRACTICE XP — strictly the vs-AI mode ('local'), never 'local_coop':
+      // pass-and-play has no opponent to beat, and the payout at executeMove
+      // draws the same line. Rides the sound effect's once-per-round guard.
+      if (mode === "local") {
+        reportRound({
+          result:
+            gameStatus === "draw" ? "draw" : winner === HUMAN ? "win" : "loss",
+        });
+      }
     } else if (gameStatus === "playing") {
       soundPlayedRef.current = false;
     }
-  }, [gameStatus, winner, myPlayerId, mode, playResultSound]);
+  }, [gameStatus, winner, myPlayerId, mode, playResultSound, reportRound]);
 
   // ==================== Stable Game Logic ====================
 
@@ -658,7 +671,9 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
     // A rematch inside the progression overlay's 1.4s lead-in must not let
     // the LAST round's "+XP / RANKED UP" play over a fresh board.
     clearProgression();
-  }, [clearProgression]);
+    clearPracticeProgression();
+    armRound();
+  }, [clearProgression, clearPracticeProgression, armRound]);
 
   // "New Game" — online it is a two-sided rematch handshake: we only ASK the
   // server; the board clears when the room-broadcast neonconnect_reset lands
@@ -1217,7 +1232,13 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
                 {/* Level/rank progression, chained after the results screen.
                     Renders nothing until the server's match:progression
                     event lands (a beat after neonconnect_ended). */}
-                <PostGameProgression progression={progression} onDone={clearProgression} />
+                <PostGameProgression
+                  progression={progression ?? practiceProgression}
+                  onDone={() => {
+                    clearProgression();
+                    clearPracticeProgression();
+                  }}
+                />
               </div>
             </div>
           </div>

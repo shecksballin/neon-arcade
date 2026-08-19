@@ -12,6 +12,7 @@ import { ResultsScreen } from '../NeonBucks/ResultsScreen';
 // The per-player "+XP / rank change" event, chained after the results screen.
 import { PostGameProgression } from '../common/PostGameProgression';
 import { useMatchProgression } from '../../hooks/useGameSocket';
+import { usePracticeXp } from '../../hooks/usePracticeXp';
 import { useNeonBucks } from '../../NeonBucksStore';
 
 interface TriviaGameProps {
@@ -43,6 +44,12 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
   const [endNote, setEndNote] = useState<string | null>(null);
   // Per-player "+XP / rank change" from the server, chained post-results.
   const { progression, clear: clearProgression } = useMatchProgression();
+  // Practice (solo quiz) twin — self-reported XP, no rank. A solo round has
+  // no opponent, so it reports result 'none' (participation + score XP).
+  const { practiceProgression, armRound, reportRound, clearPracticeProgression } =
+    usePracticeXp('trivia');
+  /** Once-per-quiz guard: the report effect's deps churn while 'ended'. */
+  const endReportedRef = useRef(false);
   const [opponentScore, setOpponentScore] = useState(0);
   const [players, setPlayers] = useState<any[]>([]);
   const [gameId, setGameId] = useState<string | null>(null);
@@ -65,6 +72,20 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
   const [matchedAwaitingQuestions, setMatchedAwaitingQuestions] = useState(false);
 
   const [sessionWinnings, setSessionWinnings] = useState<number>(0);
+
+  // PRACTICE XP — one report per finished solo quiz, chained as the same
+  // level-progression overlay online play gets. Multiplayer never reports
+  // from here (its XP arrives on match:progression from the server).
+  useEffect(() => {
+    if (gameState === 'ended' && mode === 'practice') {
+      if (endReportedRef.current) return;
+      endReportedRef.current = true;
+      reportRound({ result: 'none', score });
+    } else if (gameState !== 'ended') {
+      endReportedRef.current = false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameState, mode, score]);
   const [correctCount, setCorrectCount] = useState<number>(0);
   const { win, wager, isFirstPractice } = useNeonBucks();
 
@@ -586,6 +607,11 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
                        setSelectedOption(null);
                        setIsCorrect(null);
                        setTimeLeft(15);
+                       // New quiz: re-arm the once-per-round guard and drop
+                       // any overlay payload still queued from the last one.
+                       armRound();
+                       clearPracticeProgression();
+                       clearProgression();
                        startPracticeGame();
                    } else {
                        window.location.reload(); // Simple way to rejoin
@@ -597,7 +623,13 @@ const TriviaGame = ({ mode, config, practiceQuestions, topicName, onExit, profil
         </AnimatePresence>
 
         {/* Level/rank progression, chained after the results screen. */}
-        <PostGameProgression progression={progression} onDone={clearProgression} />
+        <PostGameProgression
+          progression={progression ?? practiceProgression}
+          onDone={() => {
+            clearProgression();
+            clearPracticeProgression();
+          }}
+        />
       </div>
 
       {/* Floating Controls */}

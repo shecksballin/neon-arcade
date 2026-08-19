@@ -4,6 +4,9 @@ import ChessBoard from './ChessBoard';
 import { useChessGame } from './useChessGame';
 import { GameOverOverlay } from './GameOverOverlay';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
+// Practice XP: self-reported award chained as the level-progression overlay.
+import { PostGameProgression } from '../common/PostGameProgression';
+import { usePracticeXp } from '../../hooks/usePracticeXp';
 import { MoveHistoryPanel } from './MoveHistoryPanel';
 import { DifficultySelector } from './DifficultySelector';
 import { useNeonBucks } from '../../NeonBucksStore';
@@ -130,6 +133,11 @@ export default function ComputerGame({
   const { win } = useNeonBucks();
 
   const pendingComputer = useRef(false);
+  // Practice XP — self-reported award, chained as the progression overlay.
+  const { practiceProgression, armRound, reportRound, clearPracticeProgression } =
+    usePracticeXp('chess');
+  /** Once-per-game guard for the terminal effect (see comment there). */
+  const endHandledRef = useRef(false);
 
   const {
     position,
@@ -161,6 +169,11 @@ export default function ComputerGame({
 
   useEffect(() => {
     if (['checkmate', 'stalemate', 'draw'].includes(gameResult.status)) {
+      // ONCE per game: deps like history/fen keep new identities while the
+      // status stays terminal, and an unguarded body re-paid the pot (and
+      // would re-report XP) on every such re-run. Reset on rematch below.
+      if (endHandledRef.current) return;
+      endHandledRef.current = true;
       onGameEnd?.({ result: gameResult, history, fen });
       
       // Pay out if won against computer
@@ -172,8 +185,21 @@ export default function ComputerGame({
       } else if ((gameResult.status === 'stalemate' || gameResult.status === 'draw') && wagerAmount > 0) {
         win(wagerAmount); // draw returns money
       }
+
+      // PRACTICE XP — metered self-report; the award chains the same
+      // level-progression overlay online chess gets from the socket.
+      reportRound({
+        result:
+          gameResult.status === 'checkmate'
+            ? gameResult.winner === playerColor
+              ? 'win'
+              : 'loss'
+            : 'draw',
+      });
+    } else {
+      endHandledRef.current = false;
     }
-  }, [gameResult.status, gameResult.winner, onGameEnd, history, fen, playerColor, wagerAmount, win]);
+  }, [gameResult.status, gameResult.winner, onGameEnd, history, fen, playerColor, wagerAmount, win, reportRound]);
 
   useEffect(() => {
     const gameOver = ['checkmate', 'stalemate', 'draw'].includes(gameResult.status);
@@ -204,8 +230,11 @@ export default function ComputerGame({
 
   const handleRematch = useCallback(() => {
     pendingComputer.current = false;
+    // New game: re-arm the once-per-game guards and drop any queued overlay.
+    armRound();
+    clearPracticeProgression();
     resetGame();
-  }, [resetGame]);
+  }, [resetGame, armRound, clearPracticeProgression]);
 
   const whiteCaptured  = capturedPieces.white;
   const blackCaptured  = capturedPieces.black;
@@ -277,6 +306,12 @@ export default function ComputerGame({
             onExit={() => onReturnToLobby?.()}
           />
         )}
+
+        {/* Level progression, chained after the practice results screen. */}
+        <PostGameProgression
+          progression={practiceProgression}
+          onDone={clearPracticeProgression}
+        />
         
         {/* User Info Bottom Left */}
         <div style={{ 

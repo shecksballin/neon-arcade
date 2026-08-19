@@ -300,8 +300,14 @@ function emptyStats(gameKey: string): GameStats {
  * SQL predicate for "this row counts toward win rate".
  * Free play is excluded by BOTH its mode and its 'none' result, so a
  * mislabelled row can't sneak into the win-rate math from either side.
+ * PRACTICE is excluded too: vs-AI rounds of the simulated games self-report
+ * for XP (routes/stats.ts PRACTICE_REPORTED_GAMES), and a client-claimed
+ * practice "win" must never sit in the same win-rate math as a
+ * socket-authoritative result. No existing rows regress — the iframe games
+ * report their modes as '1v1'/'ffa', and every socket settle writes the
+ * real match mode.
  */
-const RANKED_SQL = sql`${matchResults.mode} <> ${FREEPLAY_MODE} and ${matchResults.result} in ('win','loss','draw')`
+const RANKED_SQL = sql`${matchResults.mode} not in (${FREEPLAY_MODE}, 'practice') and ${matchResults.result} in ('win','loss','draw')`
 
 /** Count rows matching a filter, as a number (int8 comes back as a string
  *  from the pg driver — mapWith(Number) normalises it). */

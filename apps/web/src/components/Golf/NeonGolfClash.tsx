@@ -32,6 +32,28 @@ const NeonGolfClash = ({ onExit }: NeonGolfClashProps) => {
   const frameRef = useRef<HTMLIFrameElement>(null);
 
   /**
+   * DETERMINISTIC GPU TEARDOWN. Unmounting only DETACHES the iframe — the
+   * game inside registers no unload handler and never loses its WebGL
+   * context, so its whole realm (three.js scene, physics WASM heap, decoded
+   * assets, a LIVE GPU context) lingered in a detached document until the
+   * browser got around to GC. Stack a couple of those and the landing
+   * page's own WebGL (fluid cursor + blob) crawls while the WebGL-free
+   * library stays fast — exactly the reported symptom. Navigating the
+   * frame to about:blank in cleanup forces the inner document to unload
+   * NOW, destroying its context and freeing the realm deterministically.
+   */
+  useEffect(() => {
+    const frame = frameRef.current;
+    return () => {
+      try {
+        frame?.contentWindow?.location.replace('about:blank');
+      } catch {
+        /* same-origin today; never let teardown throw during unmount */
+      }
+    };
+  }, []);
+
+  /**
    * PROGRESSION. The match is fought out entirely inside the iframe, so the
    * game posts `neon-golf:result` when it ends and we turn that into XP — the
    * same award every other game in the arcade gets for a finished match. See

@@ -8,6 +8,7 @@ import { useNeonBucks } from '../../NeonBucksStore';
 // The per-player "+XP / rank change" event, chained after the results screen.
 import { useMatchProgression } from '../../hooks/useGameSocket';
 import { PostGameProgression } from '../common/PostGameProgression';
+import { usePracticeXp } from '../../hooks/usePracticeXp';
 
 interface PingPongGameProps {
   socket: Socket;
@@ -47,6 +48,14 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
   const [rematchStatus, setRematchStatus] = useState<'none' | 'sent' | 'offered'>('none');
   // Per-player "+XP / rank change" from the server, chained post-results.
   const { progression, clear: clearProgression } = useMatchProgression();
+  // Practice (vs-AI) twin — self-reported XP, no rank.
+  const { practiceProgression, armRound, reportRound, clearPracticeProgression } =
+    usePracticeXp('volley');
+  /** Once-per-round guard for the end effect below — its deps (iWon,
+   *  wagerAmount identity, playEffect) can churn while gameState stays
+   *  'ended', and an unguarded body double-paid the practice pot and would
+   *  double-fire sounds/XP. Reset when a new rally starts. */
+  const endHandledRef = useRef(false);
   
   // Sound FX (Web Audio API for zero latency)
   const audioContext = useRef<AudioContext | null>(null);
@@ -128,14 +137,23 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
 
   useEffect(() => {
     if (gameState === 'ended') {
+      if (endHandledRef.current) return;
+      endHandledRef.current = true;
       playEffect(iWon);
       // NEON BUCKS ARE PRACTICE-ONLY. The online path must never call
       // wager()/win() — there is no stake of any kind in an online match.
       if (mode === 'computer' && iWon && wagerAmount > 0) {
         win(wagerAmount * 2);
       }
+      // PRACTICE XP — the vs-AI round self-reports (metered server-side)
+      // and the award chains the same progression overlay online play gets.
+      if (mode === 'computer') {
+        reportRound({ result: iWon ? 'win' : 'loss' });
+      }
+    } else {
+      endHandledRef.current = false;
     }
-  }, [gameState, iWon, playEffect, mode, wagerAmount, win]);
+  }, [gameState, iWon, playEffect, mode, wagerAmount, win, reportRound]);
 
   const WINNING_SCORE = playerData.matchMode === 'classic' ? 11 : (playerData.matchMode === 'bestof3' ? 2 : 1);
 
@@ -550,6 +568,11 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
       setEndReason(null);
       setRematchStatus('none');
       resetBall();
+      // New rally: re-arm the once-per-round guards and drop any overlay
+      // payload still queued from the last one.
+      armRound();
+      clearPracticeProgression();
+      clearProgression();
       return;
     }
     setRematchStatus('sent');
@@ -738,7 +761,13 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
          </AnimatePresence>
 
          {/* Level/rank progression, chained after the results screen. */}
-         <PostGameProgression progression={progression} onDone={clearProgression} />
+         <PostGameProgression
+           progression={progression ?? practiceProgression}
+           onDone={() => {
+             clearProgression();
+             clearPracticeProgression();
+           }}
+         />
       </div>
 
       {!settings.minimalistMode && (

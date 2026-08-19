@@ -714,7 +714,14 @@ export interface XpSummary {
  * writes a stats row; it can never touch RP.
  */
 export interface SessionReport {
-  gameKey: 'golf' | 'clumsy' | 'pugshooter'
+  /**
+   * The iframe games report every mode; chess/connect/volley/trivia may
+   * ONLY report practice (vs-AI) rounds — the server forces mode
+   * 'practice' and zeroes kills/placement for them, and practice rows
+   * never count toward win rate. Online results still arrive exclusively
+   * through the socket handlers.
+   */
+  gameKey: 'golf' | 'clumsy' | 'pugshooter' | 'chess' | 'connect' | 'volley' | 'trivia'
   mode?: '1v1' | 'practice' | 'ffa' | 'freeplay'
   result?: 'win' | 'loss' | 'draw' | 'none'
   kills?: number

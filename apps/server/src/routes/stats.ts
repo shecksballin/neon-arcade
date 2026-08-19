@@ -279,11 +279,28 @@ stats.get('/xp', async (c) => {
  *     the database either.
  */
 
-/** The games with no server-side simulation — the only ones accepted here. */
+/** The games with no server-side simulation — accepted in every mode. */
 const SELF_REPORTED_GAMES = ['golf', 'clumsy', 'pugshooter'] as const
 
-/** Modes these games may report. `freeplay` keeps the platform's meaning:
- *  no win condition, so it can never carry a win/loss. */
+/**
+ * Server-simulated games whose PRACTICE (vs-AI) rounds may also self-report.
+ * Practice runs entirely client-side — the socket layer never sees it — so
+ * without this the four flagship games paid XP online but nothing at all in
+ * practice. The contract is deliberately narrower than SELF_REPORTED_GAMES:
+ *   • mode is FORCED to 'practice' (a client claiming a '1v1' chess win here
+ *     would otherwise sit beside socket-authoritative rows in history);
+ *   • kills/deaths/placement are FORCED to zero/null — none of these games
+ *     have them, and accepting the fields would hand a scripted reporter
+ *     +150 kill XP and a fabricated K/D;
+ *   • practice rows are excluded from win-rate stats and leaderboards
+ *     (statsService RANKED_SQL) — XP only, exactly like the iframe games'
+ *     "THIS IS XP ONLY" rule, with one more fence.
+ * Their ONLINE results still arrive exclusively via the socket handlers.
+ */
+const PRACTICE_REPORTED_GAMES = ['chess', 'connect', 'volley', 'trivia'] as const
+
+/** Modes the iframe games may report. `freeplay` keeps the platform's
+ *  meaning: no win condition, so it can never carry a win/loss. */
 const SELF_REPORTED_MODES = ['1v1', 'practice', 'ffa', FREEPLAY_MODE] as const
 
 /** Nothing self-reported may claim more than this. Well above a real round,
@@ -294,7 +311,7 @@ const MAX_REPORTED_DURATION_MS = 4 * 60 * 60 * 1000 // 4h
 const MAX_REPORTED_PLACEMENT = 64
 
 const SessionSchema = z.object({
-  gameKey: z.enum(SELF_REPORTED_GAMES),
+  gameKey: z.enum([...SELF_REPORTED_GAMES, ...PRACTICE_REPORTED_GAMES]),
   mode: z.enum(SELF_REPORTED_MODES).optional().default('practice'),
   result: z.enum(['win', 'loss', 'draw', 'none']).optional().default('none'),
   kills: z.coerce.number().int().min(0).max(MAX_REPORTED_KILLS).optional().default(0),
@@ -335,18 +352,25 @@ stats.post('/session', async (c) => {
   }
   const session = parsed.data
 
+  // Server-simulated games get the NARROW practice contract (see
+  // PRACTICE_REPORTED_GAMES): whatever the client claimed, the row that
+  // lands is a kill-less, placement-less practice round.
+  const practiceOnly = (PRACTICE_REPORTED_GAMES as readonly string[]).includes(
+    session.gameKey
+  )
+
   const { recorded, award } = await recordResultWithXp({
     // No `matchId`: nothing here corresponds to a server-side match row.
     wallet,
     gameKey: session.gameKey,
-    mode: session.mode,
+    mode: practiceOnly ? 'practice' : session.mode,
     // statsService forces 'none' for free play anyway — this keeps the two
     // agreeing for the other modes.
     result: session.result,
-    kills: session.kills,
-    deaths: session.deaths,
+    kills: practiceOnly ? 0 : session.kills,
+    deaths: practiceOnly ? 0 : session.deaths,
     score: session.score,
-    placement: session.placement ?? null,
+    placement: practiceOnly ? null : (session.placement ?? null),
     durationMs: session.durationMs ?? null,
     // The bit that meters it. Never remove.
     xpSource: 'self_reported',

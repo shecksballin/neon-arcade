@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import GameBackButton from '../common/GameBackButton';
 import { reportGameSession } from '../../lib/sessionXp';
 import type { PugShooterMatchConfig } from './PugShooterLobby';
@@ -29,6 +29,29 @@ interface PugShooterPlayProps {
  * that has to come from the client and what stops it being abused.
  */
 export default function PugShooterPlay({ config, onExit }: PugShooterPlayProps) {
+  const frameRef = useRef<HTMLIFrameElement>(null);
+
+  /**
+   * DETERMINISTIC GPU TEARDOWN. Unmounting only DETACHES the iframe — the
+   * game inside registers no unload handler and never loses its WebGL
+   * context, so its whole realm (three.js scene, ~60MB of decoded assets,
+   * a LIVE GPU context) lingered in a detached document until the browser
+   * got around to GC. Stack a couple of those and the landing page's own
+   * WebGL (fluid cursor + blob) crawls while the WebGL-free library stays
+   * fast — exactly the reported symptom. Navigating the frame to
+   * about:blank in cleanup forces the inner document to unload NOW.
+   */
+  useEffect(() => {
+    const frame = frameRef.current;
+    return () => {
+      try {
+        frame?.contentWindow?.location.replace('about:blank');
+      } catch {
+        /* same-origin today; never let teardown throw during unmount */
+      }
+    };
+  }, []);
+
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       // Same-origin only: the iframe is served from our own /public, so a
@@ -70,6 +93,7 @@ export default function PugShooterPlay({ config, onExit }: PugShooterPlayProps) 
   return (
     <div className="absolute inset-0 w-full h-full bg-[#050d1c]">
       <iframe
+        ref={frameRef}
         src={src}
         title="Neon Pug Shooter"
         className="block w-full h-full border-0"
