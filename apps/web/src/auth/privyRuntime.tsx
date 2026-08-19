@@ -127,8 +127,14 @@ export function PrivyRuntime(props: RuntimeProps) {
     <PrivyProvider
       appId={appId as string}
       config={{
-        // Which login options appear in the modal
-        loginMethods: ["wallet", "email", "google"],
+        // Which login options appear in the modal. "wallet" was removed
+        // TOGETHER with the dashboard's wallet-login toggle (2026-08-19):
+        // Privy rejects a config that requests a method the dashboard has
+        // disabled, so this list and the dashboard must move in lockstep.
+        // Everyone now signs in with email/Google and plays on the embedded
+        // wallet Privy creates for them — which is also the reliable path
+        // for the backend's tokens-only sign-in (no wallet popups).
+        loginMethods: ["email", "google"],
 
         // Auto-create an embedded Solana wallet for users who sign in
         // without one (email/Google users). External-wallet users keep
