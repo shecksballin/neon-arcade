@@ -25,10 +25,46 @@
  *     animates continuously. Use frameloop="demand" only for static scenes.
  */
 
+import { useEffect, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { BlobScene } from './BlobScene'
 
+/** Pointer-quiet time after which the render loop parks (same rule as
+ *  SplashCursor's fluid). The blob's only animation is following the cursor,
+ *  so with the cursor parked every frame is identical anyway. */
+const IDLE_AFTER_MS = 4000
+
 export function CursorBlob3D() {
+  /**
+   * IDLE GATE. frameloop="demand" was rejected here (see the header note)
+   * because the blob animates continuously WHILE THE CURSOR MOVES — but with
+   * the pointer parked it renders the same pixels 60x/s forever, on a second
+   * live WebGL context, under the landing page's other effects. Flipping
+   * frameloop to 'never' after 4 quiet seconds parks R3F's loop entirely;
+   * the first pointer/touch move resumes it. The lerp means the blob glides
+   * for a moment after waking, exactly as before.
+   */
+  const [running, setRunning] = useState(true)
+  useEffect(() => {
+    let timer: number | undefined
+    const arm = () => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => setRunning(false), IDLE_AFTER_MS)
+    }
+    const wake = () => {
+      setRunning(true)
+      arm()
+    }
+    window.addEventListener('pointermove', wake, { passive: true })
+    window.addEventListener('touchmove', wake, { passive: true })
+    arm()
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('pointermove', wake)
+      window.removeEventListener('touchmove', wake)
+    }
+  }, [])
+
   return (
     <div
       aria-hidden="true"
@@ -45,7 +81,13 @@ export function CursorBlob3D() {
          * Without this the Canvas renders a solid black background,
          * covering LiquidBackground beneath it.
          */
-        gl={{ alpha: true, antialias: true }}
+        /* antialias off: every visible edge is behind the Bloom pass's blur,
+           so MSAA buys nothing and costs a multisampled render target. */
+        gl={{ alpha: true, antialias: false }}
+        /* Cap at 1.5x — a bloomed glow blob has no crisp detail worth full
+           3840-wide retina rendering; this alone nearly halves pixel work. */
+        dpr={[1, 1.5]}
+        frameloop={running ? 'always' : 'never'}
         /**
          * flat disables R3F's default ACESFilmic tone mapping.
          * Tone mapping desaturates bright emissive colours — disabling it

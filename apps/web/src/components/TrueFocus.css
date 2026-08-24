@@ -21,6 +21,10 @@
     color 0.3s ease;
   outline: none;
   user-select: none;
+  /* Each word gets its own compositor layer, so the blur animation the hero
+     runs every 3s is a GPU filter over a cached raster instead of a full
+     re-rasterisation of 128px glowing glyphs on every frame. */
+  will-change: filter;
 }
 
 .focus-word.active {

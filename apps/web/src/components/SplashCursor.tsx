@@ -876,7 +876,15 @@ export function SplashCursor({
     /** Called from every input handler; wakes the loop back up. */
     function noteActivity() {
       lastActivityAt = Date.now();
+      // A sleeping loop (see updateFrame) has no rAF queued — restart it.
+      if (sleeping) {
+        sleeping = false;
+        lastUpdateTime = Date.now();
+        animationFrameId.current = requestAnimationFrame(updateFrame);
+      }
     }
+    /** True while the idle gate has CANCELLED the rAF chain outright. */
+    let sleeping = false;
 
     function updateFrame() {
       if (!isActive) return;
@@ -891,14 +899,14 @@ export function SplashCursor({
       // still wakes, it just does nothing until there is something to show.)
       const idle = document.hidden || Date.now() - lastActivityAt > IDLE_AFTER_MS;
       if (idle) {
-        // A window resized while idle must still be honoured, or the fluid
-        // comes back stretched when the pointer next moves. Cheap: two layout
-        // reads, and initFramebuffers only runs when the size really changed.
-        if (resizeCanvas()) initFramebuffers();
-        // Reset the clock so the first frame after waking gets a sane dt
-        // rather than one the size of however long the page sat untouched.
-        lastUpdateTime = Date.now();
-        animationFrameId.current = requestAnimationFrame(updateFrame);
+        // SLEEP OUTRIGHT. The loop used to keep re-queueing rAF while idle
+        // "so it resumes on the next pointer move" — but that woke the main
+        // thread 60x/s forever AND did two layout reads (resizeCanvas) per
+        // idle frame on a page whose layout other effects keep dirtying.
+        // noteActivity() restarts the loop on the next pointer event, and a
+        // resize that happened while asleep is honoured by the resizeCanvas()
+        // call on the first awake frame below.
+        sleeping = true;
         return;
       }
 
@@ -1194,7 +1202,11 @@ export function SplashCursor({
      * the device's native ratio; this function is local to this effect.
      */
     function scaleByPixelRatio(input: number) {
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      // 1.5, down from 2: the fluid is soft dye with no crisp edges, and on
+      // a dpr-2 laptop the cap is the difference between a 3840-wide and a
+      // 2880-wide target — ~44% fewer pixels for every advection/display
+      // pass, invisible in the result.
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
       return Math.floor(input * pixelRatio);
     }
 

@@ -63,12 +63,34 @@ export function CursorGlow() {
       ty = t.clientY
     }
 
-    function tick() {
+    /**
+     * SLEEPING LOOP. The old tick re-queued itself unconditionally, so the
+     * glow kept writing sub-pixel transforms (the lerp asymptotes, it never
+     * lands) and invalidating its layer 60x/s with the pointer parked —
+     * forever. Now the loop cancels itself once it is within a pixel of the
+     * target and the pointer handlers wake it back up; a parked cursor costs
+     * zero frames.
+     */
+    let sleeping = false
+    function wake() {
+      if (!sleeping) return
+      sleeping = false
       rafId = requestAnimationFrame(tick)
+    }
 
+    function tick() {
       /* Lerp render position toward target */
       rx += (tx - rx) * LERP_FACTOR
       ry += (ty - ry) * LERP_FACTOR
+
+      const settled = Math.abs(tx - rx) < 0.5 && Math.abs(ty - ry) < 0.5
+      if (settled) {
+        rx = tx
+        ry = ty
+        sleeping = true
+      } else {
+        rafId = requestAnimationFrame(tick)
+      }
 
       /* Write directly to DOM — no React setState, no re-render */
       if (blobRef.current) {
@@ -77,13 +99,15 @@ export function CursorGlow() {
       }
     }
 
-    window.addEventListener('mousemove', onMouseMove, { passive: true })
-    window.addEventListener('touchmove', onTouchMove, { passive: true })
+    const onMouseMoveWake = (e: MouseEvent) => { onMouseMove(e); wake() }
+    const onTouchMoveWake = (e: TouchEvent) => { onTouchMove(e); wake() }
+    window.addEventListener('mousemove', onMouseMoveWake, { passive: true })
+    window.addEventListener('touchmove', onTouchMoveWake, { passive: true })
     rafId = requestAnimationFrame(tick)
 
     return () => {
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('touchmove', onTouchMove)
+      window.removeEventListener('mousemove', onMouseMoveWake)
+      window.removeEventListener('touchmove', onTouchMoveWake)
       cancelAnimationFrame(rafId)
     }
   }, [])

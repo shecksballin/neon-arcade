@@ -38,21 +38,20 @@ export function LiquidFilter() {
           colorInterpolationFilters="sRGB"
         >
           {/* Step 1 — generate animated fractal noise */}
+          {/* STATIC noise, deliberately. The old SMIL <animate> morphed
+              baseFrequency forever, which forced the browser to regenerate
+              fractal noise + displacement + blur over every filtered element
+              on EVERY frame, for the lifetime of the page — one of the two
+              biggest continuous costs on the landing page, for a morph that
+              was barely perceptible on a nav pill. The liquid-glass
+              distortion itself (what people actually see) is unchanged. */}
           <feTurbulence
             type="fractalNoise"
             baseFrequency="0.012 0.015"
             numOctaves={3}
             seed={5}
             result="noise"
-          >
-            {/* Slowly oscillate frequency to create the "breathing liquid" feel */}
-            <animate
-              attributeName="baseFrequency"
-              values="0.012 0.015;0.018 0.010;0.012 0.015"
-              dur="14s"
-              repeatCount="indefinite"
-            />
-          </feTurbulence>
+          />
 
           {/* Step 2 — displace source pixels using the noise map
               xChannelSelector="R" → red channel drives horizontal warp

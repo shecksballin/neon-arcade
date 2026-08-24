@@ -101,7 +101,16 @@ export function useDevice(): DeviceInfo {
     // `isNarrow` still produces a single re-render rather than two.
     const touchMq = window.matchMedia(TOUCH_QUERY);
     const narrowMq = window.matchMedia(NARROW_QUERY);
-    const sync = () => setDevice(readDevice());
+    const sync = () =>
+      setDevice((prev) => {
+        // readDevice() returns a fresh object every call; without this bail
+        // every raw resize event (dozens/second while dragging a window
+        // edge, or a mobile URL-bar collapse) re-rendered the ENTIRE app.
+        const next = readDevice();
+        return prev.isTouch === next.isTouch && prev.isNarrow === next.isNarrow
+          ? prev
+          : next;
+      });
 
     touchMq.addEventListener("change", sync);
     narrowMq.addEventListener("change", sync);

@@ -16,7 +16,12 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { useNeonBucks } from "./NeonBucksStore";
 import { useCurrency } from "./CurrencyStore";
-import { AccountSetup } from "./components/AccountSetup";
+// Lazy: AccountSetup is a full-screen view reached only through the sign-in
+// gate, but as a static import its ~400 lines shipped in the entry chunk
+// every visitor downloads before first paint.
+const AccountSetup = React.lazy(() =>
+  import("./components/AccountSetup").then((m) => ({ default: m.AccountSetup })),
+);
 import { ProfileSettings } from "./components/ProfileSettings";
 import { GameChunkLoading } from "./components/common/GameChunkLoading";
 // Mid-match "are you sure? leaving forfeits" — a live game registers the
@@ -557,7 +562,18 @@ export default function App() {
       requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
       cancelIdleCallback?: (id: number) => void;
     };
-    const warm = () => void import("./components/ArcadeView");
+    const warm = () => {
+      void import("./components/ArcadeView");
+      // The cursor FX mount on the first pointer move (usePointerAwake); a
+      // cold visitor used to pay three.js fetch+parse AND two WebGL inits in
+      // that single burst — a visible hitch right as they start interacting.
+      // Warming the chunks here (idle time, after paint) leaves only the GL
+      // init for the pointer-move moment.
+      if (HEAVY_FX) {
+        void import("./components/glass/CursorBlob3D");
+        void import("./components/SplashCursor");
+      }
+    };
     if (w.requestIdleCallback) {
       const id = w.requestIdleCallback(warm, { timeout: 3000 });
       return () => w.cancelIdleCallback?.(id);
@@ -1138,7 +1154,9 @@ export default function App() {
             >
               ‹ Exit setup
             </button>
-            <AccountSetup onComplete={handleAccountComplete} />
+            <React.Suspense fallback={null}>
+              <AccountSetup onComplete={handleAccountComplete} />
+            </React.Suspense>
           </motion.div>
         ) : view === "arcade" ? (
           <motion.div
@@ -1478,13 +1496,16 @@ function LandingView({
             </SafeErrorBoundary>
           </>
         )}
-        <GlassPanel
-          variant="md"
-          radius={0}
-          style={{ position: "absolute", inset: 0, zIndex: 2, border: "none", boxShadow: "none" }}
-        >
-          <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/80" />
-        </GlassPanel>
+        {/* PLAIN gradient scrim — deliberately NOT a GlassPanel. The panel's
+            full-viewport backdrop-filter (blur+saturate+contrast) sat directly
+            on top of BOTH WebGL canvases, so every fluid/blob frame was billed
+            an additional full-screen blur readback — measured at ~39fps on an
+            M-series laptop. The canvases are already soft (bloom, fluid dye);
+            the scrim keeps the darkening without the per-frame tax. */}
+        <div
+          className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/80"
+          style={{ zIndex: 2 }}
+        />
       </div>
 
       {/*
