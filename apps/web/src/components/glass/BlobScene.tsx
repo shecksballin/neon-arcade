@@ -6,7 +6,6 @@
  *   - Horizontal scanlines cutting through the lower hemisphere
  *   - Perspective compression on the lines (wider gap at top → denser at bottom)
  *   - Bloom glow halo via postprocessing
- *   - Faded reflection mesh below the sun
  *   - Cursor follow + lerp from your original code (untouched)
  *
  * The scanline effect is a custom GLSL shader — no texture needed.
@@ -20,7 +19,8 @@ import * as THREE from "three";
 
 /* ── Config ─────────────────────────────────────────────────────────────── */
 
-const GLOW_COLOR = "#00FFEA";
+// Deep-teal sun (was #00FFEA cyan) — matches the arcade's #15bea0 accent.
+const GLOW_COLOR = "#15bea0";
 const LERP_FACTOR = 0.06;
 const RADIUS = 1.1; // sphere radius — increase to make it bigger
 
@@ -81,7 +81,8 @@ const vertexShader = /* glsl */ `
 const fragmentShader = /* glsl */ `
   uniform vec3  uColor;
   uniform float uOpacity;
-  uniform float uReflection; // 0.0 = normal sun, 1.0 = reflection (fades top)
+  uniform float uReflection; // kept at 0.0 — the reflection copy was removed,
+                             // and 0.0 makes the fade branch below a no-op
   uniform float uRadius;
 
   varying vec2  vUv;
@@ -127,7 +128,6 @@ const fragmentShader = /* glsl */ `
 
 function RetrowaveSun() {
   const sunRef = useRef<THREE.Mesh>(null);
-  const reflectionRef = useRef<THREE.Mesh>(null);
   const lightRef = useRef<THREE.PointLight>(null);
   const { camera } = useThree();
 
@@ -142,18 +142,8 @@ function RetrowaveSun() {
     [],
   );
 
-  const reflUniforms = useMemo(
-    () => ({
-      uColor: { value: new THREE.Color(GLOW_COLOR) },
-      uOpacity: { value: 0.22 },
-      uReflection: { value: 1.0 },
-      uRadius: { value: RADIUS },
-    }),
-    [],
-  );
-
   useFrame(() => {
-    if (!sunRef.current || !reflectionRef.current || !lightRef.current) return;
+    if (!sunRef.current || !lightRef.current) return;
 
     /* ── Cursor tracking (your original logic, untouched) ────────────── */
     ndcVec.set(mouse.x, mouse.y, 0.5);
@@ -164,13 +154,6 @@ function RetrowaveSun() {
     sunRef.current.position.lerp(targetPos, LERP_FACTOR);
     lightRef.current.position.copy(sunRef.current.position);
 
-    /* ── Reflection sits just below the sun, flipped on Y ───────────── */
-    reflectionRef.current.position.set(
-      sunRef.current.position.x,
-      sunRef.current.position.y - RADIUS * 2.05, // gap between sun bottom and reflection top
-      sunRef.current.position.z,
-    );
-    reflectionRef.current.scale.set(1, -1, 1); // flip vertically
   });
 
   const sharedGeom = useMemo(() => new THREE.CircleGeometry(RADIUS, 64), []);
@@ -192,25 +175,6 @@ function RetrowaveSun() {
           vertexShader={vertexShader}
           fragmentShader={fragmentShader}
           uniforms={sunUniforms}
-          transparent
-          side={THREE.FrontSide}
-        />
-      </mesh>
-
-      {/*
-       * ── Reflection ─────────────────────────────────────────────────
-       * Same sphere geometry, scaled -1 on Y (flipped upside-down),
-       * positioned just below the sun's bottom edge.
-       * uReflection = 1.0 tells the shader to fade the top of this copy.
-       *
-       * The reflection also has the scanlines but they run in reverse
-       * (mirrored) because of the Y flip — adds to the retrowave feel.
-       */}
-      <mesh ref={reflectionRef} geometry={sharedGeom}>
-        <shaderMaterial
-          vertexShader={vertexShader}
-          fragmentShader={fragmentShader}
-          uniforms={reflUniforms}
           transparent
           side={THREE.FrontSide}
         />

@@ -138,7 +138,9 @@ import { NeonViewportGlow } from "./components/NeonViewportGlow";
 import { SafeErrorBoundary } from "./components/SafeErrorBoundary";
 import ActiveUsers from "./components/ActiveUsers";
 import { useActiveUsers } from "./hooks/useActiveUsers";
-import TrueFocus from "./components/TrueFocus";
+import ParticleText from "./components/ParticleText";
+import TargetCursor from "./components/TargetCursor";
+import Particles from "./components/glass/Particles";
 
 // Auth comes from our own deferred context, not from Privy's hooks — the SDK
 // is fetched on idle and mounted outside this tree so it can't block first
@@ -192,6 +194,20 @@ const LEGACY_PROFILE_KEY = "neon_arcade_profile";
  * values are this file's own `View` union. Only "connect" differs by name, and
  * that mismatch is exactly why this table exists rather than a cast.
  */
+/** The nine game screens — the views where the arcade cursor must NOT mount
+ *  (each game owns its pointer). Derived from the same catalog table below. */
+const GAME_VIEWS: ReadonlySet<View> = new Set<View>([
+  "chess",
+  "neonconnect",
+  "volley",
+  "kickoff",
+  "cells",
+  "asteroids",
+  "golf",
+  "clumsy",
+  "pugshooter",
+]);
+
 const PRIVATE_WAGER_VIEWS: Record<string, View> = {
   chess: "chess",
   connect: "neonconnect",
@@ -907,6 +923,25 @@ export default function App() {
         </button>
       )}
 
+      {/* ARCADE CURSOR (React Bits TargetCursor) — every page EXCEPT the
+          games: games own their pointers (crosshairs, pointer lock, iframes
+          with their own cursor styling). The selector covers the app's
+          interactive vocabulary — buttons, links, and the clickable card
+          divs — so the reticle locks onto anything you can press without
+          sprinkling .cursor-target through the tree. Returns null on mobile
+          by itself. */}
+      {!GAME_VIEWS.has(view) && (
+        <TargetCursor
+          targetSelector="button, a, [role='button'], .cursor-target, .magic-bento-card, .cursor-pointer"
+          spinDuration={1.6}
+          hideDefaultCursor={true}
+          parallaxOn={true}
+          hoverDuration={0.1}
+          cursorColor="#00ffd1"
+          hoverSoundSrc="/hoversoundfx.wav"
+        />
+      )}
+
       {/* Floating Top Nav */}
       <AnimatePresence>
         {/* Hidden during account setup: every nav control (logo, library,
@@ -1471,6 +1506,22 @@ function LandingView({
           own; the two WebGL layers are an enhancement for pointer devices
           that can afford them (see HEAVY_FX). */}
       <div className="fixed inset-0 z-0 bg-[#081616]">
+        {/* Ambient mint starfield (React Bits Particles, ogl) — the base
+            background layer; the cursor FX float above it. Continuous by
+            design (a frozen starfield reads as dead); 700 GL points are
+            cheap and rAF pauses in hidden tabs. */}
+        <div className="absolute inset-0" style={{ zIndex: 0 }}>
+          <Particles
+            particleColors={["#00ffd1"]}
+            particleCount={700}
+            particleSpread={10}
+            speed={0.1}
+            particleBaseSize={100}
+            moveParticlesOnHover={true}
+            alphaParticles={false}
+            disableRotation={false}
+          />
+        </div>
         {showHeavyFx && (
           <>
             <SafeErrorBoundary>
@@ -1481,13 +1532,12 @@ function LandingView({
             <CursorGlow />
             <SafeErrorBoundary>
               <React.Suspense fallback={null}>
+                {/* Spec defaults (splash cursor - default settings.txt):
+                    every tuning prop at its stock value — the only overrides
+                    are the static mint colour (no rainbow cycling) and the
+                    layout props this layer needs. */}
                 <SplashCursor
-                  DENSITY_DISSIPATION={2}
-                  VELOCITY_DISSIPATION={3.5}
-                  PRESSURE={0.45}
-                  SPLAT_RADIUS={0.47}
-                  SPLAT_FORCE={17000}
-                  COLOR="#00FFEA"
+                  COLOR="#00ffd1"
                   RAINBOW_MODE={false}
                   zIndex={1}
                   position="absolute"
@@ -1523,15 +1573,58 @@ function LandingView({
           transition={{ duration: 1, delay: 0.2 }}
           className="max-w-5xl w-full"
         >
-          <h1 className="text-5xl sm:text-7xl md:text-9xl font-black italic tracking-tighter text-white mb-6 neon-text-glow leading-none uppercase [&_.focus-word:nth-child(5)]:text-[#00FFD1] [&_.focus-word:nth-child(5)]:[-webkit-text-stroke:2px_black] [&_.focus-container]:gap-0 [&_.focus-word]:leading-[0.6] [&_.focus-word:nth-child(5)]:-mt-12 sm:[&_.focus-word:nth-child(5)]:-mt-16 md:[&_.focus-word:nth-child(5)]:-mt-24 [&_.focus-word:nth-child(5)]:-translate-y-[20px] [&_.focus-container>*:nth-child(-n+3)]:translate-y-[45px] sm:[&_.focus-container>*:nth-child(-n+3)]:translate-y-[75px] md:[&_.focus-container>*:nth-child(-n+3)]:translate-y-[115px]">
-            <TrueFocus 
-              sentence="SKILL - BASED <br/> BETTING"
-              manualMode={false}
-              blurAmount={5}
-              borderColor="#00ffd1"
-              animationDuration={2}
-              pauseBetweenAnimations={1}
-            />
+          {/* HERO — React Bits ParticleText, one instance per line so the
+              stacked SKILL-BASED / BETTING layout survives (the component
+              samples a single line of text). Sizes mirror the old TrueFocus
+              h1 exactly: text-5xl/7xl/9xl line boxes. fontWeight carries the
+              italic through the canvas font shorthand ("italic 900 96px …").
+              trigger="click" = clicking the headline replays the scatter. */}
+          <h1 className="mb-6 select-none" aria-label="SKILL-BASED BETTING">
+            <div className="h-[3.5rem] sm:h-[5.5rem] md:h-[9.5rem]">
+              <ParticleText
+                text="SKILL-BASED"
+                particleSize={1.9}
+                density={4}
+                color="#a9d4ff"
+                highlightColor="#00ffd1"
+                scatter={160}
+                gatherDuration={1600}
+                stagger={420}
+                pointerRepel={40}
+                repelRadius={120}
+                idleDrift={0}
+                trigger="click"
+                fontSize="clamp(3rem, 12vw, 8rem)"
+                fontWeight="italic 900"
+                fontFamily="inherit"
+                glow
+              />
+            </div>
+            {/* Dark halo on this line only: BETTING sits directly over the
+                bright retrowave sun, and mint particles vanished against it —
+                the old TrueFocus survived the same spot with a black text
+                stroke. drop-shadow filters the canvas layer, so every
+                particle carries its own dark edge. */}
+            <div className="h-[3.5rem] sm:h-[5.5rem] md:h-[9.5rem] [filter:drop-shadow(0_2px_2px_rgba(0,0,0,0.9))_drop-shadow(0_0_12px_rgba(0,0,0,0.7))]">
+              <ParticleText
+                text="BETTING"
+                particleSize={1.9}
+                density={4}
+                color="#a9d4ff"
+                highlightColor="#00ffd1"
+                scatter={160}
+                gatherDuration={1600}
+                stagger={420}
+                pointerRepel={40}
+                repelRadius={120}
+                idleDrift={0}
+                trigger="click"
+                fontSize="clamp(3rem, 12vw, 8rem)"
+                fontWeight="italic 900"
+                fontFamily="inherit"
+                glow
+              />
+            </div>
           </h1>
 
           <motion.p

@@ -1,0 +1,71 @@
+.target-cursor-wrapper {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  /* Above NeonViewportGlow (z-9999) — the cursor must top every overlay. */
+  z-index: 10050;
+  /* NO mix-blend-mode: difference (the reactbits default) — it re-tints the
+     cursor per backdrop, and the ask is a STATIC #00ffd1. The dark
+     drop-shadows below keep it visible over the arcade's mint surfaces
+     (Play Now, wager cards) where a flat mint cursor would vanish. */
+  transform: translate(-50%, -50%);
+}
+
+.target-cursor-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 4px;
+  background: #fff;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  will-change: transform;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.8));
+}
+
+.target-cursor-corner {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  border: 3px solid #fff;
+  will-change: transform;
+  filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.8));
+}
+
+.corner-tl {
+  transform: translate(-150%, -150%);
+  border-right: none;
+  border-bottom: none;
+}
+
+.corner-tr {
+  transform: translate(50%, -150%);
+  border-left: none;
+  border-bottom: none;
+}
+
+.corner-br {
+  transform: translate(50%, 50%);
+  border-left: none;
+  border-top: none;
+}
+
+.corner-bl {
+  transform: translate(-150%, 50%);
+  border-right: none;
+  border-top: none;
+}
+
+/* hideDefaultCursor support: element-level `cursor-pointer` classes override
+   a body style, so the component toggles this class on <html> instead —
+   one rule beats them all while the custom cursor is mounted. */
+.cursor-hidden,
+.cursor-hidden * {
+  cursor: none !important;
+}
