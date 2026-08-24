@@ -32,7 +32,7 @@ export class UI {
       end: $("end"), endTitle: $("endTitle"), endSub: $("endSub"),
       stTiles: $("stTiles"), stBumps: $("stBumps"), stTime: $("stTime"),
       stTilesK: $("stTilesK"), stBumpsK: $("stBumpsK"), stTimeK: $("stTimeK"),
-      spectateBtn: $("spectateBtn"), againBtn: $("againBtn"),
+      spectateBtn: $("spectateBtn"), againBtn: $("againBtn"), exitBtn: $("exitBtn"),
       spectateBar: $("spectateBar"), muteBtn: $("muteBtn"),
       touchUI: $("touchUI"), btnJump: $("btnJump"), btnDive: $("btnDive"),
       btnSprint: $("btnSprint"), dev: $("dev"),
@@ -60,6 +60,7 @@ export class UI {
     this.els.resumeBtn.textContent = STR.backToGame;
     this.els.spectateBtn.textContent = STR.spectate;
     this.els.againBtn.textContent = STR.playAgain;
+    this.els.exitBtn.textContent = STR.exit;
     this.els.stTilesK.textContent = STR.statTiles;
     this.els.stBumpsK.textContent = STR.statBumps;
     this.els.stTimeK.textContent = STR.statTime;
@@ -196,9 +197,10 @@ export class UI {
 
   setMuted(m) { this.els.muteBtn.textContent = m ? STR.muted : STR.unmuted; }
 
-  bind({ onPlay, onAgain, onSpectate, onResume, onMute }) {
+  bind({ onPlay, onAgain, onSpectate, onResume, onMute, onExit }) {
     this.els.playBtn.onclick = onPlay;
     this.els.againBtn.onclick = onAgain;
+    if (onExit) this.els.exitBtn.onclick = onExit;
     this.els.spectateBtn.onclick = onSpectate;
     this.els.resumeBtn.onclick = onResume;
     this.els.muteBtn.onclick = onMute;

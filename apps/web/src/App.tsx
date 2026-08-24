@@ -194,20 +194,6 @@ const LEGACY_PROFILE_KEY = "neon_arcade_profile";
  * values are this file's own `View` union. Only "connect" differs by name, and
  * that mismatch is exactly why this table exists rather than a cast.
  */
-/** The nine game screens — the views where the arcade cursor must NOT mount
- *  (each game owns its pointer). Derived from the same catalog table below. */
-const GAME_VIEWS: ReadonlySet<View> = new Set<View>([
-  "chess",
-  "neonconnect",
-  "volley",
-  "kickoff",
-  "cells",
-  "asteroids",
-  "golf",
-  "clumsy",
-  "pugshooter",
-]);
-
 const PRIVATE_WAGER_VIEWS: Record<string, View> = {
   chess: "chess",
   connect: "neonconnect",
@@ -923,14 +909,16 @@ export default function App() {
         </button>
       )}
 
-      {/* ARCADE CURSOR (React Bits TargetCursor) — every page EXCEPT the
-          games: games own their pointers (crosshairs, pointer lock, iframes
-          with their own cursor styling). The selector covers the app's
-          interactive vocabulary — buttons, links, and the clickable card
-          divs — so the reticle locks onto anything you can press without
-          sprinkling .cursor-target through the tree. Returns null on mobile
-          by itself. */}
-      {!GAME_VIEWS.has(view) && (
+      {/* ARCADE CURSOR (React Bits TargetCursor) — everywhere EXCEPT live
+          gameplay: `gameInSession` is the games' own "a match is running"
+          report (the same signal that blocks pop-ups), so the reticle shows
+          on the landing page, the library, account setup AND every game
+          LOBBY, then hands off to the game's own pointer the moment play
+          starts. The selector covers the app's interactive vocabulary —
+          buttons, links, and the clickable card divs — so it locks onto
+          anything pressable without sprinkling .cursor-target around.
+          Returns null on mobile by itself. */}
+      {!gameInSession && (
         <TargetCursor
           targetSelector="button, a, [role='button'], .cursor-target, .magic-bento-card, .cursor-pointer"
           spinDuration={1.6}
@@ -942,6 +930,14 @@ export default function App() {
           clickSoundSrc="/clicksoundfx.wav"
         />
       )}
+
+      {/* Fullscreen — bottom-left, out of the nav bar. Same visibility rule
+          as the nav (games and account setup hide it); same shared toggle as
+          every game, and the global 'f' keybind still works. */}
+      {view !== "account_setup" &&
+        (!gameInSession || view === "neonconnect" || view === "chess") && (
+          <FullscreenButton positionClassName="fixed bottom-6 left-6 z-40" />
+        )}
 
       {/* Floating Top Nav */}
       <AnimatePresence>
@@ -1059,10 +1055,6 @@ export default function App() {
                   reward as one row among them. Message and friend rows open
                   the matching sidebar panel through `openSidebarPanel`.
                 */}
-                {/* Fullscreen for the main menu (and anywhere the nav
-                    shows). Same shared toggle as every game; 'f' works too. */}
-                <FullscreenButton />
-
                 <NotificationCenter
                   signedIn={hasAccount}
                   dailyAvailable={dailyAvailable}

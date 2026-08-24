@@ -324,46 +324,62 @@ export default function NeonKickoffGame({
           {/* Level progression — compact strip under the title. */}
           <LobbyLevelStrip />
 
+          {/* Mode cards — the EXACT card recipe every sibling lobby uses
+              (Golf/Clumsy/Volley): mint-gradient Wager Match first with the
+              top accent strip, then Private Wager and Practice as bordered
+              glow cards, all centred with the w-8 icons. */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full text-left">
+            <ParticleCard
+              onClick={enterMatchmaking}
+              className="magic-bento-card magic-bento-card--border-glow px-8 py-6 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl hover:shadow-[0_0_50px_rgba(0,255,209,0.3)] hover:scale-[1.02] active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
+            >
+              <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>
+              <Globe className="w-8 h-8 group-hover:rotate-12 transition-transform" />
+              <div className="text-center">
+                <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">Wager Match</span>
+                <span className="block text-[8px] opacity-60 font-bold tracking-widest mt-1">
+                  GLOBAL WAGER ARENA
+                </span>
+              </div>
+            </ParticleCard>
+
+            <ParticleCard
+              onClick={() => setShowPrivateWager(true)}
+              className="magic-bento-card magic-bento-card--border-glow px-8 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
+            >
+              <Swords className="w-8 h-8 text-zinc-400 group-hover:rotate-12 transition-transform group-hover:text-[#00FFD1]" />
+              <div className="text-center">
+                <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">
+                  Private Wager
+                </span>
+                <span className="block text-[8px] text-white/40 font-bold tracking-widest mt-1">
+                  INVITE A FRIEND
+                </span>
+              </div>
+            </ParticleCard>
+
             <ParticleCard
               onClick={() => {
                 setView('practice');
                 useGame.getState().quitToMenu(); // land on the game's menu
               }}
-              className="magic-bento-card p-6 rounded-2xl bg-[#081616] border border-[#00FFD1]/40 text-white hover:border-[#00FFD1] hover:shadow-[0_0_20px_rgba(0,255,209,0.2)] transition-all cursor-pointer group"
-              style={{ backdropFilter: 'none' }}
+              className="magic-bento-card magic-bento-card--border-glow px-8 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
             >
-              <Bot className="w-6 h-6 mb-3 text-zinc-400 group-hover:rotate-12 transition-transform" />
-              <div className="font-black uppercase tracking-tighter italic mb-1">Practice</div>
-              <p className="text-[10px] font-mono uppercase tracking-widest text-white/40">
-                Vs the AI keeper · earn XP
-              </p>
-            </ParticleCard>
-
-            <ParticleCard
-              onClick={enterMatchmaking}
-              className="magic-bento-card p-6 rounded-2xl bg-[#081616] border border-[#00FFD1]/40 text-white hover:border-[#00FFD1] hover:shadow-[0_0_20px_rgba(0,255,209,0.2)] transition-all cursor-pointer group"
-              style={{ backdropFilter: 'none' }}
-            >
-              <Globe className="w-6 h-6 mb-3 text-zinc-400 group-hover:rotate-12 transition-transform" />
-              <div className="font-black uppercase tracking-tighter italic mb-1">Online Match</div>
-              <p className="text-[10px] font-mono uppercase tracking-widest text-white/40">
-                Ranked 1v1 · best of five
-              </p>
-            </ParticleCard>
-
-            <ParticleCard
-              onClick={() => setShowPrivateWager(true)}
-              className="magic-bento-card p-6 rounded-2xl bg-[#081616] border border-[#00FFD1]/40 text-white hover:border-[#00FFD1] hover:shadow-[0_0_20px_rgba(0,255,209,0.2)] transition-all cursor-pointer group"
-              style={{ backdropFilter: 'none' }}
-            >
-              <Swords className="w-6 h-6 mb-3 text-zinc-400 group-hover:rotate-12 transition-transform" />
-              <div className="font-black uppercase tracking-tighter italic mb-1">Private Wager</div>
-              <p className="text-[10px] font-mono uppercase tracking-widest text-white/40">
-                Invite a friend · winner takes it
-              </p>
+              <Bot className="w-8 h-8 text-zinc-400 group-hover:rotate-12 transition-transform" />
+              <div className="text-center">
+                <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">
+                  Practice
+                </span>
+                <span className="block text-[8px] text-white/40 font-bold tracking-widest mt-1">
+                  VS THE AI KEEPER
+                </span>
+              </div>
             </ParticleCard>
           </div>
+
+          <p className="text-[9px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/40">
+            Online matches are free — no stake, no entry fee
+          </p>
 
           {/* Shared lobby footer — see common/LobbyModeTiles. */}
           <LobbyModeTiles />
@@ -393,7 +409,24 @@ export default function NeonKickoffGame({
   }
 
   // practice + online share the PenaltyCore mount.
-  const showMenuPill = screen === 'game' && !paused && phase !== 'over';
+  // ESC toggles the game's pause overlay while a round is live (the old
+  // Menu pill's exact conditions). The overlay's own Resume/quit buttons
+  // handle the rest; togglePause is idempotent about re-entry.
+  const canPause = screen === 'game' && phase !== 'over';
+  useEffect(() => {
+    if (!(view === 'practice' || view === 'online')) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.repeat) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      if (!canPauseRef.current) return;
+      useGame.getState().togglePause();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [view]);
+  const canPauseRef = useRef(false);
+  canPauseRef.current = canPause;
   const onlineOver = view === 'online' && phase === 'over';
 
   return (
@@ -411,18 +444,8 @@ export default function NeonKickoffGame({
         />
       )}
 
-      {/* The pug-style Menu pill — opens the game's own pause overlay
-          (Resume / Fullscreen / guarded Quit). Esc does the same. */}
-      {showMenuPill && (
-        <div className="absolute bottom-8 right-8 z-[60]">
-          <button
-            onClick={togglePause}
-            className="px-[22px] py-[10px] rounded-xl text-[12px] font-black italic uppercase tracking-[0.06em] text-white/75 bg-black/40 border border-[#00FFD1]/20 backdrop-blur-[10px] transition-colors hover:text-[#00FFD1] hover:border-[#00FFD1]/50 cursor-pointer"
-          >
-            Menu
-          </button>
-        </div>
-      )}
+      {/* ESC opens the game's own pause overlay (the visible Menu pill was
+          removed by request — same convention as every other game now). */}
 
       {/* ONLINE ending — the arcade's shared results screen (the practice
           board inside PenaltyCore is suppressed online). */}

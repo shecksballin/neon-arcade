@@ -125,11 +125,22 @@ export default function ClumsyPlay({ onExit, playerName }: ClumsyPlayProps) {
    * See lib/sessionXp.ts for what the server does with an unverifiable
    * result (short version: clamps it, caps it daily, never touches RP).
    */
+  // The message listener binds once, before leaveNow exists — read through
+  // a ref so the exit message always runs the CURRENT guarded-exit closure.
+  const leaveNowRef = useRef<() => void>(() => {});
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       // Same-origin only — the game is served from our own /public.
       if (event.origin !== window.location.origin) return;
       const type = event.data?.type;
+
+      if (type === 'neon-clumsy:exit') {
+        // The end screen's EXIT button. The round is already over when it
+        // shows, so the guard is inactive and this leaves immediately —
+        // same path as the pause menu's quit.
+        leaveNowRef.current();
+        return;
+      }
 
       if (type === 'neon-clumsy:round-start') {
         // A round went live: at boot, and again on every in-iframe PLAY
@@ -181,6 +192,7 @@ export default function ClumsyPlay({ onExit, playerName }: ClumsyPlayProps) {
   // pending, requestExit runs the navigation immediately (the player is
   // telling us to hurry up).
   const leaveNow = useCallback(() => requestExit(onExit), [requestExit, onExit]);
+  leaveNowRef.current = leaveNow;
 
   return (
     <div className="absolute inset-0 w-full h-full bg-[#0d0824]">

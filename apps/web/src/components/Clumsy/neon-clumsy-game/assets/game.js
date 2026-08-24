@@ -807,6 +807,18 @@ ui.bind({
   onSpectate: () => startSpectate(),
   onResume: () => setPaused(false),
   onMute: () => ui.setMuted(audio.toggleMute()),
+  // EXIT on the end screen: the arcade owns navigation, so this only asks —
+  // the parent (ClumsyPlay) hears it and runs its normal guarded exit. When
+  // the game runs standalone (no parent) the button falls back to the menu.
+  onExit: () => {
+    if (window.parent !== window) {
+      window.parent.postMessage({ type: "neon-clumsy:exit" }, window.location.origin);
+    } else {
+      mode = "MENU";
+      ui.showMenu();
+      menuCamera(0);
+    }
+  },
 });
 addEventListener("keydown", (e) => {
   if (e.code === "Escape") {

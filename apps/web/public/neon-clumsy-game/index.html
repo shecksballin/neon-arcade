@@ -222,16 +222,19 @@
   #pause { z-index: 25; background: rgba(13,8,36,.8); gap: 18px; }
   .bigWord { font-size: clamp(40px, 8vw, 80px); font-weight: 900; letter-spacing: .1em;
              color: #fff; text-shadow: 0 0 22px var(--violet); }
-  #end { z-index: 26; background: rgba(13,8,36,.82); gap: 12px; text-align: center; }
+  /* RESULTS — #00ffd1 scheme (was yellow/violet, the one screen still on
+     the old palette). Win and lose share the mint identity; lose keeps a
+     dimmer glow so the outcome still reads at a glance. */
+  #end { z-index: 26; background: rgba(3,10,18,.86); gap: 12px; text-align: center; }
   #endTitle { font-size: clamp(48px, 10vw, 110px); font-weight: 900; transform: rotate(-2deg);
-              color: var(--yellow); text-shadow: 0 0 26px rgba(255,216,77,.9), 0 6px 0 #7a5a00; }
-  #endTitle.lose { color: var(--pink); text-shadow: 0 0 26px rgba(255,95,162,.9), 0 6px 0 #6e1140; }
-  #endSub { font-size: clamp(18px, 3.5vw, 30px); font-weight: 900; letter-spacing: .18em; color: #fff; }
+              color: var(--mint); text-shadow: 0 0 26px rgba(0,255,209,.9), 0 6px 0 #00806a; }
+  #endTitle.lose { color: #7de8d8; text-shadow: 0 0 18px rgba(0,255,209,.45), 0 6px 0 #0a4d44; }
+  #endSub { font-size: clamp(18px, 3.5vw, 30px); font-weight: 900; letter-spacing: .18em; color: #e8f6f4; }
   #endStats { display: flex; gap: 12px; margin: 10px 0 6px; flex-wrap: wrap; justify-content: center; }
-  .stat { background: var(--panel); border: 2px solid rgba(138,92,255,.55); border-radius: 14px;
+  .stat { background: var(--panel); border: 2px solid rgba(0,255,209,.4); border-radius: 14px;
           padding: 10px 18px; min-width: 120px; }
   .stat .v { font-size: 26px; font-weight: 900; color: var(--mint); }
-  .stat .k { font-size: 10.5px; letter-spacing: .18em; color: rgba(255,255,255,.6); font-weight: 800; }
+  .stat .k { font-size: 10.5px; letter-spacing: .18em; color: rgba(232,246,244,.6); font-weight: 800; }
   #endBtns { display: flex; gap: 14px; margin-top: 4px; }
   /* Sits UNDER the players-left panel — both live top-centre. */
   #spectateBar { position: fixed; top: 120px; left: 50%; transform: translateX(-50%); z-index: 6;
@@ -395,6 +398,7 @@
   <div id="endBtns">
     <button id="spectateBtn" class="btn mid ghost"></button>
     <button id="againBtn" class="btn mid"></button>
+    <button id="exitBtn" class="btn mid ghost"></button>
   </div>
 </div>
 

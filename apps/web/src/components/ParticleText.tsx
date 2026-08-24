@@ -144,6 +144,10 @@ const ParticleText = ({
     if (!ctx) return undefined;
 
     let particles: Particle[] = [];
+    // Offscreen buffer for the two-pass glow (see render): particles are
+    // drawn here once, then blitted to the visible canvas blurred + sharp.
+    const glowCanvas = document.createElement('canvas');
+    const glowCtx = glowCanvas.getContext('2d');
     let animationFrame: number | null = null;
     let resizeFrame: number | null = null;
     let buildId = 0;
@@ -199,29 +203,34 @@ const ParticleText = ({
       ensureRenderLoop();
     };
 
-    const drawParticle = (particle: Particle) => {
+    const drawParticle = (
+      target: CanvasRenderingContext2D,
+      particle: Particle
+    ) => {
       const size = particle.size;
-      ctx.fillStyle = particle.color;
+      target.fillStyle = particle.color;
 
       if (size <= 2.1) {
-        ctx.fillRect(particle.x - size / 2, particle.y - size / 2, size, size);
+        target.fillRect(particle.x - size / 2, particle.y - size / 2, size, size);
         return;
       }
 
-      ctx.beginPath();
-      ctx.arc(particle.x, particle.y, size / 2, 0, Math.PI * 2);
-      ctx.fill();
+      target.beginPath();
+      target.arc(particle.x, particle.y, size / 2, 0, Math.PI * 2);
+      target.fill();
     };
 
     function render(now: number) {
-      ctx!.clearRect(0, 0, width, height);
-
-      if (glow && !reducedMotion) {
-        ctx!.shadowBlur = particleSize * 3;
-        ctx!.shadowColor = highlightColor;
-      } else {
-        ctx!.shadowBlur = 0;
-      }
+      // TWO-PASS GLOW instead of the reactbits per-particle shadowBlur: a
+      // canvas shadow re-renders the blur for EVERY fill — thousands per
+      // frame during the gather, which is exactly the moment the page is
+      // also revealing. Drawing the particles once into an offscreen and
+      // blitting it twice (blurred, then sharp) costs two drawImages and
+      // ONE gpu blur, whatever the particle count.
+      const target = glow && !reducedMotion && glowCtx ? glowCtx : ctx!;
+      target.setTransform(dpr, 0, 0, dpr, 0, 0);
+      target.clearRect(0, 0, width, height);
+      ctx!.shadowBlur = 0;
 
       pointer.smoothX += (pointer.x - pointer.smoothX) * 0.18;
       pointer.smoothY += (pointer.y - pointer.smoothY) * 0.18;
@@ -271,12 +280,25 @@ const ParticleText = ({
           Math.abs(particle.y - particle.targetY);
         if (off > maxOffset) maxOffset = off;
 
-        ctx!.globalAlpha = clamp(0.35 + progress * 0.65, 0, 1);
-        drawParticle(particle);
+        target.globalAlpha = clamp(0.35 + progress * 0.65, 0, 1);
+        drawParticle(target, particle);
       });
 
-      ctx!.globalAlpha = 1;
-      ctx!.shadowBlur = 0;
+      target.globalAlpha = 1;
+
+      if (target !== ctx) {
+        // Composite: soft halo first (single blur pass over the whole
+        // buffer, in each particle's own colour), crisp particles on top.
+        ctx!.setTransform(1, 0, 0, 1, 0, 0);
+        ctx!.clearRect(0, 0, canvas.width, canvas.height);
+        ctx!.filter = `blur(${Math.max(2, particleSize * 2) * dpr}px)`;
+        ctx!.globalAlpha = 0.9;
+        ctx!.drawImage(glowCanvas, 0, 0);
+        ctx!.filter = 'none';
+        ctx!.globalAlpha = 1;
+        ctx!.drawImage(glowCanvas, 0, 0);
+        ctx!.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
 
       if (gathering && complete) {
         gathering = false;
@@ -309,6 +331,8 @@ const ParticleText = ({
       canvas.style.width = '100%';
       canvas.style.height = '100%';
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      glowCanvas.width = canvas.width;
+      glowCanvas.height = canvas.height;
 
       const computed = window.getComputedStyle(container);
       const resolvedFamily =

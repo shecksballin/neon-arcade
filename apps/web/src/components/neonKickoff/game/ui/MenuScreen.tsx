@@ -1,11 +1,9 @@
 import { motion } from 'motion/react';
 import { Bot, Goal, Users, Wifi } from 'lucide-react';
 import { useGame } from '../store';
-import { LeaderboardCard } from './LeaderboardCard';
 
 export function MenuScreen() {
   const startMatch = useGame((s) => s.startMatch);
-  const board = useGame((s) => s.board);
 
   return (
     <motion.div
@@ -57,7 +55,6 @@ export function MenuScreen() {
         </div>
 
         <div className="flex justify-center pb-8">
-          <LeaderboardCard board={board} rows={5} />
         </div>
       </div>
     </motion.div>

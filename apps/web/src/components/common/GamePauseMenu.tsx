@@ -25,8 +25,19 @@
  * progression overlays (z-[120]) — a player reaching for the exit must
  * always be able to see it.
  */
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { useIsFullscreen, toggleAppFullscreen } from './fullscreen'
+
+/** True for targets whose keystrokes must never drive the menu. */
+function isTypingTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false
+  return (
+    el.tagName === 'INPUT' ||
+    el.tagName === 'TEXTAREA' ||
+    el.tagName === 'SELECT' ||
+    el.isContentEditable
+  )
+}
 
 export function GamePauseMenu({
   onExit,
@@ -58,26 +69,36 @@ export function GamePauseMenu({
     onOpenChange?.(next)
   }
 
+  /**
+   * ESC IS THE MENU. The visible "Menu" pill was removed by request — the
+   * overlay now toggles on Escape, the same key every game's players already
+   * reach for. Notes:
+   *   - typing targets are ignored so a chat box can be escaped normally;
+   *   - Escape also releases pointer lock / exits fullscreen natively first
+   *     in some browsers — the second press lands here, which reads fine;
+   *   - the iframe games (Golf/Clumsy/Pug) each have their OWN in-iframe ESC
+   *     pause with a quit path, so a focused iframe swallowing this key does
+   *     not strand anyone.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.repeat) return
+      if (isTypingTarget(e.target)) return
+      setOpen((prev) => {
+        const next = !prev
+        onOpenChange?.(next)
+        return next
+      })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // onOpenChange is a stable-enough callee; re-binding per parent render
+    // would race a held key. Read via closure on purpose.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
     <>
-      {/* Trigger — the pug "Menu" pill, bottom-right. Hidden while open.
-          `inline` drops the fixed corner so a host control bar (Asteroids /
-          Cells) can lay the pill out with its other buttons instead of
-          having it pinned across the screen from them. */}
-      {!open && (
-        <div
-          className={inline ? 'z-[60]' : 'absolute bottom-8 right-8 z-[60]'}
-          style={{ pointerEvents: 'auto' }}
-        >
-          <button
-            onClick={() => setOpenAnd(true)}
-            className="px-[22px] py-[10px] rounded-xl text-[12px] font-black italic uppercase tracking-[0.06em] text-white/75 bg-black/40 border border-[#00FFD1]/20 backdrop-blur-[10px] transition-colors hover:text-[#00FFD1] hover:border-[#00FFD1]/50 cursor-pointer"
-          >
-            Menu
-          </button>
-        </div>
-      )}
-
       {open && (
         <div
           className="fixed inset-0 z-[125] flex flex-col items-center justify-center gap-[18px]"

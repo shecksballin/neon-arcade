@@ -705,18 +705,6 @@ function BalanceCard({
 }) {
   return (
     <div className="group relative overflow-hidden rounded-xl border border-[#00ffd1]/20 bg-gradient-to-br from-[#00ffd1]/10 to-transparent p-4">
-      {/* Watermark — follows the selected face. Pushed below the toggle so
-          it sits behind the BALANCE, the way this card always looked. */}
-      <div className="pointer-events-none absolute right-0 top-14 p-3 opacity-20 transition-opacity group-hover:opacity-40">
-        <img
-          src={tab === 'practice' ? '/neon-bucks-icon.png' : '/solana-sol-icon.svg'}
-          alt=""
-          aria-hidden="true"
-          referrerPolicy="no-referrer"
-          className="h-12 w-12 object-contain"
-        />
-      </div>
-
       {/* The toggle itself. `radiogroup` because the two options are one
           choice, not two independent buttons. */}
       <div

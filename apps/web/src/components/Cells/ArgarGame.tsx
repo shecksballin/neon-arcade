@@ -393,6 +393,8 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
   }, []);
   const animationFrameRef = useRef<number | null>(null);
   const lastTimeRef = useRef(performance.now());
+  /** Menu-open freeze for PRACTICE (see the loop's early-out). */
+  const menuPausedRef = useRef(false);
   
   // Audio context for sound FX
   const audioContext = useRef<AudioContext | null>(null);
@@ -1094,6 +1096,14 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
     const dt = time - lastTimeRef.current;
     lastTimeRef.current = time;
 
+    // Menu open in PRACTICE = frozen sim (network play never pauses).
+    if (menuPausedRef.current && !isNetworkMode) {
+      const pausedCtx = canvas.getContext('2d');
+      if (pausedCtx) renderGame(pausedCtx, canvas, engine);
+      animationFrameRef.current = requestAnimationFrame(gameLoop);
+      return;
+    }
+
     if (isNetworkMode) {
       // ── NETWORK MODE: no local simulation, no bots, no local win checks ──
       networkFrame(engine, time);
@@ -1757,7 +1767,14 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
             cluster). THE exit path; replaces the back chevron. Mid-match the
             guard owns the click: confirm → forfeit → results → progression
             → only then the exit runs. */}
-        <GamePauseMenu inline onExit={() => requestExit(onExit)} exitLabel="Exit Game" />
+        <GamePauseMenu
+                inline
+                onExit={() => requestExit(onExit)}
+                exitLabel="Exit Game"
+                onOpenChange={(open) => {
+                  menuPausedRef.current = open;
+                }}
+              />
       </div>
 
       {/* Cashout Button for Free Play Wager */}

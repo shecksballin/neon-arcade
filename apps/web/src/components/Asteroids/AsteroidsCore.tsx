@@ -234,6 +234,8 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
 
   const requestRef = useRef<number | undefined>(undefined);
   const lastTimeRef = useRef<number | undefined>(undefined);
+  /** Menu-open freeze for PRACTICE (see the loop's early-out). */
+  const menuPausedRef = useRef(false);
   const keysRef = useRef<Record<string, boolean>>({});
   
   // Camera state
@@ -1302,6 +1304,14 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
 
     const dt = (time - lastTimeRef.current) / (1000 / 60);
     lastTimeRef.current = time;
+
+    // Menu open in PRACTICE = frozen sim (network play never pauses —
+    // the server clock keeps running whatever this client shows).
+    if (menuPausedRef.current && !isNetworkMode) {
+      draw();
+      requestRef.current = requestAnimationFrame(update);
+      return;
+    }
 
     if (gameState === 'playing' && isNetworkMode) {
       // ── NETWORK MODE: server-authoritative — skip ALL local simulation ──
@@ -2928,7 +2938,14 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
                   path; replaces the back chevron. Mid-run the guard owns the
                   click: confirm → forfeit → results → progression → only then
                   the exit runs. */}
-              <GamePauseMenu inline onExit={() => requestExit(onExit)} exitLabel="Exit Game" />
+              <GamePauseMenu
+                inline
+                onExit={() => requestExit(onExit)}
+                exitLabel="Exit Game"
+                onOpenChange={(open) => {
+                  menuPausedRef.current = open;
+                }}
+              />
             </div>
 
             {/* Cashout Button for Free Play Wager */}

@@ -18,7 +18,7 @@
  * is the affordance there.
  */
 import { useEffect, useState } from 'react'
-import { Maximize2, Minimize2 } from 'lucide-react'
+import { Maximize, Minimize } from 'lucide-react'
 
 /** Toggle app fullscreen. Safe to call from anywhere; failures are quiet
  *  (browsers reject without a user gesture — nothing a player can act on). */
@@ -92,7 +92,8 @@ export function FullscreenButton({
       title={isFullscreen ? 'Exit Fullscreen (F)' : 'Fullscreen (F)'}
       className="p-3 bg-black/50 border border-[#00FFD1]/30 hover:border-[#00FFD1] hover:bg-[#00FFD1]/20 rounded-full text-white backdrop-blur-md transition-all cursor-pointer"
     >
-      {isFullscreen ? <Minimize2 className="w-6 h-6" /> : <Maximize2 className="w-6 h-6" />}
+      {/* The 4-L-corner glyphs — same icon the Neon Asteroids HUD uses. */}
+      {isFullscreen ? <Minimize className="w-6 h-6" /> : <Maximize className="w-6 h-6" />}
     </button>
   )
 

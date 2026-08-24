@@ -56,6 +56,25 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Read the saved prefs. Anything unparseable falls back to the defaults. */
+/**
+ * The notification chime — the arcade's boot sting, repurposed (the boot
+ * loader itself was removed). One shared element, rewound per chime so
+ * bursts re-trigger cleanly; play() rejects before the first user gesture
+ * (autoplay policy) and that rejection is deliberately swallowed — a
+ * notification landing before ANY interaction just chimes silently.
+ */
+let notificationAudio: HTMLAudioElement | null = null;
+function playNotificationSound(): void {
+  if (typeof window === 'undefined') return;
+  if (!notificationAudio) {
+    notificationAudio = new Audio('/neonArcadeLoaderSoundfx.wav');
+    notificationAudio.preload = 'auto';
+    notificationAudio.volume = 0.4;
+  }
+  notificationAudio.currentTime = 0;
+  void notificationAudio.play().catch(() => {});
+}
+
 function loadPrefs(): NotificationPrefs {
   try {
     const raw = localStorage.getItem(NOTIFICATION_PREFS_KEY)

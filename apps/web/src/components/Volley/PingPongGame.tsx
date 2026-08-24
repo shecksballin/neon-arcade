@@ -431,7 +431,8 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
     };
 
     const render = () => {
-      update();
+      // Menu open in practice = frozen sim, still-drawn frame underneath.
+      if (!(menuPausedRef.current && mode === 'computer')) update();
       draw();
       animationFrameId = requestAnimationFrame(render);
     };
@@ -652,6 +653,13 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
    * popped over the 3-2-1 would land squarely on the countdown numeral.
    */
   const [boardHeld, setBoardHeld] = useState(false);
+  /**
+   * PRACTICE FREEZE. Opening the menu must actually PAUSE a practice rally —
+   * the sim used to keep playing (and scoring) under the overlay. A ref so
+   * the render-loop effect (keyed on gameState/mode) reads it without
+   * re-running; multiplayer never pauses (the server owns that clock).
+   */
+  const menuPausedRef = useRef(false);
   // Swallowing Tab is only ever legitimate DURING A RALLY. Any modal above
   // the game — the forfeit confirm, the pause menu, the results screen —
   // needs Tab for its own buttons, and while a Volley match is mounted the
@@ -913,7 +921,10 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
       <GamePauseMenu
         onExit={handleExitMatch}
         exitLabel="Exit Game"
-        onOpenChange={setPauseOpen}
+        onOpenChange={(open) => {
+          setPauseOpen(open);
+          menuPausedRef.current = open;
+        }}
       />
       <div className="absolute bottom-4 sm:bottom-8 right-4 sm:right-8 mb-[env(safe-area-inset-bottom)] flex gap-3 pointer-events-auto z-[60]">
       </div>

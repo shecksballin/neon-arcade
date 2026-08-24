@@ -4,7 +4,6 @@ import { ZONE_COLOR } from '../ring';
 import { goals } from '../shootout';
 import { useGame } from '../store';
 import { flipDir } from '../types';
-import { LeaderboardCard } from './LeaderboardCard';
 import { ScorePips } from './ScorePips';
 
 function KeyChip({ k, label, active = false }: { k: string; label: string; active?: boolean }) {
@@ -40,7 +39,6 @@ export function Hud() {
   const shootout = useGame((s) => s.shootout);
   const result = useGame((s) => s.result);
   const playerGuess = useGame((s) => s.playerGuess);
-  const board = useGame((s) => s.board);
   const muted = useGame((s) => s.muted);
   const togglePause = useGame((s) => s.togglePause);
   const toggleMute = useGame((s) => s.toggleMute);
@@ -51,29 +49,38 @@ export function Hud() {
 
   return (
     <div className="absolute inset-0 pointer-events-none z-[60]">
-      {/* ---- top left: shootout tracker */}
+      {/* ---- top left: the VOLLEY-style score tally — big italic numbers
+          split by a slash, drop-shadow glow, with the per-kick pips playing
+          the role of Volley's progress bars underneath each side. (The old
+          compact tracker + the top-right leaderboard card were replaced by
+          this per request — one tally, same look as Neon Volley's.) */}
       <motion.div
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
-        className="absolute top-6 left-6 backdrop-blur-md bg-black/40 border border-[#00FFD1]/20 p-4 rounded-2xl space-y-2.5"
+        className="absolute top-6 left-6 backdrop-blur-md bg-black/40 border border-[#00FFD1]/20 px-6 py-4 rounded-2xl"
       >
-        <div className="flex items-center gap-4">
-          <p className="text-2xl font-black italic tracking-tighter text-white leading-none">
-            {goals(shootout, 'player')}
-            <span className="text-white/30 mx-1.5">–</span>
-            {goals(shootout, 'ai')}
-          </p>
-          <p className="text-[10px] font-mono text-[#00FFD1]/60 uppercase tracking-[0.25em]">Penalties</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="w-8 text-[10px] font-mono uppercase tracking-widest text-[#00FFD1]">You</span>
-          <ScorePips shootout={shootout} side="player" active={inPlay} />
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="w-8 truncate text-[10px] font-mono uppercase tracking-widest text-[#FF0080]">
-            {useGame.getState().online?.opponent ?? 'AI'}
-          </span>
-          <ScorePips shootout={shootout} side="ai" active={inPlay} />
+        <div className="flex items-center gap-8">
+          <div className="flex flex-col items-center">
+            <span className="text-4xl md:text-6xl font-black text-white italic drop-shadow-[0_0_30px_rgba(255,255,255,0.4)] leading-none">
+              {goals(shootout, 'player')}
+            </span>
+            <span className="mt-1.5 text-[10px] font-mono uppercase tracking-widest text-[#00FFD1]">You</span>
+            <div className="mt-2">
+              <ScorePips shootout={shootout} side="player" active={inPlay} />
+            </div>
+          </div>
+          <span className="text-2xl text-[#00FFD1] font-black italic opacity-40">/</span>
+          <div className="flex flex-col items-center">
+            <span className="text-4xl md:text-6xl font-black text-white italic drop-shadow-[0_0_30px_rgba(255,255,255,0.4)] leading-none">
+              {goals(shootout, 'ai')}
+            </span>
+            <span className="mt-1.5 max-w-24 truncate text-[10px] font-mono uppercase tracking-widest text-[#FF0080]">
+              {useGame.getState().online?.opponent ?? 'AI'}
+            </span>
+            <div className="mt-2">
+              <ScorePips shootout={shootout} side="ai" active={inPlay} />
+            </div>
+          </div>
         </div>
       </motion.div>
 
@@ -95,11 +102,6 @@ export function Hud() {
             )}
           </p>
         </div>
-      </motion.div>
-
-      {/* ---- top right: leaderboard */}
-      <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="absolute top-6 right-6">
-        <LeaderboardCard board={board} />
       </motion.div>
 
       {/* ---- bottom center: contextual keybinds */}

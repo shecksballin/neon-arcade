@@ -44,6 +44,7 @@ export const STR = {
   eliminatedPlace: "#{place} OF {total}",
   spectate: "SPECTATE",
   playAgain: "PLAY AGAIN",
+  exit: "EXIT",
   spectating: "SPECTATING: {name}",
   spectateHint: "CLICK to cycle - ESC for menu",
 

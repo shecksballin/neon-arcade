@@ -2,13 +2,11 @@ import { motion } from 'motion/react';
 import { RefreshCw, ShieldCheck, Target, Trophy } from 'lucide-react';
 import { goals } from '../shootout';
 import { useGame } from '../store';
-import { LeaderboardCard } from './LeaderboardCard';
 import { ScorePips } from './ScorePips';
 
 export function ResultsScreen() {
   const shootout = useGame((s) => s.shootout);
   const stats = useGame((s) => s.stats);
-  const board = useGame((s) => s.board);
   const startMatch = useGame((s) => s.startMatch);
   const quitToMenu = useGame((s) => s.quitToMenu);
 
@@ -71,7 +69,6 @@ export function ResultsScreen() {
       </div>
 
       <div className="mb-8">
-        <LeaderboardCard board={board} rows={5} />
       </div>
 
       <div className="flex gap-3 pb-8">

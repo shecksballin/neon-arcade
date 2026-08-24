@@ -125,22 +125,6 @@ interface CellsLobbyProps {
   onExit: () => void;
 }
 
-/**
- * PRACTICE-ONLY mode pills. These feed the practice wager menu (Neon Bucks)
- * exactly as before, FREE PLAY included — the online path no longer reads
- * them at all.
- */
-const PRACTICE_MODES: Array<{
-  id: 'free_play' | 'slayer' | 'lms';
-  icon: string;
-  label: string;
-  hint: string;
-}> = [
-  { id: 'free_play', icon: 'videogame_asset', label: 'Free Play', hint: 'Join anytime' },
-  { id: 'slayer', icon: 'smart_toy', label: 'Slayer', hint: 'Kill count' },
-  { id: 'lms', icon: 'trending_up', label: 'LAST MAN STANDING', hint: 'Last one standing' },
-];
-
 const CellsLobby = ({
   onFindGame,
   onPlayComputer,
@@ -295,33 +279,6 @@ const CellsLobby = ({
 
           {view === 'practice' && (
             <div className="space-y-6">
-              {/* Practice ruleset — lives inside the practice drill-down now.
-                  It used to be a three-card row at the bottom of the lobby, but
-                  only the practice confirm ever reads `selectedMode`, so the
-                  cards implied a choice the online path never honoured. */}
-              <div className="flex flex-col items-center gap-2">
-                <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
-                  Practice ruleset
-                </p>
-                <div className="flex gap-2 p-1 bg-[#111E1E]/80 border border-[#00FFD1]/20 rounded-lg backdrop-blur-md">
-                  {PRACTICE_MODES.map((m) => (
-                    <button
-                      key={m.id}
-                      onClick={() => setSelectedMode(m.id)}
-                      className={`px-4 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
-                        selectedMode === m.id
-                          ? 'bg-[#00FFD1] text-[#081616] shadow-[0_0_15px_rgba(0,255,209,0.5)]'
-                          : 'text-[#B1C5FF]/50 hover:text-[#B1C5FF]'
-                      }`}
-                    >
-                      {m.label}
-                    </button>
-                  ))}
-                </div>
-                <p className="text-[9px] font-mono tracking-widest uppercase text-[#B1C5FF]/40">
-                  {PRACTICE_MODES.find((m) => m.id === selectedMode)?.hint}
-                </p>
-              </div>
               <CellsDifficultySelector
                 selectedDifficulty={selectedDifficulty}
                 onSelect={setSelectedDifficulty}
