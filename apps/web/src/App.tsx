@@ -140,6 +140,7 @@ import ActiveUsers from "./components/ActiveUsers";
 import { useActiveUsers } from "./hooks/useActiveUsers";
 import ParticleText from "./components/ParticleText";
 import TargetCursor from "./components/TargetCursor";
+import type { PrivateGameKey } from "./components/social/privateWagerCatalog";
 import Particles from "./components/glass/Particles";
 
 // Auth comes from our own deferred context, not from Privy's hooks — the SDK
@@ -273,7 +274,7 @@ export default function App() {
   // whether a match is running, and which sidebar panel a row should open.
   // `clearAll` is only used on sign-out: notifications are addressed to the
   // account that just left, so they must not survive into the next one.
-  const { setInGame: setNotificationsInGame, clearAll: clearNotifications } =
+  const { setInGame: setNotificationsInGame, clearAll: clearNotifications, armJoin } =
     useNotifications();
 
   /**
@@ -584,6 +585,31 @@ export default function App() {
     return () => clearTimeout(id);
   }, [view]);
 
+  /**
+   * INVITE LINKS (?wager=<roomId>&g=<gameKey>&m=<mode>) — the shareable
+   * private-wager URL, mobile + desktop. Parsed ONCE at boot into a ref
+   * (then stripped from the address bar so a reload doesn't re-join), and
+   * armed through the notifications store's JOIN handoff — the exact path a
+   * friend invite takes, including the sign-in gate: an anonymous visitor
+   * first runs requireAccount, and the join fires once hasAccount is true.
+   */
+  const wagerLinkRef = React.useRef<{ roomId: string; gameKey: string; mode: string } | null>(null);
+  const wagerLinkNudged = React.useRef(false);
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const roomId = params.get("wager");
+    const gameKey = params.get("g");
+    const mode = params.get("m");
+    if (!roomId || !gameKey || !mode) return;
+    if (!PRIVATE_WAGER_VIEWS[gameKey]) return; // unknown game — ignore
+    wagerLinkRef.current = { roomId, gameKey, mode };
+    params.delete("wager");
+    params.delete("g");
+    params.delete("m");
+    const rest = params.toString();
+    window.history.replaceState(null, "", window.location.pathname + (rest ? `?${rest}` : ""));
+  }, []);
+
   // The pending indicator's only job is to cover the chunk fetch, so it ends
   // the moment the SDK reports in — whatever it reports. From there Privy's
   // own modal (or the account screen) is the feedback.
@@ -678,6 +704,28 @@ export default function App() {
     },
     [authLoaded, privyReady, authenticated, hasAccount, login, isTouch]
   );
+
+  React.useEffect(() => {
+    const link = wagerLinkRef.current;
+    if (!link) return;
+    if (!hasAccount) {
+      // One nudge into the sign-in gate; requireAccount handles login AND
+      // account setup, and this effect re-fires when hasAccount lands.
+      if (!wagerLinkNudged.current && authLoaded) {
+        wagerLinkNudged.current = true;
+        requireAccount("arcade");
+      }
+      return;
+    }
+    wagerLinkRef.current = null;
+    armJoin({
+      roomId: link.roomId,
+      gameKey: link.gameKey as PrivateGameKey,
+      mode: link.mode,
+      expiresAt: Date.now() + 10 * 60_000,
+      fromUsername: "invite link",
+    });
+  }, [hasAccount, authLoaded, requireAccount, armJoin]);
 
   const handleVolumeChange = (vol: number) => {
     setMasterVolume(vol);
@@ -901,7 +949,10 @@ export default function App() {
           /* ml/mt safe-area insets keep it clear of the notch in landscape;
              aria-label because `title` tooltips never appear on touch, so an
              icon-only control would otherwise be unlabelled there. */
-          className="fixed top-6 left-6 z-[60] p-2.5 border border-[#00FFD1]/40 rounded-full backdrop-blur-md bg-[#081616]/60 hover:scale-105 active:scale-95 transition-all flex items-center justify-center cursor-pointer group select-none pointer-events-auto ml-[env(safe-area-inset-left)] mt-[env(safe-area-inset-top)]"
+          /* Mobile: the nav pill is ~56px tall from top-6, so top-[30px]
+             centres this 45px circle on the pill's midline in its reserved
+             left pocket; sm+ returns to the desktop corner position. */
+          className="fixed top-[30px] left-4 sm:top-6 sm:left-6 z-[60] p-2.5 border border-[#00FFD1]/40 rounded-full backdrop-blur-md bg-[#081616]/60 hover:scale-105 active:scale-95 transition-all flex items-center justify-center cursor-pointer group select-none pointer-events-auto ml-[env(safe-area-inset-left)] mt-[env(safe-area-inset-top)]"
           title="Open Navigation Menu"
           aria-label="Open navigation menu"
         >
@@ -1115,7 +1166,10 @@ export default function App() {
                   initial={{ opacity: 0, y: -10 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -10 }}
-                  className="pointer-events-auto mt-2 z-40"
+                  /* hidden on phones: this second nav row sat ON TOP of the
+                     library's filter strip (the content only pads for the
+                     pill). The count still lives in the sidebar drawer. */
+                  className="pointer-events-auto mt-2 z-40 hidden sm:block"
                 >
                   <ActiveUsers realCount={connected ? activeUsers : 0} label="online" variant="mini" />
                 </motion.div>
@@ -1387,7 +1441,7 @@ export default function App() {
 
       {/* Footer (Shared) */}
       {view !== "asteroids" && view !== "cells" && view !== "volley" && view !== "chess" && view !== "golf" && view !== "clumsy" && view !== "pugshooter" && (
-        <footer className="fixed bottom-0 left-0 right-0 z-50 flex justify-center gap-8 py-6 w-full bg-transparent font-mono text-[10px] tracking-[0.3em] text-[#00FFD1]/40 pointer-events-none">
+        <footer className="fixed bottom-0 left-0 right-0 z-50 hidden sm:flex justify-center gap-8 py-6 w-full bg-transparent font-mono text-[10px] tracking-[0.3em] text-[#00FFD1]/40 pointer-events-none">
           <span className="uppercase">© 2026 NeonArcade Gaming</span>
           <div className="hidden md:flex gap-8 pointer-events-auto">
             <a

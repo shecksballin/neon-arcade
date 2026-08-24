@@ -40,7 +40,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Crown, LoaderCircle, LogOut, UserPlus, X } from 'lucide-react';
+import { Crown, Link2, LoaderCircle, LogOut, UserPlus, X } from 'lucide-react';
 import { getRankInfo } from '@neon/types';
 import { profileApi, rankRpOf } from '../../lib/api';
 import { connectGameSocket, getSocket } from '../../hooks/useGameSocket';
@@ -407,6 +407,33 @@ export default function PrivateWagerRoom({
   );
 
   const iAmReady = mySeat?.ready ?? false;
+  const iAmHost = mySeat?.isHost ?? (!joinRoomId && room !== null);
+  /** 'idle' → 'copied' flash for the invite-link button. */
+  const [linkCopied, setLinkCopied] = useState(false);
+
+  /**
+   * INVITE LINK (mobile + desktop). One tap: the room is marked
+   * link-joinable server-side (host-only `private:allowLink` — the v4
+   * roomId in the URL is the capability), then the URL goes out through the
+   * native share sheet on phones or the clipboard on desktop. Opening it
+   * runs the arcade's normal JOIN path (sign-in gate included) — see the
+   * `?wager=` intake in App.tsx.
+   */
+  const shareInviteLink = useCallback(() => {
+    const id = roomIdRef.current;
+    if (!id) return;
+    const socket = getSocket();
+    if (socket.connected) socket.emit('private:allowLink', { roomId: id });
+    const url = `${window.location.origin}/?wager=${encodeURIComponent(id)}&g=${encodeURIComponent(gameKey)}&m=${encodeURIComponent(mode)}`;
+    const nav = navigator as Navigator & { share?: (d: { url: string; title?: string }) => Promise<void> };
+    if (nav.share) {
+      void nav.share({ url, title: 'Neon Arcade — join my match' }).catch(() => {});
+    } else {
+      void navigator.clipboard?.writeText(url).catch(() => {});
+    }
+    setLinkCopied(true);
+    window.setTimeout(() => setLinkCopied(false), 2000);
+  }, [gameKey, mode]);
   const canStart = players.length >= 2;
   const roomFull = players.length >= capacity;
 
@@ -540,6 +567,17 @@ export default function PrivateWagerRoom({
                 <UserPlus className="w-3.5 h-3.5" />
                 {roomFull ? 'Room full' : 'Invite friend'}
               </button>
+              {iAmHost && (
+                <button
+                  type="button"
+                  onClick={shareInviteLink}
+                  disabled={roomFull || room.status === 'starting'}
+                  className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border border-[#00FFD1]/30 font-mono text-[10px] uppercase tracking-[0.25em] text-[#B1C5FF]/70 hover:text-white hover:border-[#00FFD1]/70 transition-all cursor-pointer disabled:opacity-30 disabled:cursor-default"
+                >
+                  <Link2 className="w-3.5 h-3.5" />
+                  {linkCopied ? 'Link copied!' : 'Invite link'}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={leave}

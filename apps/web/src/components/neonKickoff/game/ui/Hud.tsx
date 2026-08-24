@@ -1,10 +1,34 @@
 import { AnimatePresence, motion } from 'motion/react';
+import { useMediaQuery } from 'react-responsive';
 import { Menu, Volume2, VolumeX } from 'lucide-react';
 import { ZONE_COLOR } from '../ring';
 import { goals } from '../shootout';
 import { useGame } from '../store';
 import { flipDir } from '../types';
 import { ScorePips } from './ScorePips';
+
+function TapPad({
+  label,
+  onTap,
+  active = false,
+}: {
+  label: string;
+  onTap: () => void;
+  active?: boolean;
+}) {
+  return (
+    <button
+      onPointerDown={onTap}
+      className={`min-w-24 rounded-2xl border px-5 py-4 text-[13px] font-black italic uppercase tracking-widest transition-all active:scale-95 ${
+        active
+          ? 'border-[#00FFD1] bg-[#00FFD1]/20 text-[#00FFD1] shadow-[0_0_18px_rgba(0,255,209,0.5)]'
+          : 'border-[#00FFD1]/30 bg-black/50 text-white/85 backdrop-blur-md'
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
 
 function KeyChip({ k, label, active = false }: { k: string; label: string; active?: boolean }) {
   return (
@@ -44,6 +68,7 @@ export function Hud() {
   const toggleMute = useGame((s) => s.toggleMute);
 
   const inPlay = phase !== 'over';
+  const isCoarse = useMediaQuery({ query: '(pointer: coarse) and (hover: none)' });
   const striking = turn === 'player';
   const keeperGuess = flipDir(playerGuess);
 
@@ -104,9 +129,45 @@ export function Hud() {
         </div>
       </motion.div>
 
-      {/* ---- bottom center: contextual keybinds */}
+      {/* ---- bottom center: contextual keybinds (desktop) / tap pads
+          (touch). The pads mirror the key mapping EXACTLY, including the
+          keeper's frame swap: the store's dirs live in the STRIKER's frame,
+          so the keeper's on-screen LEFT pad submits 'right' — the same
+          translation the A/D keys make. */}
       <AnimatePresence>
-        {(phase === 'aim' || phase === 'guard') && (
+        {isCoarse && (phase === 'aim' || phase === 'guard') && (
+          <motion.div
+            key={`pads-${phase}`}
+            initial={{ opacity: 0, y: 24 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 24 }}
+            className="absolute bottom-6 left-1/2 -translate-x-1/2 flex flex-col items-center gap-2.5 pointer-events-auto"
+          >
+            <div className="flex gap-3">
+              {phase === 'aim' ? (
+                <>
+                  <TapPad label="◤ Left" onTap={() => useGame.getState().strikerKick('left')} />
+                  <TapPad label="▲ Middle" onTap={() => useGame.getState().strikerKick('middle')} />
+                  <TapPad label="◥ Right" onTap={() => useGame.getState().strikerKick('right')} />
+                </>
+              ) : (
+                <>
+                  <TapPad label="◀ Dive" active={keeperGuess === 'left'} onTap={() => useGame.getState().setGuess('right')} />
+                  <TapPad label="● Stay" active={keeperGuess === 'middle'} onTap={() => useGame.getState().setGuess('middle')} />
+                  <TapPad label="Dive ▶" active={keeperGuess === 'right'} onTap={() => useGame.getState().setGuess('left')} />
+                </>
+              )}
+            </div>
+            <p className="text-[9px] font-mono uppercase tracking-[0.25em] text-white/45 backdrop-blur-md bg-black/30 px-3 py-1 rounded-full">
+              {phase === 'aim' ? (
+                <>Tap to shoot — strike on <span className="text-[#2bff8f] font-bold">green</span></>
+              ) : (
+                <>Tap to pick your dive</>
+              )}
+            </p>
+          </motion.div>
+        )}
+        {!isCoarse && (phase === 'aim' || phase === 'guard') && (
           <motion.div
             key={phase}
             initial={{ opacity: 0, y: 24 }}
@@ -150,13 +211,17 @@ export function Hud() {
         >
           {muted ? <VolumeX className="w-5 h-5 text-red-500" /> : <Volume2 className="w-5 h-5" />}
         </button>
-        <button
-          onClick={togglePause}
-          className="p-3.5 bg-white/5 border border-white/10 rounded-2xl text-[#00FFD1] hover:bg-[#00FFD1]/10 hover:border-[#00FFD1]/50 transition-all shadow-2xl active:scale-90 cursor-pointer"
-          title="Pause (Esc)"
-        >
-          <Menu className="w-5 h-5" />
-        </button>
+        {/* Touch only — desktop opens the pause overlay with ESC and shows
+            no in-game menu button (per design). A phone has no ESC. */}
+        {isCoarse && (
+          <button
+            onClick={togglePause}
+            className="p-3.5 bg-white/5 border border-white/10 rounded-2xl text-[#00FFD1] hover:bg-[#00FFD1]/10 hover:border-[#00FFD1]/50 transition-all shadow-2xl active:scale-90 cursor-pointer"
+            title="Pause"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+        )}
       </div>
 
       {/* ---- center banners: round intro & kick result */}

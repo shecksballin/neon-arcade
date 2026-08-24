@@ -13,6 +13,10 @@
  *   C→S  private:decline { roomId }               — drop MY invite to that room
  *   C→S  private:ready   { roomId, ready }
  *   C→S  private:leave   { roomId }               — host leaving closes it
+ *   C→S  private:allowLink { roomId }             — HOST ONLY: marks the room
+ *          link-joinable (open), so anyone the host hands the invite URL to
+ *          can take a seat. The roomId itself is the capability — a v4 uuid
+ *          shared only as far as the host shares the link.
  *
  *   S→C  private:room      { roomId, gameKey, mode, capacity, status,
  *                            host:{username}, players:[{username, ready, isHost}] }
@@ -859,6 +863,23 @@ export function registerPrivateMatch(io: Server, socket: Socket): void {
       console.error('[privateMatch] invite failed:', err)
       emitError(socket, 'invite_failed', 'Could not invite that player')
     })
+  })
+
+  // -------------------------------------------------------- private:allowLink
+  socket.on('private:allowLink', (payload: unknown) => {
+    const parsed = roomIdSchema.safeParse(payload)
+    if (!parsed.success) {
+      emitError(socket, 'bad_payload', 'Invalid room')
+      return
+    }
+    const me = identify()
+    if (!me) return
+    if (actionLimiter(me.wallet)) return
+    const room = rooms.get(parsed.data.roomId)
+    // Host-only, and only while the room is still open for joins. Silently
+    // idempotent — copying the link twice must not error.
+    if (!room || room.status !== 'open' || room.hostWallet !== me.wallet) return
+    room.open = true
   })
 
   // ------------------------------------------------------------ private:join

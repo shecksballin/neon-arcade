@@ -26,6 +26,7 @@
  * always be able to see it.
  */
 import React, { useEffect, useState } from 'react'
+import { useMediaQuery } from 'react-responsive'
 import { useIsFullscreen, toggleAppFullscreen } from './fullscreen'
 
 /** True for targets whose keystrokes must never drive the menu. */
@@ -63,6 +64,9 @@ export function GamePauseMenu({
 }) {
   const [open, setOpen] = useState(false)
   const isFullscreen = useIsFullscreen()
+  // Touch devices have no Escape key — they keep the visible pill. Desktop
+  // stays pill-less (ESC only), per design.
+  const isCoarse = useMediaQuery({ query: '(pointer: coarse) and (hover: none)' })
 
   const setOpenAnd = (next: boolean) => {
     setOpen(next)
@@ -99,6 +103,19 @@ export function GamePauseMenu({
 
   return (
     <>
+      {isCoarse && !open && (
+        <div
+          className={inline ? 'z-[60]' : 'absolute bottom-8 right-8 z-[60]'}
+          style={{ pointerEvents: 'auto' }}
+        >
+          <button
+            onClick={() => setOpenAnd(true)}
+            className="px-[22px] py-[10px] rounded-xl text-[12px] font-black italic uppercase tracking-[0.06em] text-white/75 bg-black/40 border border-[#00FFD1]/20 backdrop-blur-[10px] transition-colors hover:text-[#00FFD1] hover:border-[#00FFD1]/50 cursor-pointer"
+          >
+            Menu
+          </button>
+        </div>
+      )}
       {open && (
         <div
           className="fixed inset-0 z-[125] flex flex-col items-center justify-center gap-[18px]"

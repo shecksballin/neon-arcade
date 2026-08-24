@@ -37,6 +37,7 @@
     "pngjs": "^7.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-responsive": "^10.0.1",
     "socket.io-client": "^4.8.3",
     "stockfish": "^18.0.7",
     "three": "^0.184.0",

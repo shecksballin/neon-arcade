@@ -19,6 +19,7 @@
  */
 import { useEffect, useState } from 'react'
 import { Maximize, Minimize } from 'lucide-react'
+import { useMediaQuery } from 'react-responsive'
 
 /** Toggle app fullscreen. Safe to call from anywhere; failures are quiet
  *  (browsers reject without a user gesture — nothing a player can act on). */
@@ -85,6 +86,11 @@ export function FullscreenButton({
   positionClassName?: string
 }) {
   const isFullscreen = useIsFullscreen()
+  // Phones get no fullscreen affordance at all (per design): iOS Safari
+  // doesn't honour the API for arbitrary elements, and the OS chrome owns
+  // that gesture on Android anyway.
+  const isCoarse = useMediaQuery({ query: '(pointer: coarse) and (hover: none)' })
+  if (isCoarse) return null
 
   const button = (
     <button

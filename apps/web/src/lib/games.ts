@@ -105,8 +105,10 @@ export const GAMES: GameMeta[] = [
     id: "kickoff",
     title: "Neon Kickoff",
     blurb: "Hold your nerve from the spot",
-    categories: ["action", "1v1"],
-    mobile: false,
+    // mobile: the three tap pads (LEFT/MIDDLE/RIGHT) in the game HUD cover
+    // both roles — tap to shoot as striker, tap to dive as keeper.
+    categories: ["action", "1v1", "mobile"],
+    mobile: true,
   },
   {
     id: "golf",
