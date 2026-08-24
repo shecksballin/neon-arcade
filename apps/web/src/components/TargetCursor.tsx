@@ -52,6 +52,9 @@ export interface TargetCursorProps {
   /** Short click/hover blip played each time the reticle locks onto a
    *  target. Served from public/; pass null to disable. */
   hoverSoundSrc?: string | null;
+  /** Blip played on every mousedown (the reticle's press-squeeze moment).
+   *  Served from public/; pass null to disable. */
+  clickSoundSrc?: string | null;
   spinDuration?: number;
   hideDefaultCursor?: boolean;
   hoverDuration?: number;
@@ -63,6 +66,7 @@ export interface TargetCursorProps {
 const TargetCursor = ({
   targetSelector = '.cursor-target',
   hoverSoundSrc = null,
+  clickSoundSrc = null,
   spinDuration = 2,
   hideDefaultCursor = true,
   hoverDuration = 0.2,
@@ -138,6 +142,19 @@ const TargetCursor = ({
       if (!hoverAudio) return;
       hoverAudio.currentTime = 0;
       void hoverAudio.play().catch(() => {});
+    };
+    // Same pattern for the press blip. mousedown IS a user gesture, so
+    // unlike the hover blip this one is never blocked by autoplay policy.
+    let clickAudio: HTMLAudioElement | null = null;
+    if (clickSoundSrc) {
+      clickAudio = new Audio(clickSoundSrc);
+      clickAudio.preload = 'auto';
+      clickAudio.volume = 0.4;
+    }
+    const playClickSound = () => {
+      if (!clickAudio) return;
+      clickAudio.currentTime = 0;
+      void clickAudio.play().catch(() => {});
     };
 
     containingBlockRef.current = getContainingBlock(cursor);
@@ -231,6 +248,7 @@ const TargetCursor = ({
     window.addEventListener('scroll', scrollHandler, { passive: true });
 
     const mouseDownHandler = () => {
+      playClickSound();
       if (!dotRef.current) return;
       gsap.to(dotRef.current, { scale: 0.7, duration: 0.3 });
       gsap.to(cursorRef.current, { scale: 0.9, duration: 0.2 });
@@ -437,6 +455,8 @@ const TargetCursor = ({
       spinTl.current?.kill();
       hoverAudio?.pause();
       hoverAudio = null;
+      clickAudio?.pause();
+      clickAudio = null;
       document.body.style.cursor = originalCursor;
       document.documentElement.classList.remove('cursor-hidden');
 
@@ -447,6 +467,7 @@ const TargetCursor = ({
   }, [
     targetSelector,
     hoverSoundSrc,
+    clickSoundSrc,
     spinDuration,
     moveCursor,
     constants,

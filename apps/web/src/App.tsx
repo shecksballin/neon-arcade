@@ -939,6 +939,7 @@ export default function App() {
           hoverDuration={0.1}
           cursorColor="#00ffd1"
           hoverSoundSrc="/hoversoundfx.wav"
+          clickSoundSrc="/clicksoundfx.wav"
         />
       )}
 

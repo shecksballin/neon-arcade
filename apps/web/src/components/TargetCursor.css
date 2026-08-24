@@ -5,8 +5,14 @@
   width: 0;
   height: 0;
   pointer-events: none;
-  /* Above NeonViewportGlow (z-9999) — the cursor must top every overlay. */
-  z-index: 10050;
+  /* Above EVERY overlay — including the Privy wallet dialog, whose portal
+     renders at z-index 999999. The global cursor-hidden rule reaches
+     Privy's DOM (it is a plain body portal), so if the reticle sat below
+     the modal the wallet flow would have NO visible cursor at all. Max
+     int32 keeps it on top of everything; the one thing that ties it is
+     Privy's fiat-onramp screen (also 2147483647), which this arcade does
+     not use. */
+  z-index: 2147483647;
   /* NO mix-blend-mode: difference (the reactbits default) — it re-tints the
      cursor per backdrop, and the ask is a STATIC #00ffd1. The dark
      drop-shadows below keep it visible over the arcade's mint surfaces
