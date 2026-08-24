@@ -177,6 +177,19 @@ export interface PendingJoin extends InviteDetail {
   fromUsername: string
 }
 
+/**
+ * A room the user asked to HOST — the community board's "post a challenge"
+ * flow. Same one-shot handoff shape as `PendingJoin`: the host consumes it,
+ * navigates to the game, opens an OPEN private room, and calls `onCreated`
+ * with the roomId so the panel can publish the challenge post.
+ */
+export interface PendingHost {
+  gameKey: InviteDetail['gameKey']
+  mode: string
+  /** Fired once, with the server-assigned roomId, when the room exists. */
+  onCreated?: (roomId: string) => void
+}
+
 export interface NotificationsApi {
   /** Newest first. Expired invites are pruned out. */
   items: NotificationItem[]
@@ -203,6 +216,16 @@ export interface NotificationsApi {
   inviteFrom: (username: string) => NotificationItem | null
   /** Take the invite: arms `pendingJoin` and retires the card. */
   acceptInvite: (roomId: string) => void
+  /**
+   * Arm a JOIN directly — no invite card involved. The community board's
+   * challenge feed uses this: an open room's seat is anyone's to take, so
+   * there is nothing in the bell to accept from.
+   */
+  armJoin: (join: PendingJoin) => void
+  /** Ask PrivateWagerHost to open an OPEN room (community challenge). */
+  armHost: (host: PendingHost) => void
+  pendingHost: PendingHost | null
+  clearPendingHost: () => void
   /** Forget the card. The server lets the invite lapse on its own timer. */
   declineInvite: (roomId: string) => void
   /** The room is gone (host left / expired) — pull any card for it. */
@@ -234,6 +257,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<NotificationItem[]>([])
   const [prefs, setPrefs] = useState<NotificationPrefs>(loadPrefs)
   const [pendingJoin, setPendingJoin] = useState<PendingJoin | null>(null)
+  const [pendingHost, setPendingHost] = useState<PendingHost | null>(null)
   const [inGame, setInGameState] = useState(false)
 
   /**
@@ -422,6 +446,12 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     [removeInvite]
   )
 
+  /** Community challenges: nothing to look up or retire — arm it as-is. */
+  const armJoin = useCallback((join: PendingJoin) => setPendingJoin(join), [])
+
+  const armHost = useCallback((host: PendingHost) => setPendingHost(host), [])
+  const clearPendingHost = useCallback(() => setPendingHost(null), [])
+
   /**
    * "Later". This used to be a purely client-side forget, which was fine when
    * nothing ever re-announced an invite. It is not fine now that the server
@@ -499,6 +529,10 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       clearAll,
       inviteFrom,
       acceptInvite,
+      armJoin,
+      armHost,
+      pendingHost,
+      clearPendingHost,
       declineInvite,
       removeInvite,
       pendingJoin,
@@ -520,6 +554,10 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       clearAll,
       inviteFrom,
       acceptInvite,
+      armJoin,
+      armHost,
+      pendingHost,
+      clearPendingHost,
       declineInvite,
       removeInvite,
       pendingJoin,

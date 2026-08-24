@@ -51,21 +51,22 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { ComponentType, LazyExoticComponent, ReactNode } from 'react'
 import {
-  Menu as MenuIcon,
-  X as XIcon,
-  Users,
-  Trophy,
-  TrendingUp,
-  Settings,
   Award,
-  MessageSquare,
-  History,
-  Wallet,
-  Swords,
-  LogIn,
   Check,
   Copy,
+  History,
+  LogIn,
+  Megaphone,
+  Menu as MenuIcon,
+  MessageSquare,
   RefreshCcw,
+  Settings,
+  Swords,
+  TrendingUp,
+  Trophy,
+  Users,
+  Wallet,
+  X as XIcon,
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'motion/react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -77,6 +78,7 @@ import { useSolBalance } from '../hooks/useSolBalance'
 import { SOLANA_CLUSTER } from '../lib/solana'
 import { profileApi, rankRpOf, socialApi } from '../lib/api'
 import { SafeErrorBoundary } from './SafeErrorBoundary'
+import CommunityPanel from './social/CommunityPanel'
 import FriendsPanel from './social/FriendsPanel'
 import MessagesPanel from './social/MessagesPanel'
 import { RankMeter, RowButton, UserRow } from './social/UserRow'
@@ -125,7 +127,7 @@ const LeaderboardPanel = optionalPanel('LeaderboardPanel')
 const HistoryPanel = optionalPanel('HistoryPanel')
 
 /** Which panel the drawer is showing (null = the menu itself). */
-export type PanelId = 'friends' | 'messages' | 'history' | 'leaderboard' | 'stats'
+export type PanelId = 'friends' | 'messages' | 'community' | 'history' | 'leaderboard' | 'stats'
 
 /**
  * "Open the drawer already on this panel." Set by a notification row in the
@@ -387,6 +389,19 @@ export function SidebarMenu({
             initialUsername={messageWith}
           />
         )
+      case 'community':
+        return (
+          <CommunityPanel
+            onClose={() => setPanel(null)}
+            // Arming a join/host mounts the waiting room UNDER this drawer
+            // (z-[110] vs z-[200]) — close the whole drawer, same as the
+            // friends rows do (see joinPrivateWager above).
+            closeDrawer={() => {
+              setIsOpen(false)
+              setPanel(null)
+            }}
+          />
+        )
       case 'stats':
         return <ForeignPanel Panel={StatsPanel} name="Stats" onBack={() => setPanel(null)} />
       case 'leaderboard':
@@ -533,6 +548,11 @@ export function SidebarMenu({
                           setMessageWith(null)
                           setPanel('messages')
                         }}
+                      />
+                      <NavItem
+                        icon={<Megaphone size={20} />}
+                        label="Community"
+                        onClick={() => setPanel('community')}
                       />
                       <NavItem
                         icon={<History size={20} />}

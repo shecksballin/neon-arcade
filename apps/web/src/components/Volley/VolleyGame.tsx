@@ -214,6 +214,7 @@ const VolleyGame = ({ onExit, profile, onGameStatusChange }: VolleyGameProps) =>
             {/* Shared matchmaking screen — same copy and look in every game.
                 The PLAYERS n/N line shows how many are queuing alongside you. */}
             <SearchingForMatch
+              variant="page"
               playersInQueue={queueCount?.current}
               playersNeeded={queueCount?.needed}
               onCancel={() => {

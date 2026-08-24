@@ -121,6 +121,16 @@ export interface SignInOptions {
    * an in-flight one do not.
    */
   onAwaitingSignature?: () => void
+  /**
+   * Fired once the signature is in hand and the wait becomes the SERVER's
+   * again. Two reasons it is worth its own hook: the player learns their
+   * click landed, and — less obviously — the stretch between signing and
+   * the verify round trip can run to 90 seconds (a 60s signature wait plus
+   * a 30s request), which is long enough for a progress watchdog to call a
+   * perfectly healthy sign-in stuck. Announcing the handover keeps the
+   * label moving in step with what is actually happening.
+   */
+  onSigned?: () => void
 }
 
 /**
@@ -235,9 +245,21 @@ export function useBackendAuth() {
     //    than failing: it is exactly the duplicate-account path this
     //    whole mechanism exists to close. getAccessToken() refreshes
     //    internally, so the re-fetch is cheap.
+    options.onSigned?.()
     const { default: bs58 } = await import('bs58')
     const signature = bs58.encode(result.signature)
-    const freshTokens = await getPrivyTokens()
+    const refetched = await getPrivyTokens()
+    // Fall back to the tokens from the top of this attempt rather than to
+    // null. `getPrivyTokens` now answers with nulls instead of hanging, and
+    // a NULL access token is the one outcome that costs something real: the
+    // server drops to wallet-only matching, which is exactly the
+    // duplicate-account path this re-fetch exists to close. A stale token
+    // is never worse — the server's JWKS check just rejects it and degrades
+    // identically — and is usually still valid.
+    const freshTokens = {
+      accessToken: refetched.accessToken ?? privyTokens.accessToken,
+      identityToken: refetched.identityToken ?? privyTokens.identityToken,
+    }
     const { token } = await authApi.verify(address, signature, nonce, freshTokens)
 
     // 4. Store it for authenticated API calls
@@ -247,9 +269,18 @@ export function useBackendAuth() {
 
   function signIn(options: SignInOptions = {}): Promise<string> {
     if (!inFlight) {
-      inFlight = doSignIn(options).finally(() => {
-        inFlight = null
+      // CLEAR ONLY YOUR OWN SLOT. `abandonSignIn()` (the retry button) can
+      // drop a stalled attempt and let a new one take the slot while the
+      // old one is still alive — that is the whole point of it. An
+      // unconditional `inFlight = null` in the abandoned attempt's finally
+      // then wipes the REPLACEMENT's slot when it eventually settles, and
+      // the next signIn() starts a third attempt concurrently with the
+      // second: two wallet popups at once, which is precisely what this
+      // dedup exists to prevent.
+      const attempt: Promise<string> = doSignIn(options).finally(() => {
+        if (inFlight === attempt) inFlight = null
       })
+      inFlight = attempt
     }
     return inFlight
   }

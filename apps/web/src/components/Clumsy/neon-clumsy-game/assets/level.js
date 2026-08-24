@@ -448,8 +448,9 @@ export class Level {
   }
 
   _buildLights() {
-    this.scene.add(new THREE.HemisphereLight(0x8a7cff, 0xff9fc7, 0.85));
-    const dir = new THREE.DirectionalLight(0xfff2dd, 1.7);
+    // Cool mint-tinted light set, matching the arcade-night sky in config.
+    this.scene.add(new THREE.HemisphereLight(0xaef0e4, 0x145048, 0.85));
+    const dir = new THREE.DirectionalLight(0xeafff8, 1.7);
     dir.position.set(16, 28, 12);
     if (CFG.shadows) {
       dir.castShadow = true;

@@ -187,25 +187,18 @@ const CATALOG: Record<string, Record<string, GameModeSpec>> = {
       startEvent: 'neonconnect_match',
     },
   },
+  kickoff: {
+    '1v1': {
+      capacity: 2,
+      findEvent: 'kickoff_find',
+      findPayload: () => ({}),
+      startEvent: 'kickoff_match',
+    },
+  },
   volley: {
     classic: volleyMode('classic'),
     bestof3: volleyMode('bestof3'),
     sudden: volleyMode('sudden'),
-  },
-  trivia: {
-    '1v1': {
-      capacity: 2,
-      findEvent: 'findTriviaGame',
-      findPayload: () => ({ config: { mode: '1v1' } }),
-      startEvent: 'triviaGameStart',
-    },
-    ffa: {
-      // The FFA lobby holds a crowd; 8 is a sane private-room ceiling.
-      capacity: 8,
-      findEvent: 'findTriviaGame',
-      findPayload: () => ({ config: { mode: 'ffa' } }),
-      startEvent: 'triviaGameStart',
-    },
   },
 
   // ── world games: the SAME 2×2 the public online lobby offers ──────────
@@ -244,7 +237,7 @@ const GAME_KEYS = [
   'chess',
   'connect',
   'volley',
-  'trivia',
+  'kickoff',
   'cells',
   'asteroids',
   'golf',
@@ -260,6 +253,14 @@ const GAME_KEYS = [
 const createSchema = z.object({
   gameKey: z.enum(GAME_KEYS),
   mode: z.string().min(1).max(24),
+  /**
+   * OPEN rooms skip the invite check on join: ANY signed-in player who knows
+   * the roomId may take the free seat. The only thing that hands a roomId to
+   * strangers is the community board's challenge feed (routes/community.ts),
+   * which also verifies the poster owns the room — so "open" is exactly
+   * "posted as a public challenge". Ordinary rooms stay invite-only.
+   */
+  open: z.boolean().optional(),
 })
 
 const inviteSchema = z.object({
@@ -307,6 +308,8 @@ interface PrivateRoom {
   players: RoomMember[]
   /** invitee wallet → invite. Expiry is checked on join AND swept. */
   invites: Map<string, RoomInvite>
+  /** Public-challenge room: join needs no invite (see createSchema.open). */
+  open: boolean
   status: 'open' | 'starting' | 'closed'
   countdownTimer: ReturnType<typeof setTimeout> | null
   createdAt: number
@@ -314,6 +317,44 @@ interface PrivateRoom {
 
 /** roomId → room. */
 const rooms = new Map<string, PrivateRoom>()
+
+/**
+ * What the community board may say about a challenge's room. In-memory on
+ * purpose: rooms live and die with this process, so the feed asks at read
+ * time instead of persisting state that would go stale.
+ *   'open'  — a stranger can still take the seat
+ *   'full'  — seats taken or the countdown is running
+ *   'gone'  — closed, never existed, or not an open room at all
+ */
+export function challengeRoomState(roomId: string): 'open' | 'full' | 'gone' {
+  const room = rooms.get(roomId)
+  if (!room || room.status === 'closed' || !room.open) return 'gone'
+  if (room.status !== 'open' || room.players.length >= room.spec.capacity) return 'full'
+  return 'open'
+}
+
+/** Ownership check for posting: only the HOST of a live open room may
+ *  advertise it as a challenge (stops posts pointing at someone else's room),
+ *  and the advertised game/mode must be the ROOM'S game/mode — without that
+ *  pin a chess room could be posted as "golf", and the victim who joins gets
+ *  started into a ranked chess match their client isn't even listening for
+ *  (an RP-theft vector via the forfeit funnel). */
+export function ownsOpenRoom(
+  roomId: string,
+  wallet: string,
+  gameKey: string,
+  mode: string
+): boolean {
+  const room = rooms.get(roomId)
+  return (
+    !!room &&
+    room.open &&
+    room.status === 'open' &&
+    room.hostWallet === wallet &&
+    room.gameKey === gameKey &&
+    room.mode === mode
+  )
+}
 /** socket.id → roomId (O(1) leave/disconnect lookups). */
 const roomBySocket = new Map<string, string>()
 
@@ -580,7 +621,19 @@ function startRoom(io: Server, room: PrivateRoom): void {
 
   const spec = room.spec
   const mode = room.mode
+  const partyId = room.roomId
   destroyRoom(io, room)
+
+  // PARTY STAMP: joinQueue (socket/queue.ts) reads this at enqueue time and
+  // matches party members with each other and ONLY each other — no public
+  // stranger can be swept into this match and no member can be poached by
+  // the public pool while the finds below fan out. Stamped with a short TTL
+  // instead of deleted afterwards because chess/volley's find handlers await
+  // before they reach joinQueue; a stale stamp self-expires long before the
+  // player could be back on a lobby clicking a public Find button.
+  for (const socket of sockets) {
+    socket.data.privateParty = { id: partyId, until: Date.now() + 5_000 }
+  }
 
   // SAME TICK for every player: the queue pairs them with each other.
   for (const socket of sockets) {
@@ -729,6 +782,7 @@ export function registerPrivateMatch(io: Server, socket: Socket): void {
         },
       ],
       invites: new Map(),
+      open: parsed.data.open === true,
       status: 'open',
       countdownTimer: null,
       createdAt: Date.now(),
@@ -836,10 +890,11 @@ export function registerPrivateMatch(io: Server, socket: Socket): void {
         emitError(socket, 'already_started', 'That match is already starting', parsed.data.roomId)
         return
       }
-      // AUTHORIZATION: the host, or a live invite addressed to this wallet.
+      // AUTHORIZATION: the host, a live invite addressed to this wallet, or
+      // any seat of an OPEN room (a posted public challenge).
       const invite = room.invites.get(me.wallet)
       const invited = invite !== undefined && invite.expiresAt > Date.now()
-      if (me.wallet !== room.hostWallet && !invited) {
+      if (me.wallet !== room.hostWallet && !invited && !room.open) {
         if (invite) room.invites.delete(me.wallet) // expired — clean it up
         emitError(socket, 'not_invited', 'You have not been invited', parsed.data.roomId)
         return

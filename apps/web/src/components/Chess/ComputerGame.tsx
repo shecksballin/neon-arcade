@@ -126,11 +126,20 @@ export default function ComputerGame({
   onGameEnd,
   profile,
   onReturnToLobby,
-  wagerAmount = 0
+  wagerAmount = 0,
+  // Exit-guard seam (ChessGame): a bumped nonce ends the round as a
+  // resignation loss; round lifecycle + progression-finished report back up.
+  forfeitNonce = 0,
+  onRoundStateChange,
+  onProgressionDone,
 }: any) {
   const [isThinking,   setIsThinking]  = useState(false);
   const computerColor = playerColor === 'white' ? 'black' : 'white';
   const { win } = useNeonBucks();
+
+  // A confirmed exit mid-round: the round ends AS A LOSS — the results
+  // screen, XP report and progression play out exactly like a checkmate.
+  const [forfeited, setForfeited] = useState(false);
 
   const pendingComputer = useRef(false);
   // Practice XP — self-reported award, chained as the progression overlay.
@@ -167,22 +176,54 @@ export default function ComputerGame({
     undoMove(); // Undo our move
   }, [undoMove]);
 
+  // The result the round ACTUALLY ended with: chess.js's verdict, or the
+  // synthesized resignation loss when the player forfeited on exit.
+  const effectiveResult = forfeited
+    ? { status: 'checkmate', winner: computerColor, message: 'You resigned' }
+    : gameResult;
+
+  /**
+   * Exit-guard seam: a bumped nonce mid-round = confirmed forfeit.
+   *
+   * EDGE-TRIGGERED, not level-triggered, and that distinction is the whole
+   * point of the ref. ChessGame owns the counter and never resets it, so a
+   * NEW practice game (this component remounts on every entry) would see a
+   * still-positive nonce and forfeit itself before the first move. Seeding
+   * the ref with the mounting value means only a genuine increment — a
+   * confirm that happened while THIS round was on screen — counts.
+   */
+  const lastForfeitNonceRef = useRef(forfeitNonce);
   useEffect(() => {
-    if (['checkmate', 'stalemate', 'draw'].includes(gameResult.status)) {
+    if (forfeitNonce === lastForfeitNonceRef.current) return;
+    lastForfeitNonceRef.current = forfeitNonce;
+    if (!['checkmate', 'stalemate', 'draw'].includes(gameResult.status)) {
+      setForfeited(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forfeitNonce]);
+
+  const roundOver = ['checkmate', 'stalemate', 'draw'].includes(effectiveResult.status);
+  useEffect(() => {
+    onRoundStateChange?.(roundOver);
+  }, [roundOver, onRoundStateChange]);
+
+  useEffect(() => {
+    if (['checkmate', 'stalemate', 'draw'].includes(effectiveResult.status)) {
       // ONCE per game: deps like history/fen keep new identities while the
       // status stays terminal, and an unguarded body re-paid the pot (and
       // would re-report XP) on every such re-run. Reset on rematch below.
       if (endHandledRef.current) return;
       endHandledRef.current = true;
-      onGameEnd?.({ result: gameResult, history, fen });
-      
-      // Pay out if won against computer
-      if (gameResult.status === 'checkmate') {
-        const winnerColor = gameResult.winner;
+      onGameEnd?.({ result: effectiveResult, history, fen });
+
+      // Pay out if won against computer (a forfeit "checkmate" has the
+      // computer as winner, so it pays nothing — the stake is lost).
+      if (effectiveResult.status === 'checkmate') {
+        const winnerColor = effectiveResult.winner;
         if (winnerColor === playerColor && wagerAmount > 0) {
           win(wagerAmount * 2);
         }
-      } else if ((gameResult.status === 'stalemate' || gameResult.status === 'draw') && wagerAmount > 0) {
+      } else if ((effectiveResult.status === 'stalemate' || effectiveResult.status === 'draw') && wagerAmount > 0) {
         win(wagerAmount); // draw returns money
       }
 
@@ -190,8 +231,8 @@ export default function ComputerGame({
       // level-progression overlay online chess gets from the socket.
       reportRound({
         result:
-          gameResult.status === 'checkmate'
-            ? gameResult.winner === playerColor
+          effectiveResult.status === 'checkmate'
+            ? effectiveResult.winner === playerColor
               ? 'win'
               : 'loss'
             : 'draw',
@@ -199,10 +240,11 @@ export default function ComputerGame({
     } else {
       endHandledRef.current = false;
     }
-  }, [gameResult.status, gameResult.winner, onGameEnd, history, fen, playerColor, wagerAmount, win, reportRound]);
+  }, [effectiveResult.status, effectiveResult.winner, onGameEnd, history, fen, playerColor, wagerAmount, win, reportRound]);
 
   useEffect(() => {
-    const gameOver = ['checkmate', 'stalemate', 'draw'].includes(gameResult.status);
+    const gameOver =
+      forfeited || ['checkmate', 'stalemate', 'draw'].includes(gameResult.status);
     const isComputerTurn = turn === computerColor;
 
     if (!isComputerTurn || gameOver || pendingComputer.current) return;
@@ -222,7 +264,7 @@ export default function ComputerGame({
         setIsThinking(false);
         pendingComputer.current = false;
       });
-  }, [turn, gameResult.status, onRequestComputerMove, difficulty, fen, applyExternalMove, computerColor]);
+  }, [turn, gameResult.status, forfeited, onRequestComputerMove, difficulty, fen, applyExternalMove, computerColor]);
 
   const handleSquareClick = useCallback((index: number) => {
     selectSquare(index);
@@ -231,6 +273,7 @@ export default function ComputerGame({
   const handleRematch = useCallback(() => {
     pendingComputer.current = false;
     // New game: re-arm the once-per-game guards and drop any queued overlay.
+    setForfeited(false);
     armRound();
     clearPracticeProgression();
     resetGame();
@@ -292,25 +335,30 @@ export default function ComputerGame({
           resolvePromotion={resolvePromotion}
           onSquareClick={handleSquareClick}
         />
-        {['checkmate', 'stalemate', 'draw'].includes(gameResult.status) && (
+        {roundOver && (
           <ResultsScreen
-            won={gameResult.status === 'checkmate' && gameResult.winner === playerColor}
+            won={effectiveResult.status === 'checkmate' && effectiveResult.winner === playerColor}
             stake={wagerAmount}
             winnings={
-              gameResult.status === 'checkmate' && gameResult.winner === playerColor
+              effectiveResult.status === 'checkmate' && effectiveResult.winner === playerColor
                 ? wagerAmount * 2
-                : (gameResult.status === 'checkmate' ? 0 : wagerAmount)
+                : (effectiveResult.status === 'checkmate' ? 0 : wagerAmount)
             }
             gameMode="Practice"
+            note={forfeited ? 'You left the match — counted as a loss' : null}
             onRematch={handleRematch}
             onExit={() => onReturnToLobby?.()}
           />
         )}
 
-        {/* Level progression, chained after the practice results screen. */}
+        {/* Level progression, chained after the practice results screen. When
+            a forfeit-exit is pending, its close cues the deferred navigation. */}
         <PostGameProgression
           progression={practiceProgression}
-          onDone={clearPracticeProgression}
+          onDone={() => {
+            clearPracticeProgression();
+            onProgressionDone?.();
+          }}
         />
         
         {/* User Info Bottom Left */}

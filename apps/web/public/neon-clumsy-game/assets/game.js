@@ -399,6 +399,7 @@ function startRound() {
   winner = null; endDelay = -1; playerEndDelay = -1;
   roundTime = 0; aliveCount = CFG.players;
   roundStartedAt = Date.now();   // arms the XP report (see reportResult)
+  announceRoundStart();          // …and the arcade's exit guard
   specTarget = null;
   playerDeathPos = null;
   ui.spectating(null);
@@ -448,6 +449,19 @@ function eliminate(pawn) {
 // before it ends), and `roundStartedAt` is cleared on the way so a round can
 // only ever report once.
 let roundStartedAt = 0;
+
+// The other half of that conversation. Leaving a LIVE round is a forfeit, and
+// the arcade owns that decision (confirm dialog → loss report → results →
+// level progression) — but it can only arm the guard if it knows a round is
+// live. So every start announces itself: the boot round AND every in-iframe
+// PLAY AGAIN, without which round two would be quittable for free. The parent
+// disarms on the result message above, so there is nothing to say at the end.
+const ROUND_START_MESSAGE = "neon-clumsy:round-start";
+function announceRoundStart() {
+  if (window.parent === window) return;
+  window.parent.postMessage({ type: ROUND_START_MESSAGE }, window.location.origin);
+}
+
 function reportResult(win) {
   if (window.parent === window || !roundStartedAt) return;
   const startedAt = roundStartedAt;
@@ -707,6 +721,31 @@ function menuCamera(dt) {
 }
 
 // ---------- HUD ----------
+/**
+ * Standings for the top-right board. Tiles broken is Clumsy's only score —
+ * it is the number the end screen celebrates and the one the arcade banks as
+ * the round's score — so it is the column, and STR.leaderboardUnit names it.
+ *
+ * Still-standing pawns rank above eliminated ones: this is a battle royale,
+ * and someone who fell in the slime with a big tile count is not leading
+ * anything. Six rows is what the card holds (the shared MatchLeaderboard
+ * default), so the board is the leaders, not the roster.
+ */
+function leaderboardRows() {
+  // The player's row wears the arcade profile name, exactly like the feed
+  // does — the pawn itself is only ever called "you" internally.
+  const nick = ui.nickname();
+  return pawns
+    .map((p) => ({
+      name: p.isPlayer ? nick : p.name,
+      value: p.stats.tiles,
+      isPlayer: !!p.isPlayer,
+      alive: p.alive,
+    }))
+    .sort((a, b) => (Number(b.alive) - Number(a.alive)) || (b.value - a.value))
+    .slice(0, 6);
+}
+
 let hudT = 0;
 function updateHUD(dt) {
   hudT -= dt;
@@ -721,6 +760,9 @@ function updateHUD(dt) {
       ui.setLayer(L + 1, CFG.layers);
     }
     ui.setTimer(roundTime);
+    // Cheap by construction: setLeaderboard drops the rebuild unless the
+    // standings actually moved since the last of these ~8-per-second ticks.
+    ui.setLeaderboard(leaderboardRows());
   }
 }
 

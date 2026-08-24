@@ -3,11 +3,11 @@ import { cors } from 'hono/cors'
 import { Server } from 'socket.io'
 import { Server as BunEngine, type WebSocketData } from '@socket.io/bun-engine'
 import { config } from './config/env'
-import quiz from './routes/quiz'
 import auth from './routes/auth'
 import profile from './routes/profile'
 import social from './routes/social'
 import stats from './routes/stats'
+import community from './routes/community'
 import { attachSocketHandlers } from './socket'
 
 const app = new Hono()
@@ -76,12 +76,12 @@ app.route('/api/profile', profile)
 // Social routes — friends + direct messages (usernames only, never wallets)
 app.route('/api/social', social)
 
+// Community routes — the public board: posts + open 1v1 challenges.
+app.route('/api/community', community)
+
 // Stats routes — my career stats, the leaderboards, my match history.
 // Read-only over `match_results`; leaderboard rows carry usernames only.
 app.route('/api/stats', stats)
-
-// Quiz routes — AI-generated trivia questions
-app.route('/api/quiz', quiz)
 
 // ---------------------------------------------------------------------------
 // Socket.IO on Bun — HTTP API and sockets share port 3002

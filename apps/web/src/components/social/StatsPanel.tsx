@@ -49,7 +49,7 @@ export const GAME_KEYS = [
   'chess',
   'volley',
   'connect',
-  'trivia',
+  'kickoff',
   'cells',
   'asteroids',
   'golf',
@@ -62,6 +62,8 @@ export const GAME_LABELS: Record<string, string> = {
   chess: 'Neon Chess',
   volley: 'Neon Volley',
   connect: 'Neon Connect',
+  kickoff: 'Neon Kickoff',
+  // Legacy label only — Neon Quiz was removed; old history rows keep a name.
   trivia: 'Neon Quiz',
   cells: 'Neon Cells',
   asteroids: 'Neon Asteroids',

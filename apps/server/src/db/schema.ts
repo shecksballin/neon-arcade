@@ -755,3 +755,50 @@ export const notifications = pgTable(
 )
 
 export type Notification = typeof notifications.$inferSelect
+
+// ─────────────────────────────────────────────────
+// COMMUNITY — the public board. Two kinds of row
+// share one table: ordinary posts and open 1v1
+// challenges (which also carry the private room
+// they were opened for). Written only by
+// routes/community.ts.
+// ─────────────────────────────────────────────────
+export const communityPosts = pgTable(
+  'community_posts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+
+    // The AUTHOR's wallet (internal key — never returned to a client;
+    // responses carry the username resolved at read time instead).
+    authorWallet: text('author_wallet').notNull(),
+
+    // 'post' | 'challenge'
+    kind: text('kind').notNull(),
+
+    // Post text (1–500 chars) or the challenge's note (may be empty).
+    // Stored RAW; React escapes at render time (same rule as messages).
+    body: text('body').notNull(),
+
+    // CHALLENGE ONLY — which match the JOIN button opens. `roomId` points at
+    // an OPEN private room hosted by the author; liveness is answered by the
+    // in-memory room registry at read time, never stored here.
+    gameKey: text('game_key'),
+    mode: text('mode'),
+    roomId: uuid('room_id'),
+
+    // SOFT DELETE ONLY (same contract as messages): reads filter this.
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // The feed: newest first, deleted rows filtered.
+    index('community_posts_feed_idx').on(table.createdAt),
+    // "Is this room already posted?" + the author's own-rows lookups.
+    index('community_posts_author_idx').on(table.authorWallet, table.createdAt),
+  ]
+)
+
+export type CommunityPost = typeof communityPosts.$inferSelect

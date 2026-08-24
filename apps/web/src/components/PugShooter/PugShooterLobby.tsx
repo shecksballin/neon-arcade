@@ -140,52 +140,57 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
         <LobbyLevelStrip />
 
         <div className="space-y-6">
-          <div className="flex flex-col items-center gap-3">
-            <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
-              Select Mode
-            </p>
-            <div className="flex gap-2 p-1 bg-[#111E1E]/80 border border-[#00FFD1]/20 rounded-lg backdrop-blur-md">
-              {MODES.map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => setMode(m.id)}
-                  className={`px-4 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
-                    mode === m.id
-                      ? "bg-[#00FFD1] text-[#081616] shadow-[0_0_15px_rgba(0,255,209,0.5)]"
-                      : "text-[#B1C5FF]/50 hover:text-[#B1C5FF]"
-                  }`}
-                >
-                  {m.label}
-                </button>
-              ))}
+          {/* Mode + Map side by side (stacked only on narrow phones) —
+              two stacked full-width selector rows spent a whole screen of
+              lobby height on four buttons. */}
+          <div className="flex flex-col sm:flex-row items-center sm:items-start justify-center gap-x-10 gap-y-6">
+            <div className="flex flex-col items-center gap-3">
+              <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
+                Select Mode
+              </p>
+              <div className="flex gap-2 p-1 bg-[#111E1E]/80 border border-[#00FFD1]/20 rounded-lg backdrop-blur-md">
+                {MODES.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => setMode(m.id)}
+                    className={`px-4 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      mode === m.id
+                        ? "bg-[#00FFD1] text-[#081616] shadow-[0_0_15px_rgba(0,255,209,0.5)]"
+                        : "text-[#B1C5FF]/50 hover:text-[#B1C5FF]"
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[9px] font-mono tracking-widest uppercase text-[#B1C5FF]/40">
+                {MODES.find((m) => m.id === mode)?.detail}
+              </p>
             </div>
-            <p className="text-[9px] font-mono tracking-widest uppercase text-[#B1C5FF]/40">
-              {MODES.find((m) => m.id === mode)?.detail}
-            </p>
-          </div>
 
-          <div className="flex flex-col items-center gap-3">
-            <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
-              Select Map
-            </p>
-            <div className="flex gap-2 p-1 bg-[#111E1E]/80 border border-[#00FFD1]/20 rounded-lg backdrop-blur-md">
-              {MAPS.map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => setMap(m.id)}
-                  className={`px-4 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
-                    map === m.id
-                      ? "bg-[#00FFD1] text-[#081616] shadow-[0_0_15px_rgba(0,255,209,0.5)]"
-                      : "text-[#B1C5FF]/50 hover:text-[#B1C5FF]"
-                  }`}
-                >
-                  {m.label}
-                </button>
-              ))}
+            <div className="flex flex-col items-center gap-3">
+              <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
+                Select Map
+              </p>
+              <div className="flex gap-2 p-1 bg-[#111E1E]/80 border border-[#00FFD1]/20 rounded-lg backdrop-blur-md">
+                {MAPS.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => setMap(m.id)}
+                    className={`px-4 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      map === m.id
+                        ? "bg-[#00FFD1] text-[#081616] shadow-[0_0_15px_rgba(0,255,209,0.5)]"
+                        : "text-[#B1C5FF]/50 hover:text-[#B1C5FF]"
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[9px] font-mono tracking-widest uppercase text-[#B1C5FF]/40">
+                {MAPS.find((m) => m.id === map)?.detail}
+              </p>
             </div>
-            <p className="text-[9px] font-mono tracking-widest uppercase text-[#B1C5FF]/40">
-              {MAPS.find((m) => m.id === map)?.detail}
-            </p>
           </div>
         </div>
 

@@ -146,9 +146,10 @@ export const QUEUE_STATUS_EVENT = 'queue:status'
 /** Mode label used when a game has only one queue (chess, connect, golf…). */
 export const DEFAULT_QUEUE_MODE = 'default'
 
-/** Player-count bounds (design contract: min 2 so it is testable, cap 20). */
+/** Player-count bounds (design contract: min 2 so it is testable). The cap
+ *  exists for the big-lobby games — cells/asteroids run 30-player worlds. */
 export const MIN_PLAYERS = 2
-export const MAX_PLAYERS = 20
+export const MAX_PLAYERS = 30
 
 // --- SKILL WINDOW (rankingLogic.md §5.3) -----------------------------------
 // mu is on the TrueSkill scale (MU_0 = 25) and MMR = 100·mu, so 1 mu = 100
@@ -167,6 +168,17 @@ export const MU_WINDOW_OPEN_AFTER_MS = 30_000
  *  players and no new events still needs a heartbeat or it would deadlock. */
 export const MATCH_RETRY_MS = 1_000
 
+/** Big-lobby queues only (`maxPlayers > needed`): once a match COULD start,
+ *  hold it this long so a burst of joiners lands in ONE big world instead of
+ *  a string of 2-player ones. Measured from the longest waiter's join, so it
+ *  delays a quiet-hours pair by at most this much. */
+export const LOBBY_GATHER_MS = 4_000
+
+/** How long a private-party marker keeps protecting an entry that is still
+ *  waiting for its partner. After this, the lone member is released to the
+ *  public pool rather than waiting forever on a partner who never arrived. */
+export const PARTY_GRACE_MS = 15_000
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -179,7 +191,7 @@ export type QueueGame =
   | 'chess'
   | 'volley'
   | 'connect'
-  | 'trivia'
+  | 'kickoff'
   | 'cells'
   | 'asteroids'
   | 'golf'
@@ -214,6 +226,15 @@ export interface SkillQueueEntry {
 export interface QueuePlayer<Meta = undefined> extends SkillQueueEntry {
   socketId: string
   wallet: string
+  /**
+   * PRIVATE-PARTY marker (server-stamped, see privateMatch.ts startRoom).
+   * Members of one private room re-driven into a public queue carry the same
+   * party id, and `selectPlayers` matches them with each other and ONLY each
+   * other — no stranger can be swept into a private match, no member can be
+   * poached by the public pool, and the pairing is immediate (no gather
+   * hold). Null for every ordinary public join.
+   */
+  party: string | null
   /** socket.data.username — the canonical display name (payloads are never
    *  trusted for identity). */
   username: string
@@ -275,6 +296,13 @@ export interface JoinQueueOptions<Meta = undefined> {
   mode?: string
   /** Players required to start (clamped to [MIN_PLAYERS, MAX_PLAYERS]). */
   needed: number
+  /**
+   * Sweep ceiling: when a match forms, take as many mutually-acceptable
+   * players as are waiting, up to this many (clamped to
+   * [needed, MAX_PLAYERS]). Omit for classic exact-size matches — the
+   * default is `needed`, which is the pre-big-lobby behaviour byte for byte.
+   */
+  maxPlayers?: number
   onMatch: QueueMatchHandler<Meta>
   meta?: Meta
   /**
@@ -359,6 +387,8 @@ interface QueueRecord {
   mode: string
   /** Kept in sync with the latest join so every status emit agrees. */
   needed: number
+  /** Sweep ceiling (>= needed); equal to `needed` for exact-size queues. */
+  maxPlayers: number
   /** Skill pool to pair on; null = plain FIFO (the pre-Ranked-2.0 behaviour). */
   ladder: RankLadder | null
   entries: QueuePlayer<unknown>[]
@@ -485,6 +515,7 @@ function getRecord(
   game: QueueGame,
   mode: string,
   needed: number,
+  maxPlayers: number,
   ladder: RankLadder | null = null
 ): QueueRecord {
   const key = keyOf(game, mode)
@@ -494,6 +525,7 @@ function getRecord(
       game,
       mode,
       needed,
+      maxPlayers,
       ladder,
       entries: [],
       handoff: null,
@@ -504,6 +536,7 @@ function getRecord(
     // Keep the newest requirement so waiting players and joiners see the same
     // "PLAYERS: n / N" denominator.
     record.needed = needed
+    record.maxPlayers = maxPlayers
     record.ladder = ladder
   }
   return record
@@ -528,7 +561,10 @@ function statusPayload(
     mode: record.mode,
     inQueue,
     current: record.entries.length,
-    needed: record.needed,
+    // The denominator players SEE. For exact-size queues this IS `needed`;
+    // for big-lobby sweep queues it is the world cap ("PLAYERS 3/30"), since
+    // "n / 2" would overflow the moment a third player gathers.
+    needed: record.maxPlayers,
   }
 }
 
@@ -613,11 +649,59 @@ function releaseWalletSlots(
  */
 function selectPlayers(record: QueueRecord, now: number): QueuePlayer<unknown>[] | null {
   if (record.entries.length < record.needed) return null
-  if (!record.ladder) {
-    // Legacy behaviour, byte for byte: the longest-waiting `needed` players.
-    return record.entries.slice(0, record.needed)
+
+  // PRIVATE PARTIES FIRST. A complete party pairs with itself, immediately —
+  // no gather hold, no skill window, no strangers. A party whose partner
+  // never arrived (their socket died between the dispatches) is released to
+  // the public pool after PARTY_GRACE_MS so it cannot wait forever.
+  const byParty = new Map<string, QueuePlayer<unknown>[]>()
+  for (const entry of record.entries) {
+    if (!entry.party) continue
+    if (now - entry.joinedAt > PARTY_GRACE_MS) {
+      entry.party = null
+      continue
+    }
+    const group = byParty.get(entry.party)
+    if (group) group.push(entry)
+    else byParty.set(entry.party, [entry])
   }
-  return pickSkillGroup(record.entries, record.needed, now)
+  for (const members of byParty.values()) {
+    if (members.length >= record.needed) return members.slice(0, record.needed)
+  }
+
+  // Everything below sees ONLY the public pool: entries still waiting on a
+  // party partner are invisible to sweeps and pairing.
+  const pool = record.entries.filter((entry) => !entry.party)
+  if (pool.length < record.needed) return null
+
+  // Big-lobby gather hold: enough players to start, but room for more. Wait
+  // LOBBY_GATHER_MS from the LONGEST waiter's join before committing, so a
+  // burst of joiners coalesces into one world. A full house skips the hold,
+  // and the retry heartbeat guarantees the deferred attempt happens.
+  if (
+    record.maxPlayers > record.needed &&
+    pool.length < record.maxPlayers &&
+    // Not pool[0]: a re-join re-appends its entry while KEEPING the
+    // original joinedAt, so position is not wait order.
+    now - Math.min(...pool.map((e) => e.joinedAt)) < LOBBY_GATHER_MS
+  ) {
+    return null
+  }
+
+  const cap = Math.min(record.maxPlayers, pool.length)
+  if (!record.ladder) {
+    // Legacy behaviour, byte for byte, when no sweep was asked for: the
+    // longest-waiting `needed` players. With a sweep ceiling, FIFO simply
+    // takes everyone waiting, up to the cap.
+    return pool.slice(0, cap)
+  }
+  // Prefer the BIGGEST group the acceptance windows allow right now — a
+  // smaller group is only formed when no larger one is mutually acceptable.
+  for (let size = cap; size >= record.needed; size--) {
+    const group = pickSkillGroup(pool, size, now)
+    if (group) return group
+  }
+  return null
 }
 
 /**
@@ -630,7 +714,19 @@ function selectPlayers(record: QueueRecord, now: number): QueuePlayer<unknown>[]
  */
 function scheduleRetry(io: Server, record: QueueRecord): void {
   if (record.retryTimer) return
-  if (!record.ladder || !record.handoff) return
+  if (!record.handoff) return
+  // Only time-driven queues need a heartbeat: skill windows widen with the
+  // clock, the big-lobby gather hold expires with it, and so does the
+  // PARTY_GRACE_MS release of a stranded party member. A plain exact-size
+  // FIFO queue with no party entries can only change on a join, which
+  // re-runs the matcher anyway.
+  if (
+    !record.ladder &&
+    record.maxPlayers === record.needed &&
+    !record.entries.some((entry) => entry.party)
+  ) {
+    return
+  }
   if (record.entries.length < record.needed) return
 
   const timer = setTimeout(() => {
@@ -816,7 +912,13 @@ export async function joinQueue<Meta = undefined>(
     return { status: 'rejected', reason: 'disconnected' }
   }
 
-  const record = getRecord(game, mode, needed, ladder)
+  // Clamp the sweep ceiling server-side (callers pass literals, but the
+  // record must always satisfy needed <= maxPlayers <= MAX_PLAYERS).
+  const maxPlayers = Math.max(
+    needed,
+    Math.min(options.maxPlayers ?? needed, MAX_PLAYERS)
+  )
+  const record = getRecord(game, mode, needed, maxPlayers, ladder)
   // Remember how to finish a match without a fresh join event (see runRetry).
   record.handoff = {
     onMatch: onMatch as QueueMatchHandler<unknown>,
@@ -830,13 +932,36 @@ export async function joinQueue<Meta = undefined>(
   const touched = releaseWalletSlots(io, game, wallet, socket.id)
   pruneStale(io, record)
 
+  // PRIVATE PARTY: privateMatch.startRoom stamps socket.data.privateParty
+  // ({id, until}) just before re-driving each member's find event. Read at
+  // join time, honoured only while fresh — a stale stamp from a finished
+  // match must never tag an ordinary public join. socket.data is server-side
+  // only, so a client can never forge its way into someone's party.
+  const stamp = socket.data.privateParty as
+    | { id?: unknown; until?: unknown }
+    | undefined
+  const party =
+    stamp &&
+    typeof stamp.id === 'string' &&
+    typeof stamp.until === 'number' &&
+    stamp.until > Date.now()
+      ? stamp.id
+      : null
+
   const entry: QueuePlayer<Meta> = {
     socketId: socket.id,
     wallet,
     username: username ?? 'Guest',
     game,
     mode,
-    joinedAt: waitingSince,
+    party,
+    // A party entry gets a FRESH clock. `waitingSince` inherits the player's
+    // old public wait (priorJoinedAt spans every mode of the game), and an
+    // inherited 15s+ clock would trip the PARTY_GRACE_MS demotion on the very
+    // first selection pass — dumping a private-room member straight into the
+    // public pool with a wide-open skill window. The party pairs with itself
+    // immediately, so the lost queue priority costs nothing.
+    joinedAt: party ? Date.now() : waitingSince,
     mu: skill?.mu ?? MU_0,
     sigma: skill?.sigma ?? SIGMA_0,
     meta: options.meta as Meta,

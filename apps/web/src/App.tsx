@@ -19,6 +19,9 @@ import { useCurrency } from "./CurrencyStore";
 import { AccountSetup } from "./components/AccountSetup";
 import { ProfileSettings } from "./components/ProfileSettings";
 import { GameChunkLoading } from "./components/common/GameChunkLoading";
+// Mid-match "are you sure? leaving forfeits" — a live game registers the
+// guard; with none registered these navigations run exactly as before.
+import { navigateWithExitGuard } from "./components/common/exitGuard";
 
 // ---------------------------------------------------------------------------
 // GAMES ARE CODE-SPLIT, ALL NINE OF THEM
@@ -41,7 +44,7 @@ const ChessGame = React.lazy(() => import("./components/Chess/ChessGame"));
 const VolleyGame = React.lazy(() => import("./components/Volley/VolleyGame"));
 const CellsGame = React.lazy(() => import("./components/Cells/CellsGame"));
 const AsteroidsGame = React.lazy(() => import("./components/Asteroids/AsteroidsGame"));
-const TriviaGame = React.lazy(() => import("./components/Trivia/TriviaCore"));
+const NeonKickoffGame = React.lazy(() => import("./components/neonKickoff/NeonKickoffGame"));
 const GolfGame = React.lazy(() => import("./components/Golf/GolfGame"));
 const ClumsyGame = React.lazy(() => import("./components/Clumsy/ClumsyGame"));
 const PugShooterGame = React.lazy(() => import("./components/PugShooter/PugShooterGame"));
@@ -66,6 +69,7 @@ import { disconnectGameSocket } from "./hooks/useGameSocket";
 // bell is worse than a few kB.
 import { useNotifications } from "./notifications/NotificationsStore";
 import { NotificationCenter } from "./notifications/NotificationCenter";
+import { useGlobalFullscreenKey, FullscreenButton } from "./components/common/fullscreen";
 const NotificationsSocketBridge = React.lazy(() =>
   import("./notifications/NotificationsSocketBridge").then((m) => ({
     default: m.NotificationsSocketBridge,
@@ -152,7 +156,7 @@ type View =
   | "volley"
   | "cells"
   | "asteroids"
-  | "trivia"
+  | "kickoff"
   | "golf"
   | "clumsy"
   | "pugshooter"
@@ -187,7 +191,7 @@ const PRIVATE_WAGER_VIEWS: Record<string, View> = {
   chess: "chess",
   connect: "neonconnect",
   volley: "volley",
-  trivia: "trivia",
+  kickoff: "kickoff",
   cells: "cells",
   asteroids: "asteroids",
   golf: "golf",
@@ -247,6 +251,10 @@ export default function App() {
   const [showWallet, setShowWallet] = React.useState(false);
   const [gameInSession, setGameInSession] = React.useState(false);
   const [menuOpen, setMenuOpen] = React.useState(false);
+
+  // THE 'f' fullscreen keybind — one listener for the whole arcade (the
+  // per-game copies were removed; see components/common/fullscreen.tsx).
+  useGlobalFullscreenKey();
   const [masterVolume, setMasterVolume] = React.useState<number>(() => {
     const saved = localStorage.getItem("masterVolume");
     return saved !== null ? parseFloat(saved) : 0.5;
@@ -620,9 +628,11 @@ export default function App() {
         return;
       }
       // Signed in to Privy but the account is unfinished — go and finish it,
-      // whatever the other readiness flags say.
+      // whatever the other readiness flags say. Keep the FIRST interrupted
+      // destination: a second gate hit while setup is already pending must
+      // not overwrite where the user was originally headed.
       if (authenticated) {
-        pendingDest.current = dest;
+        pendingDest.current = pendingDest.current ?? dest;
         setView("account_setup");
         return;
       }
@@ -644,11 +654,8 @@ export default function App() {
         login();
         return;
       }
-      if (!hasAccount) {
-        pendingDest.current = dest;
-        setView("account_setup");
-        return;
-      }
+      // (Unreachable: !hasAccount is implied and every authenticated state
+      // returned above — kept as the type-narrowing fall-through only.)
       setView(dest);
     },
     [authLoaded, privyReady, authenticated, hasAccount, login, isTouch]
@@ -661,14 +668,18 @@ export default function App() {
   };
 
   // Play Now is a gated entry point: wallet popup first for signed-out
-  // users, then username/PIN/authenticator, then the arcade.
+  // users, then username/PIN/authenticator, then the arcade. Mid-match the
+  // exit guard owns the click: confirm → forfeit → results → progression →
+  // only then this navigation runs.
   const handlePlayNow = () => {
-    requireAccount("arcade");
+    navigateWithExitGuard(() => requireAccount("arcade"));
   };
 
   const navigateToLanding = () => {
-    setGameInSession(false);
-    setView("landing");
+    navigateWithExitGuard(() => {
+      setGameInSession(false);
+      setView("landing");
+    });
   };
 
   // AccountSetup finished: username registered, PIN saved, authenticator
@@ -713,7 +724,23 @@ export default function App() {
    * Every step is failure-tolerant on purpose: sign-out is the one action
    * that has to work even when nothing else does.
    */
+  /**
+   * SIGN OUT, but never out from under a live match.
+   *
+   * The teardown below drops the game socket as its FIRST act, so this has
+   * to be guarded around the whole operation rather than just the navigation
+   * at the end: a forfeit needs that socket to tell the server the player
+   * resigned. Mid-match this therefore confirms, forfeits, plays the results
+   * and progression, and only then signs out — off a live match it runs
+   * straight through, exactly as before.
+   */
   const handleDisconnectWallet = async () => {
+    navigateWithExitGuard(() => {
+      void performDisconnect();
+    });
+  };
+
+  const performDisconnect = async () => {
     // Close anything that renders account data.
     setShowWallet(false);
     setShowSettings(false);
@@ -800,7 +827,7 @@ export default function App() {
         view === "arcade" ||
         view === "neonconnect" ||
         view === "chess" ||
-        view === "trivia" ||
+        view === "kickoff" ||
         view === "cells" ||
         view === "asteroids" ||
         view === "golf" ||
@@ -866,7 +893,12 @@ export default function App() {
 
       {/* Floating Top Nav */}
       <AnimatePresence>
-        {(!gameInSession || view === "neonconnect" || view === "chess") && (
+        {/* Hidden during account setup: every nav control (logo, library,
+            wallet) navigates away from a flow that loses typed username/PIN
+            and the TOTP secret on unmount. Same gate the floating hamburger
+            and ActiveUsers strip already use. */}
+        {view !== "account_setup" &&
+          (!gameInSession || view === "neonconnect" || view === "chess") && (
           <motion.div
             initial={{ y: -100, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
@@ -975,6 +1007,10 @@ export default function App() {
                   reward as one row among them. Message and friend rows open
                   the matching sidebar panel through `openSidebarPanel`.
                 */}
+                {/* Fullscreen for the main menu (and anywhere the nav
+                    shows). Same shared toggle as every game; 'f' works too. */}
+                <FullscreenButton />
+
                 <NotificationCenter
                   signedIn={hasAccount}
                   dailyAvailable={dailyAvailable}
@@ -1028,7 +1064,9 @@ export default function App() {
               </div>
             </nav>
             <AnimatePresence>
-              {view !== "landing" && view !== "account_setup" && !gameInSession && (
+              {/* account_setup needs no clause here — the whole nav bar is
+                  gated off during setup at the AnimatePresence above. */}
+              {view !== "landing" && !gameInSession && (
                 <motion.div
                   initial={{ opacity: 0, y: -10 }}
                   animate={{ opacity: 1, y: 0 }}
@@ -1088,6 +1126,18 @@ export default function App() {
             exit={{ opacity: 0 }}
             className="h-full"
           >
+            {/* ESCAPE HATCH. The top nav is hidden during setup on purpose
+                (its controls abandoned the flow mid-typing), which made this
+                screen a dead end for anyone who decides not to finish — no
+                cancel, no way back, and a reload re-enters setup. One small
+                explicit exit restores the choice without re-adding the nav. */}
+            <button
+              type="button"
+              onClick={navigateToLanding}
+              className="fixed top-6 left-6 z-50 flex items-center gap-2 rounded-full border border-white/15 bg-black/40 px-4 py-2 font-mono text-[10px] uppercase tracking-[0.25em] text-white/60 backdrop-blur-md transition-all hover:border-[#00FFD1]/50 hover:text-[#00FFD1]"
+            >
+              ‹ Exit setup
+            </button>
             <AccountSetup onComplete={handleAccountComplete} />
           </motion.div>
         ) : view === "arcade" ? (
@@ -1190,16 +1240,16 @@ export default function App() {
               />
             </React.Suspense>
           </motion.div>
-        ) : view === "trivia" ? (
+        ) : view === "kickoff" ? (
           <motion.div
-            key="trivia"
+            key="kickoff"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="h-full"
           >
-            <React.Suspense fallback={<GameChunkLoading label="Neon Quiz" />}>
-              <TriviaGame
+            <React.Suspense fallback={<GameChunkLoading label="Neon Kickoff" />}>
+              <NeonKickoffGame
                 onExit={() => {
                   setView("arcade");
                   setGameInSession(false);

@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Globe, Cpu, LogOut } from 'lucide-react';
+import { Globe, Cpu, LogOut, Swords } from 'lucide-react';
 import { ParticleCard } from '../glass/MagicGameTile';
 // The real arcade menu column (rank card, drawer deep-links, live friends) —
 // replaces the old static ChessNavSidebar mock-up.
 import { GameNavSidebar } from '../common/GameNavSidebar';
+// Private-wager waiting room, openable from the in-game side panel.
+import PrivateWagerRoom from '../social/PrivateWagerRoom';
+import { GamePauseMenu } from '../common/GamePauseMenu';
 // Shared matchmaking screen — identical copy/look in every online game.
 import SearchingForMatch from '../common/SearchingForMatch';
 import GameLobby from './GameLobby';
@@ -17,6 +20,9 @@ import { DEFAULT_SKILL_LEVEL } from './difficulty';
 import { connectGameSocket, getSocket, useMatchProgression } from '../../hooks/useGameSocket';
 // Level/rank progression overlays, chained after the game-over overlay.
 import { PostGameProgression } from '../common/PostGameProgression';
+// "Are you sure? leaving forfeits" — every mid-match exit (pause menu, side
+// panel, mode cards, App nav bar) funnels through this guard.
+import { useGuardedExit } from '../common/exitGuard';
 
 interface ChessGameProps {
   onExit: () => void;
@@ -37,7 +43,7 @@ function GameMenuPanel({
   gameMode, 
   onPlayOnline, 
   onPlayComputer, 
-  onPlayLocal,
+  onPrivateWager,
   profile
 }: { 
   onReturn: () => void, 
@@ -45,7 +51,7 @@ function GameMenuPanel({
   gameMode: string | null,
   onPlayOnline: () => void,
   onPlayComputer: () => void,
-  onPlayLocal: () => void,
+  onPrivateWager: () => void,
   profile: { name: string; avatarUrl: string } | null
 }) {
   return (
@@ -68,6 +74,23 @@ function GameMenuPanel({
           </div>
         </ParticleCard>
 
+        {/* Private Wager — invite a friend into an invite-only online match.
+            Replaces the old Local Co-Op card (pass-and-play still lives in
+            the lobby); ordered per design: Wager top, Private middle,
+            Practice bottom. */}
+        <ParticleCard
+          onClick={onPrivateWager}
+          className="magic-bento-card flex-1 px-3 py-3.5 rounded-xl transition-all duration-300 flex flex-col items-center justify-center gap-1.5 group relative overflow-hidden cursor-pointer bg-[#081616] border border-[#00FFD1]/40 text-white hover:border-[#00FFD1] hover:shadow-[0_0_20px_rgba(0,255,209,0.2)]"
+          style={{ backdropFilter: 'none' }}
+        >
+          <Swords className="w-5 h-5 shrink-0 text-zinc-400 group-hover:rotate-12 transition-transform block" />
+          <div className="text-center">
+            <span className="block font-black text-[10px] uppercase tracking-tighter italic leading-none">
+              Private Wager
+            </span>
+          </div>
+        </ParticleCard>
+
         {/* Practice / Computer */}
         <ParticleCard
           onClick={onPlayComputer}
@@ -83,27 +106,6 @@ function GameMenuPanel({
           <div className="text-center">
             <span className="block font-black text-[10px] uppercase tracking-tighter italic leading-none">
               Practice
-            </span>
-          </div>
-        </ParticleCard>
-
-        {/* Local Co-Op */}
-        <ParticleCard
-          onClick={onPlayLocal}
-          className={`magic-bento-card flex-1 px-3 py-3.5 rounded-xl transition-all duration-300 flex flex-col items-center justify-center gap-1.5 group relative overflow-hidden cursor-pointer ${
-            gameMode === 'local'
-              ? 'bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] shadow-[0_0_40px_rgba(0,255,209,0.4)] scale-[1.02]'
-              : 'bg-[#081616] border border-[#00FFD1]/40 text-white hover:border-[#00FFD1] hover:shadow-[0_0_20px_rgba(0,255,209,0.2)]'
-          }`}
-          style={{ backdropFilter: 'none' }}
-        >
-          {gameMode === 'local' && <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>}
-          <div className={`material-symbols-outlined text-[20px] block leading-none shrink-0 ${gameMode === 'local' ? '' : 'text-zinc-400 group-hover:scale-110 transition-transform'}`}>
-            people
-          </div>
-          <div className="text-center">
-            <span className="block font-black text-[10px] uppercase tracking-tighter italic leading-none">
-              Local Co-Op
             </span>
           </div>
         </ParticleCard>
@@ -138,6 +140,9 @@ import { WagerMenu } from '../NeonBucks/WagerMenu';
 
 export default function ChessGame({ onExit, profile, onGameStatusChange }: ChessGameProps) {
   const [gameState, setGameState] = useState<'lobby' | 'waiting' | 'playing' | 'ended' | 'practice_wager'>('lobby');
+  // Private-wager room opened from the side panel (the lobby screen has its
+  // own copy inside GameLobby; the two never render together).
+  const [showPrivateWager, setShowPrivateWager] = useState(false);
   // Per-player "+XP / rank change" from the server, chained after the
   // GameOverOverlay (arrives with the gameEnded settle, online only).
   const { progression, clear: clearProgression } = useMatchProgression();
@@ -162,6 +167,73 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
   const socket = getSocket();
 
   const { getBestMove } = useComputerMove();
+
+  // Practice round lifecycle, reported up by ComputerGame — ChessGame's own
+  // gameState stays 'playing' through a practice checkmate, so without this
+  // the guard would still demand a forfeit on the results screen.
+  const [practiceRoundOver, setPracticeRoundOver] = useState(false);
+  // Bumped to make ComputerGame end its round as a resignation loss.
+  const [practiceForfeitNonce, setPracticeForfeitNonce] = useState(0);
+  // Same lifecycle report for local pass-and-play (no stakes, but the
+  // confirm should stop asking once the board has a result).
+  const [localRoundOver, setLocalRoundOver] = useState(false);
+  // And for the online board: a locally-detected mate can end the game while
+  // gameState is still 'playing' (the server never hears client-side mates)
+  // — leaving THAT screen must not be treated as a resignation.
+  const [onlineRoundOver, setOnlineRoundOver] = useState(false);
+
+  // A round the player would LOSE by leaving:
+  //  · online: the 'playing' window until the board has a result
+  //  · practice: until ComputerGame reports its round over
+  //  · local: until the board has a result (leaving just ends the sitting)
+  // 'waiting' is deliberately NOT forfeitable — cancelling a queue is free.
+  const forfeitable =
+    gameState === 'playing' &&
+    ((gameMode === 'multiplayer' && !onlineRoundOver) ||
+      (gameMode === 'computer' && !practiceRoundOver) ||
+      (gameMode === 'local' && !localRoundOver));
+
+  const {
+    requestExit,
+    finishExit,
+    abortPendingExit,
+    confirmDialog,
+  } = useGuardedExit({
+    active: forfeitable,
+    onForfeit: () => {
+      if (gameMode === 'multiplayer' && gameData?.gameId) {
+        // The server settles the resignation and answers with gameEnded +
+        // match:progression — the results overlay and the progression
+        // sequence play out before the deferred navigation runs.
+        socket.emit('resign', gameData.gameId);
+        return 'wait';
+      }
+      if (gameMode === 'computer') {
+        // ComputerGame ends the round as a loss: results screen, practice
+        // XP report, level progression — then finishExit navigates.
+        setPracticeForfeitNonce((n) => n + 1);
+        return 'wait';
+      }
+      // Local pass-and-play: nothing staked, nothing scored — just go.
+      return 'immediate';
+    },
+    copy: () =>
+      gameMode === 'multiplayer'
+        ? {
+            message:
+              'Leaving now resigns the match — your opponent takes the win. Your results and progression will play before you go.',
+            confirmLabel: 'Resign & leave',
+          }
+        : gameMode === 'computer'
+          ? {
+              message:
+                'Leaving now ends the practice match as a loss and forfeits your wager. Your results will play before you go.',
+            }
+          : {
+              message: 'Leaving now ends the local match for both players.',
+              confirmLabel: 'Leave game',
+            },
+  });
 
   // Mirrors of state for listeners/cleanups that must not re-subscribe on
   // every render (the socket handlers below are bound exactly once).
@@ -228,6 +300,7 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
       setConnectionStatus('connected');
       setServerGameEnd(null);
       setExternalMove(null);
+      setOnlineRoundOver(false);
     };
     const onGameEnded = (data: any) => {
       setGameState('ended');
@@ -327,31 +400,55 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
     setGameState('practice_wager');
   };
 
+  /**
+   * ComputerGame's round-lifecycle report, STABLE and EDGE-TRIGGERED.
+   *
+   * Both properties are load-bearing. An inline arrow re-fires
+   * ComputerGame's report effect on identity change alone, and the render
+   * that follows a confirm still has `roundOver === false` (its forfeit
+   * state is only scheduled at that point) — so a level-triggered abort
+   * would cancel the very exit the player just confirmed, stranding them on
+   * the results screen. Only a true→false transition is a real rematch.
+   */
+  const practiceRoundOverRef = useRef(false);
+  const handlePracticeRoundState = React.useCallback(
+    (over: boolean) => {
+      // The previous value comes from a ref, not a setState updater: React
+      // may invoke an updater twice (StrictMode), and firing a side effect
+      // from inside one is a bug waiting for a second render.
+      const wasOver = practiceRoundOverRef.current;
+      practiceRoundOverRef.current = over;
+      setPracticeRoundOver(over);
+      if (wasOver && !over) abortPendingExit(); // rematch = "I changed my mind"
+    },
+    [abortPendingExit]
+  );
+
   const handlePlayLocal = () => {
     setGameMode('local');
+    setLocalRoundOver(false);
     setGameState('playing');
   };
 
+  // The resign itself now lives in the guard's onForfeit — these exits only
+  // run AFTER the confirm → forfeit → results → progression flow (or right
+  // away when nothing is at stake).
   const handleExitApp = () => {
-    // Always free the queue slot on the way out — a leaked entry is what
-    // yanks an absent player into a match nobody is playing.
-    if (gameState === 'waiting') {
-      socket.emit('leaveQueue');
-      gameStateRef.current = 'lobby'; // the unmount cleanup must not re-emit
-    }
-    if (gameMode === 'multiplayer' && gameState === 'playing' && gameData?.gameId) {
-      socket.emit('resign', gameData.gameId);
-    }
-    onExit();
+    requestExit(() => {
+      // Always free the queue slot on the way out — a leaked entry is what
+      // yanks an absent player into a match nobody is playing.
+      if (gameStateRef.current === 'waiting') {
+        socket.emit('leaveQueue');
+        gameStateRef.current = 'lobby'; // the unmount cleanup must not re-emit
+      }
+      onExit();
+    });
   };
 
-  // Also the Cancel button on the SEARCHING FOR ONLINE MATCH screen.
-  const handleReturnToLobby = () => {
-    if (gameState === 'waiting') {
+  /** The raw reset — the guarded paths run this as their continuation. */
+  const resetToLobby = () => {
+    if (gameStateRef.current === 'waiting') {
       socket.emit('leaveQueue');
-    }
-    if (gameMode === 'multiplayer' && gameState === 'playing' && gameData?.gameId) {
-      socket.emit('resign', gameData.gameId);
     }
     setGameState('lobby');
     gameStateRef.current = 'lobby';
@@ -361,6 +458,16 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
     setPlayerData(null);
     setExternalMove(null);
     setServerGameEnd(null);
+    setPracticeRoundOver(false);
+    practiceRoundOverRef.current = false;
+    setLocalRoundOver(false);
+    setOnlineRoundOver(false);
+  };
+
+  // Also the Cancel button on the SEARCHING FOR ONLINE MATCH screen (where
+  // the guard is inactive, so it cancels the queue instantly as before).
+  const handleReturnToLobby = () => {
+    requestExit(resetToLobby);
   };
 
   if (gameState === 'lobby' || gameState === 'practice_wager') {
@@ -373,6 +480,8 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
             onStart={(stake) => {
               setWagerAmount(stake);
               setGameMode('computer');
+              setPracticeRoundOver(false);
+              practiceRoundOverRef.current = false;
               setGameState('playing');
             }}
           />
@@ -397,8 +506,23 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
           deep-links into the drawer), not the old static mock-up. */}
       <GameNavSidebar gameTitle="Neon Chess" />
 
-      {/* Level/rank progression, chained after the game-over overlay. */}
-      <PostGameProgression progression={progression} onDone={clearProgression} />
+      {/* Level/rank progression, chained after the game-over overlay. When a
+          forfeit-exit is pending, its close is the cue to finally navigate. */}
+      <PostGameProgression
+        progression={progression}
+        onDone={() => {
+          clearProgression();
+          finishExit();
+        }}
+      />
+
+      {/* Mid-match "are you sure? leaving forfeits" dialog. */}
+      {confirmDialog}
+
+      {/* Pug-style pause menu — uniform across every game. Quit returns to
+          the Chess lobby; the side panel's EXIT GAME still leaves to the
+          arcade. Both are guarded mid-match. */}
+      <GamePauseMenu onExit={handleReturnToLobby} />
 
       {/* Main Content Area */}
       <div className="flex-1 overflow-y-auto h-[100dvh] relative">
@@ -406,13 +530,12 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
           // Shared matchmaking screen — same copy and look in every game. The
           // PLAYERS n/N line shows how many others are queuing alongside you.
           // Cancel leaves the queue via handleReturnToLobby.
-          <div className="min-h-[100dvh] flex items-center justify-center p-6">
-            <SearchingForMatch
-              playersInQueue={queueCount?.current}
-              playersNeeded={queueCount?.needed}
-              onCancel={handleReturnToLobby}
-            />
-          </div>
+          <SearchingForMatch
+            variant="page"
+            playersInQueue={queueCount?.current}
+            playersNeeded={queueCount?.needed}
+            onCancel={handleReturnToLobby}
+          />
         ) : (
           // STACKED below lg: a fixed 280px menu beside the board needs ~620px
           // of width, so on a phone the board was pushed off-screen. Board
@@ -420,16 +543,30 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
           <div className="flex flex-col lg:flex-row items-center justify-start lg:justify-center py-6 lg:py-10 min-h-full gap-6 lg:gap-8 max-w-[1200px] mx-auto px-3 lg:px-0 lg:translate-y-[20px]">
             {/* The 5 buttons menu on the left */}
             <div className="order-2 lg:order-1 w-full max-w-[340px] lg:w-[280px] h-auto lg:h-[600px] flex-shrink-0">
-               <GameMenuPanel 
-                 onReturn={handleReturnToLobby} 
+               {/* Mode-switch cards are guarded too: picking a different mode
+                   mid-match confirms, forfeits, plays the results, and only
+                   then switches. */}
+               <GameMenuPanel
+                 onReturn={handleReturnToLobby}
                  onExit={handleExitApp}
-                 gameMode={gameMode} 
-                 onPlayOnline={gameMode === 'multiplayer' ? () => {} : handleFindGame}
-                 onPlayComputer={gameMode === 'computer' ? () => {} : handlePlayComputer}
-                 onPlayLocal={gameMode === 'local' ? () => {} : handlePlayLocal}
+                 gameMode={gameMode}
+                 onPlayOnline={gameMode === 'multiplayer' ? () => {} : () => requestExit(handleFindGame)}
+                 onPlayComputer={gameMode === 'computer' ? () => {} : () => requestExit(handlePlayComputer)}
+                 onPrivateWager={() => requestExit(() => setShowPrivateWager(true))}
                  profile={profile}
                />
             </div>
+
+            {/* Private-wager waiting room (modal overlay). ChessGame's own
+                gameStart listener is mounted in every state, so the started
+                private match takes over exactly like a queued one. */}
+            {showPrivateWager && (
+              <PrivateWagerRoom
+                gameKey="chess"
+                mode="1v1"
+                onClose={() => setShowPrivateWager(false)}
+              />
+            )}
 
             {/* order-1: the board comes FIRST on a stacked phone layout — you
                 should not have to scroll past a menu to see the game. */}
@@ -438,6 +575,7 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
               <LocalGame
                 onReturnToLobby={handleReturnToLobby}
                 profile={profile}
+                onRoundStateChange={setLocalRoundOver}
               />
             ) : gameMode === 'computer' ? (
               <ComputerGame
@@ -448,6 +586,9 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
                 onReturnToLobby={handleReturnToLobby}
                 profile={profile}
                 wagerAmount={wagerAmount}
+                forfeitNonce={practiceForfeitNonce}
+                onRoundStateChange={handlePracticeRoundState}
+                onProgressionDone={finishExit}
               />
             ) : (
               <OnlineGame
@@ -464,6 +605,7 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
                 serverGameEnd={serverGameEnd}
                 onReturnToLobby={handleReturnToLobby}
                 onRematchRequest={() => {}}
+                onRoundStateChange={setOnlineRoundOver}
               />
             )}
             </div>

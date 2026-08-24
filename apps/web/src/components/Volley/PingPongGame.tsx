@@ -1,14 +1,20 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import type { Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
-import { ChevronLeft, Trophy, User, Zap, Maximize2 } from 'lucide-react';
-import GameBackButton from '../common/GameBackButton';
+import { Zap } from 'lucide-react';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
 import { useNeonBucks } from '../../NeonBucksStore';
 // The per-player "+XP / rank change" event, chained after the results screen.
 import { useMatchProgression } from '../../hooks/useGameSocket';
 import { PostGameProgression } from '../common/PostGameProgression';
 import { usePracticeXp } from '../../hooks/usePracticeXp';
+import { GamePauseMenu } from '../common/GamePauseMenu';
+// "Are you sure? leaving forfeits" — every mid-match exit (pause-menu Quit,
+// App-level nav) funnels through this guard: confirm → forfeit → results →
+// progression → only then the deferred navigation runs.
+import { useGuardedExit } from '../common/exitGuard';
+// Shared in-match scoreboard card (the Pug Shooter HUD board).
+import { MatchLeaderboard } from '../common/MatchLeaderboard';
 
 interface PingPongGameProps {
   socket: Socket;
@@ -155,6 +161,55 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
     }
   }, [gameState, iWon, playEffect, mode, wagerAmount, win, reportRound]);
 
+  /**
+   * EXIT GUARD — "are you sure? leaving forfeits."
+   * A live rally must not be abandoned silently, and the countdown counts:
+   * online the server match already exists, practice the stake was already
+   * deducted by WagerMenu. Confirming flips the game into its
+   * ended-as-a-loss state; the normal results + progression flow plays, and
+   * only then the deferred exit runs (finishExit, cued from
+   * PostGameProgression's onDone below).
+   */
+  const { requestExit, finishExit, abortPendingExit, confirmOpen, confirmDialog } = useGuardedExit({
+    active: gameState !== 'ended',
+    onForfeit: () => {
+      if (mode === 'multiplayer') {
+        if (gameData?.gameId) {
+          // BARE gameId string — the server's expected payload shape. The
+          // server ends the game for the whole room (resigner included):
+          // because we stay mounted, 'volleyEnded' and 'match:progression'
+          // still reach us and the results + progression screens play out.
+          // Settlement is entirely server-side (eloSettled guard) — this
+          // emit is the ONLY thing the client does.
+          socket.emit('volleyResign', gameData.gameId);
+          return 'wait';
+        }
+        // No live server game to resign (should be unreachable while
+        // playing) — nothing will ever arrive, so just leave.
+        return 'immediate';
+      }
+      // PRACTICE: end the round as a resignation loss. The end effect above
+      // then reports the loss exactly once (endHandledRef + usePracticeXp's
+      // own guard), the results screen shows the defeat with a forfeit
+      // note, and the practice XP overlay chains after it.
+      setGameState('ended');
+      setWinner('Neural Net AI');
+      setEndReason({ reason: 'resignation' });
+      return 'wait';
+    },
+    copy: () =>
+      mode === 'multiplayer'
+        ? {
+            message:
+              'Leaving now resigns the match — your opponent takes the win. Your results and progression will play before you go.',
+            confirmLabel: 'Resign & leave',
+          }
+        : {
+            message:
+              'Leaving now ends the practice match as a loss and forfeits your wager. Your results will play before you go.',
+          },
+  });
+
   const WINNING_SCORE = playerData.matchMode === 'classic' ? 11 : (playerData.matchMode === 'bestof3' ? 2 : 1);
 
   // Countdown Logic
@@ -174,17 +229,6 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
     }
   }, [gameState]);
 
-  // Fullscreen toggle
-  const toggleFullscreen = () => {
-    if (!gameContainerRef.current) return;
-    if (!document.fullscreenElement) {
-      gameContainerRef.current.requestFullscreen().catch(err => {
-        console.error(`Error attempting to enable full-screen mode: ${err.message}`);
-      });
-    } else {
-      document.exitFullscreen();
-    }
-  };
   
   // Local state for animation
   const ballPos = useRef({ x: CANVAS_WIDTH / 2, y: CANVAS_HEIGHT / 2 });
@@ -399,11 +443,6 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
 
   // Handle Input
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() === 'f') {
-        toggleFullscreen();
-      }
-    };
 
     /**
      * POINTER events, not mouse events. `pointermove` fires for a mouse, a
@@ -480,7 +519,6 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
     // A finger that lands and holds without moving should still place the
     // paddle — pointermove alone would wait for the first drag pixel.
     window.addEventListener('pointerdown', handlePointerMove);
-    window.addEventListener('keydown', handleKeyDown);
 
     // Automatically try to lock when game starts
     if (canLockPointer && gameState === 'playing' && canvas) {
@@ -490,7 +528,6 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
     return () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerdown', handlePointerMove);
-      window.removeEventListener('keydown', handleKeyDown);
       if (canvas) {
         canvas.removeEventListener('click', handleCanvasClick);
       }
@@ -544,6 +581,9 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
       // A rematch inside the progression overlay's lead-in must not let the
       // LAST rally's "+XP / RANKED UP" play over the fresh one.
       clearProgression();
+      // A server-confirmed rematch while a forfeit-exit was pending means
+      // the player changed their mind — drop the deferred navigation.
+      abortPendingExit();
     };
 
     socket.on('volleyUpdate', onVolleyUpdate);
@@ -560,6 +600,9 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
   }, [mode, socket, isP1]);
 
   const handleRematchRequest = () => {
+    // Rematch while a forfeit-exit is pending = "I changed my mind" — drop
+    // the deferred navigation before the new rally starts.
+    abortPendingExit();
     if (mode === 'computer') {
       setScore({ p1: 0, p2: 0 });
       setGameState('playing');
@@ -579,29 +622,83 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
     socket.emit('volleyRequestRematch', gameData?.gameId);
   };
 
-  const handleResign = useCallback(() => {
-    if (mode === 'multiplayer' && gameState === 'playing') {
-      socket.emit('volleyResign', gameData?.gameId);
-    } else if (mode === 'computer' && gameState === 'playing') {
-      setGameState('ended');
-      setWinner('Neural Net AI');
-      setEndReason({ reason: 'resignation' });
-    }
-  }, [mode, gameState, gameData, socket]);
-
   /**
-   * Leaving the screen. ONLINE only: tell the server we're gone, otherwise the
-   * opponent keeps rallying against a frozen paddle until they reach the
-   * regulation score (the socket itself stays connected, so the server's
-   * disconnect cleanup never fires). Practice mode is untouched — it just
-   * exits, exactly as before.
+   * Leaving the screen — routed through the exit guard. Mid-match (the guard
+   * is active) it confirms first; on confirm, onForfeit resigns online (the
+   * server would otherwise keep the opponent rallying against a frozen
+   * paddle) or ends the practice round as a loss, the results + progression
+   * screens play, and only THEN onExit runs. From the results screen the
+   * guard is inactive ('ended'), so this exits immediately — the old
+   * handleResign's stay-and-show-results behavior, finally wired to a button.
    */
   const handleExitMatch = useCallback(() => {
-    if (mode === 'multiplayer' && gameState !== 'ended' && gameData?.gameId) {
-      socket.emit('volleyResign', gameData.gameId);
-    }
-    onExit();
-  }, [mode, gameState, gameData, socket, onExit]);
+    requestExit(onExit);
+  }, [requestExit, onExit]);
+
+  /**
+   * TAB-HELD SCOREBOARD — the Pug Shooter pattern that actually fits here.
+   *
+   * Pug Shooter has TWO boards: an always-on HUD card and a Tab-held card.
+   * Only the second one works in Volley. Its court is a centred aspect-[2/1]
+   * canvas as wide as the viewport, so it has no margins to put a card in:
+   * every fixed corner lands on the playfield, and which part it ruins just
+   * moves around with the window (bottom-left covers the paddle, top-left
+   * covers the ball's run along the top wall, and past a 2:1 viewport the
+   * court letterboxes horizontally and slides the paddle under a left-hand
+   * card again). Held-on-demand is the only placement that can never occlude
+   * a rally — the player asks for it, and play is theirs to pause.
+   *
+   * Discoverability is the hint below rather than an auto-show: a card
+   * popped over the 3-2-1 would land squarely on the countdown numeral.
+   */
+  const [boardHeld, setBoardHeld] = useState(false);
+  // Swallowing Tab is only ever legitimate DURING A RALLY. Any modal above
+  // the game — the forfeit confirm, the pause menu, the results screen —
+  // needs Tab for its own buttons, and while a Volley match is mounted the
+  // pause pill is the only focusable way out, so eating Tab there would trap
+  // a keyboard user with no exit. Refs, so the listener binds once.
+  const boardGateRef = useRef({ playing: false, modal: false });
+  const [pauseOpen, setPauseOpen] = useState(false);
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab' || e.metaKey || e.ctrlKey || e.altKey) return;
+      const gate = boardGateRef.current;
+      if (!gate.playing || gate.modal) return; // let focus move normally
+      e.preventDefault(); // Tab would otherwise walk the arcade's focus ring
+      setBoardHeld(true);
+    };
+    // `up` and `blur` only ever CLEAR, so they stay unconditional — a board
+    // stuck open because its release was gated would be the worse bug.
+    const up = (e: KeyboardEvent) => {
+      if (e.key === 'Tab') setBoardHeld(false);
+    };
+    const blur = () => setBoardHeld(false);
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', blur);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', blur);
+    };
+  }, []);
+
+  // In-match leaderboard rows: my side vs theirs, leader on top (the sort is
+  // stable, so a tie keeps my row first). Score halves map through isP1 —
+  // p1 is the LEFT paddle, not necessarily me in an online match.
+  const myScore = isP1.current ? score.p1 : score.p2;
+  const theirScore = isP1.current ? score.p2 : score.p1;
+  const leaderboardRows = [
+    { name: playerData.name, value: myScore, isPlayer: true },
+    { name: String(opponent.current.name ?? 'Opponent'), value: theirScore },
+  ].sort((a, b) => b.value - a.value);
+
+  // Keep the Tab gate current: hold the board only during a live rally with
+  // nothing modal on top of it.
+  boardGateRef.current = {
+    playing: gameState === 'playing',
+    modal: confirmOpen || pauseOpen,
+  };
 
   return (
     <div 
@@ -688,6 +785,26 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
         </div>
       )}
 
+      {/* IN-MATCH LEADERBOARD — held on Tab, centred like Pug Shooter's own
+          Tab scoreboard. See the boardHeld comment above for why an always-on
+          card cannot work over this court. Minimalist mode hides it like the
+          rest of the HUD; the results screen owns the 'ended' moment. */}
+      {!settings.minimalistMode && gameState !== 'ended' && boardHeld && (
+        <MatchLeaderboard
+          rows={leaderboardRows}
+          valueLabel="PTS"
+          className="absolute left-1/2 top-1/2 w-64 -translate-x-1/2 -translate-y-1/2 z-[70] pointer-events-none"
+        />
+      )}
+
+      {/* The keybind, said once where the other control hints live — a board
+          nobody knows to hold for may as well not exist. */}
+      {!settings.minimalistMode && gameState === 'playing' && !boardHeld && (
+        <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 font-mono text-[9px] uppercase tracking-[0.3em] text-white/25 pointer-coarse:hidden">
+          Hold Tab — Scores
+        </div>
+      )}
+
       {/* Game Stage */}
       <div className="relative w-full h-full flex items-center justify-center bg-radial-gradient">
           <div className="absolute inset-0 bg-[#00FFD1]/5 opacity-20" style={{ backgroundImage: 'radial-gradient(circle at center, #00FFD1 0%, transparent 70%)' }} />
@@ -751,7 +868,10 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
                     : endReason?.reason === 'resignation'
                       ? iWon
                         ? 'Your opponent resigned — you win'
-                        : null
+                        // The resigner is the loser by construction (server
+                        // rule online, onForfeit locally) — so this is OUR
+                        // forfeit-on-exit, said out loud.
+                        : 'You left the match — counted as a loss'
                       : endReason?.details ?? null
                 }
                 onRematch={handleRematchRequest}
@@ -760,12 +880,15 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
             )}
          </AnimatePresence>
 
-         {/* Level/rank progression, chained after the results screen. */}
+         {/* Level/rank progression, chained after the results screen. When a
+             forfeit-exit is pending, its close is the cue to finally run the
+             deferred navigation (finishExit is a no-op otherwise). */}
          <PostGameProgression
            progression={progression ?? practiceProgression}
            onDone={() => {
              clearProgression();
              clearPracticeProgression();
+             finishExit();
            }}
          />
       </div>
@@ -781,16 +904,27 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
       )}
 
       {/* Floating Controls - Styled like Asteroids */}
-      <GameBackButton onClick={handleExitMatch} title="Exit Game" positionClassName="absolute bottom-4 sm:bottom-8 left-4 sm:left-8 mb-[env(safe-area-inset-bottom)] z-[60] pointer-events-auto" />
+      {/* THE exit path: shared pug-style pause menu (Resume / Fullscreen (F)
+          / Exit). Replaces the floating back button and the standalone
+          fullscreen button. Exiting online mid-match resigns first
+          (handleExitMatch), exactly as the back button did. */}
+      {/* onOpenChange feeds the Tab gate: while this menu is up, Tab must
+          reach its own buttons instead of holding the scoreboard. */}
+      <GamePauseMenu
+        onExit={handleExitMatch}
+        exitLabel="Exit Game"
+        onOpenChange={setPauseOpen}
+      />
       <div className="absolute bottom-4 sm:bottom-8 right-4 sm:right-8 mb-[env(safe-area-inset-bottom)] flex gap-3 pointer-events-auto z-[60]">
-        <button 
-          onClick={toggleFullscreen}
-          className="p-4 bg-white/5 border border-white/10 rounded-2xl text-[#00FFD1] hover:bg-[#00FFD1]/10 transition-all shadow-2xl active:scale-95"
-          title="Toggle Fullscreen"
-        >
-          <Maximize2 className="w-6 h-6" />
-        </button>
       </div>
+
+      {/* Mid-match "are you sure? leaving forfeits" dialog — z-[130], above
+          the pause menu (125) so it always wins the argument. The hook exits
+          pointer lock when it opens, and nothing re-locks while it is up:
+          the canvas click-to-lock handler can't fire through the overlay,
+          and the auto-lock effect only re-runs on state changes the dialog
+          doesn't cause. */}
+      {confirmDialog}
     </div>
   );
 };

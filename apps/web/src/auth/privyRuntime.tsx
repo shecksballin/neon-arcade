@@ -24,12 +24,14 @@ import {
   useWallets,
   useSignMessage,
   useExportWallet,
+  useCreateWallet,
 } from "@privy-io/react-auth/solana";
 import { createSolanaRpc, createSolanaRpcSubscriptions } from "@solana/kit";
 import type {
   AuthState,
   SignMessageFn,
   ExportWalletFn,
+  CreateWalletFn,
   PrivyTokens,
 } from "./index";
 
@@ -89,8 +91,16 @@ const DISABLED_STATE: AuthState = {
   logout: async () => {},
   signMessage: null,
   exportWallet: null,
+  createWallet: null,
   getPrivyTokens: async () => ({ accessToken: null, identityToken: null }),
 };
+
+/**
+ * How long Privy gets to hand back an access token before we carry on
+ * without one. Generous — it normally answers in milliseconds and refreshes
+ * internally — but finite.
+ */
+const PRIVY_TOKEN_TIMEOUT_MS = 10_000;
 
 interface RuntimeProps {
   onState: (s: AuthState) => void;
@@ -204,6 +214,8 @@ function PrivyBridge({
   const { wallets } = useWallets();
   const { signMessage } = useSignMessage();
   const { exportWallet } = useExportWallet();
+  // The repair path for a login that never got its embedded wallet.
+  const { createWallet } = useCreateWallet();
   const { login } = useLogin({ onComplete: onLoginComplete });
   // Privy's second JWT: same subject as the access token, plus the user's
   // verified emails and linked wallets. Our backend uses it to recognise
@@ -234,6 +246,7 @@ function PrivyBridge({
     logout,
     signMessage,
     exportWallet,
+    createWallet,
     getAccessToken,
     identityToken,
     ready,
@@ -244,6 +257,7 @@ function PrivyBridge({
     logout,
     signMessage,
     exportWallet,
+    createWallet,
     getAccessToken,
     identityToken,
     ready,
@@ -276,6 +290,10 @@ function PrivyBridge({
     (args) => latest.current.exportWallet(args),
     [],
   );
+  const stableCreateWallet = React.useCallback<CreateWalletFn>(
+    () => latest.current.createWallet(),
+    [],
+  );
 
   /**
    * Reads BOTH tokens through the ref, so it stays referentially stable
@@ -291,7 +309,28 @@ function PrivyBridge({
     const l = latest.current;
     let accessToken: string | null = null;
     try {
-      accessToken = (await l.getAccessToken()) ?? null;
+      // BOUNDED, because "never throws" is not the same as "always
+      // answers". A try/catch handles a REJECTION; it does nothing for a
+      // promise that simply never settles, and a wedged Privy SDK (blocked
+      // iframe, dead network mid-refresh) does exactly that. Every caller
+      // of this awaits it, so one non-settling getAccessToken used to hang
+      // the whole sign-in — and with it the account-setup screen, which
+      // could then only sit there.
+      //
+      // Timing out degrades rather than fails: a null access token means
+      // the popup-free Privy path is skipped and the signature exchange
+      // takes over, which is the documented fallback anyway.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      accessToken =
+        (await Promise.race([
+          l.getAccessToken(),
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), PRIVY_TOKEN_TIMEOUT_MS);
+          }),
+        ]).finally(() => {
+          // Whichever side won, the loser's timer has nobody left to tell.
+          if (timer !== undefined) clearTimeout(timer);
+        })) ?? null;
     } catch {
       accessToken = null;
     }
@@ -313,6 +352,7 @@ function PrivyBridge({
       logout: stableLogout,
       signMessage: stableSignMessage,
       exportWallet: stableExportWallet,
+      createWallet: stableCreateWallet,
       getPrivyTokens: stableGetPrivyTokens,
     });
     // wallets is intentionally tracked via walletKey — see above.
@@ -326,6 +366,7 @@ function PrivyBridge({
     stableLogout,
     stableSignMessage,
     stableExportWallet,
+    stableCreateWallet,
     stableGetPrivyTokens,
   ]);
 

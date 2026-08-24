@@ -20,6 +20,8 @@ export class UI {
       // also holds the icon and the static `*K` label.
       hud: $("hud"), playersLeft: $("playersLeft"), layerMeter: $("layerMeter"),
       timer: $("timer"), hudHint: $("hudHint"), feed: $("feed"),
+      leaderboardTitle: $("leaderboardTitle"), leaderboardUnit: $("leaderboardUnit"),
+      leaderboardRows: $("leaderboardRows"),
       playersLeftK: $("playersLeftK"), playersLeftV: $("playersLeftV"),
       layerMeterK: $("layerMeterK"), layerMeterV: $("layerMeterV"),
       timerK: $("timerK"), timerV: $("timerV"),
@@ -35,6 +37,8 @@ export class UI {
       touchUI: $("touchUI"), btnJump: $("btnJump"), btnDive: $("btnDive"),
       btnSprint: $("btnSprint"), dev: $("dev"),
     };
+    // Last rendered leaderboard, as a string — see setLeaderboard.
+    this._lbSig = "";
     this._fillStatic();
   }
 
@@ -68,6 +72,8 @@ export class UI {
     this.els.timerK.textContent = STR.timerLabel;
     this.els.hudHintK.textContent = STR.hudHintLabel;
     this.els.hudHintText.textContent = STR.hudHint;
+    this.els.leaderboardTitle.textContent = STR.leaderboardTitle;
+    this.els.leaderboardUnit.textContent = STR.leaderboardUnit;
   }
 
   show(name, on = true) { this.els[name].classList.toggle("hidden", !on); }
@@ -93,6 +99,8 @@ export class UI {
     this.show("hud", true);
     this.show("spectateBar", false);
     this.els.feed.innerHTML = "";
+    this.els.leaderboardRows.replaceChildren();
+    this._lbSig = "";
   }
 
   countdown(txt) {
@@ -110,6 +118,42 @@ export class UI {
   setTimer(t) {
     const m = Math.floor(t / 60), s = Math.floor(t % 60);
     this.els.timerV.textContent = `${m}:${String(s).padStart(2, "0")}`;
+  }
+
+  /**
+   * The top-right standings board. `rows` is already sorted and sliced by the
+   * caller (game.js leaderboardRows): { name, value, isPlayer }.
+   *
+   * The game loop calls this ~8x a second, so a change SIGNATURE guards the
+   * rebuild — without it every tick would throw away and re-parse a dozen
+   * nodes to redraw numbers that had not moved (the same trick the pug HUD's
+   * lbSignature plays). Rows only actually change when a tile breaks or
+   * somebody falls out.
+   *
+   * Names are user-controlled — the arcade profile name rides in on `?name=`
+   * and lands in the nick field — so every one goes in through textContent.
+   * There is no string-interpolated HTML on this path, ever.
+   */
+  setLeaderboard(rows) {
+    const sig = rows.map((r) => `${r.name}:${r.value}:${r.isPlayer ? 1 : 0}`).join("|");
+    if (sig === this._lbSig) return;
+    this._lbSig = sig;
+    const built = rows.map((r, i) => {
+      const row = document.createElement("div");
+      row.className = r.isPlayer ? "lb-row me" : "lb-row";
+      const rank = document.createElement("span");
+      rank.className = "rank";
+      rank.textContent = `#${i + 1}`;
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = r.name;
+      const value = document.createElement("span");
+      value.className = "v";
+      value.textContent = `${r.value}`;
+      row.append(rank, name, value);
+      return row;
+    });
+    this.els.leaderboardRows.replaceChildren(...built);
   }
 
   feed(name) {

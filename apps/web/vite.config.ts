@@ -89,6 +89,16 @@ function vendorChunk(id: string): string | undefined {
     return 'solana';
   }
 
+  // Rapier physics — ONLY Neon Kickoff uses it, and the package inlines its
+  // whole WASM binary as base64 (~2.3 MB minified). Bucketed BEFORE the
+  // three rule below, or it lands in the shared `three` chunk and every
+  // 3D surface in the app (landing blob included) pays kickoff's physics
+  // bill. In its own chunk it downloads exactly once, when kickoff mounts.
+  // (@react-three/rapier itself stays in `three` with the rest of the R3F
+  // family — splitting the thin binding out too created a three↔rapier
+  // chunk cycle. The WASM payload is the weight; the binding is ~30 kB.)
+  if (pkg.startsWith('@dimforge/')) return 'rapier';
+
   // three.js and friends, already behind React.lazy at every use site.
   if (/^(three|postprocessing|maath)$/.test(pkg) || pkg.startsWith('@react-three/')) return 'three';
 

@@ -1,6 +1,11 @@
-import React, { useEffect, useMemo, useRef } from 'react';
-import GameBackButton from '../common/GameBackButton';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { GamePauseMenu } from '../common/GamePauseMenu';
 import { reportGameSession } from '../../lib/sessionXp';
+import { usePracticeXp } from '../../hooks/usePracticeXp';
+import { useGuardedExit } from '../common/exitGuard';
+import { PostGameProgression } from '../common/PostGameProgression';
+import { ResultsScreen } from '../NeonBucks/ResultsScreen';
+import { hasAuthToken } from '../social/usePresence';
 
 interface ClumsyPlayProps {
   /** Return to the Clumsy lobby (unmounts the iframe, stopping the game). */
@@ -25,6 +30,14 @@ interface ClumsyPlayProps {
  * readying up — so the in-iframe PLAY button (and its nickname prompt) asked
  * for a decision that had already been made. `&name=` supplies the nickname
  * the arcade already knows.
+ *
+ * What the game says back over postMessage:
+ *   round-start — a round went live (boot AND the in-iframe PLAY AGAIN),
+ *                 arming the exit guard below,
+ *   result      — how a game the server never sees still earns XP.
+ * There is no exit message: Clumsy has no quit of its own, so the pause menu
+ * here is the only way out of a live round — which makes it the only thing
+ * the forfeit guard has to cover.
  */
 export default function ClumsyPlay({ onExit, playerName }: ClumsyPlayProps) {
   const frameRef = useRef<HTMLIFrameElement>(null);
@@ -51,6 +64,60 @@ export default function ClumsyPlay({ onExit, playerName }: ClumsyPlayProps) {
     };
   }, []);
 
+  // Round lifecycle, as told by the iframe. `forfeited` also mirrors into a
+  // ref: the message listener is subscribed once and must read the CURRENT
+  // value, not the one its closure was born with.
+  const [roundLive, setRoundLive] = useState(false);
+  const [forfeited, setForfeited] = useState(false);
+  const forfeitedRef = useRef(false);
+  const roundStartedAtRef = useRef<number | null>(null);
+
+  /**
+   * Practice-shaped XP for a forfeit loss: the same metered self-reported
+   * path the game's own result message takes, but a DIFFERENT dedupe
+   * keyspace (`clumsy:practice:<uuid>` vs `clumsy:<roundId>`) — which is
+   * exactly why the listener below drops any result that arrives after a
+   * forfeit. Two keyspaces cannot dedupe each other, so the round would
+   * otherwise pay twice. Practice never touches rank, by construction of
+   * usePracticeXp: leaving costs a level's worth of progress, not RP.
+   */
+  const { practiceProgression, armRound, reportRound, clearPracticeProgression } =
+    usePracticeXp('clumsy');
+
+  const { requestExit, finishExit, exitPending, confirmDialog } = useGuardedExit({
+    // Live between the iframe's round-start and its result — never during the
+    // loading screen, never on the end screen the game shows once the player
+    // is out (their round is already settled by then), and never twice.
+    active: roundLive && !forfeited,
+    onForfeit: () => {
+      // Flip this round into ended-as-a-loss on OUR side. The iframe keeps
+      // simulating underneath the overlays, but the loss below is the one
+      // settlement — the listener drops anything it says from here on.
+      forfeitedRef.current = true;
+      setForfeited(true);
+      setRoundLive(false);
+      reportRound({
+        result: 'loss',
+        durationMs: roundStartedAtRef.current
+          ? Date.now() - roundStartedAtRef.current
+          : undefined,
+      });
+      return 'wait';
+    },
+    copy: {
+      message:
+        'Leaving now ends the round as a loss. Your results will play before you go.',
+      confirmLabel: 'Leave & forfeit',
+    },
+  });
+
+  // Signed out, the forfeit report goes nowhere and no progression will ever
+  // come — cue the deferred navigation instead of sitting out the guard's
+  // 12s fallback. finishExit still holds the results screen its minimum beat.
+  useEffect(() => {
+    if (exitPending && forfeited && !hasAuthToken()) finishExit();
+  }, [exitPending, forfeited, finishExit]);
+
   /**
    * PROGRESSION. The round runs entirely inside the iframe, so the only way
    * this game can pay XP like every other game is for it to tell us how the
@@ -62,7 +129,24 @@ export default function ClumsyPlay({ onExit, playerName }: ClumsyPlayProps) {
     const onMessage = (event: MessageEvent) => {
       // Same-origin only — the game is served from our own /public.
       if (event.origin !== window.location.origin) return;
-      if (event.data?.type !== 'neon-clumsy:result') return;
+      const type = event.data?.type;
+
+      if (type === 'neon-clumsy:round-start') {
+        // A round went live: at boot, and again on every in-iframe PLAY
+        // AGAIN (invisible out here otherwise, leaving the guard disarmed
+        // for round two).
+        setRoundLive(true);
+        roundStartedAtRef.current = Date.now();
+        armRound();
+        return;
+      }
+
+      if (type !== 'neon-clumsy:result') return;
+      // Once forfeited the round is already settled as a loss — the match
+      // the iframe finishes on its own underneath the results overlay must
+      // not ALSO pay out (double XP; see the dedupe note above).
+      if (forfeitedRef.current) return;
+      setRoundLive(false);
 
       const r = event.data;
       void reportGameSession(
@@ -82,7 +166,7 @@ export default function ClumsyPlay({ onExit, playerName }: ClumsyPlayProps) {
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, []);
+  }, [armRound]);
 
   const src = useMemo(() => {
     const params = new URLSearchParams({ autostart: '1' });
@@ -90,6 +174,13 @@ export default function ClumsyPlay({ onExit, playerName }: ClumsyPlayProps) {
     if (name) params.set('name', name.slice(0, 14));
     return `/neon-clumsy-game/index.html?${params.toString()}`;
   }, [playerName]);
+
+  // Both results-screen buttons leave: the forfeited round's iframe is still
+  // running its own match underneath and has no inbound channel to restart,
+  // so a real "Rematch" cannot be honored here — and while the exit is
+  // pending, requestExit runs the navigation immediately (the player is
+  // telling us to hurry up).
+  const leaveNow = useCallback(() => requestExit(onExit), [requestExit, onExit]);
 
   return (
     <div className="absolute inset-0 w-full h-full bg-[#0d0824]">
@@ -104,8 +195,40 @@ export default function ClumsyPlay({ onExit, playerName }: ClumsyPlayProps) {
         onLoad={() => frameRef.current?.focus()}
         allow="pointer-lock; fullscreen; gamepad; autoplay; accelerometer; gyroscope"
       />
-      {/* Back-to-lobby overlay (press Esc first if the pointer is locked). */}
-      <GameBackButton onClick={onExit} positionClassName="absolute top-24 left-6 z-30" />
+      {/* Pug-style pause menu — THE exit path for this round (the game inside
+          the iframe posts results only, never an exit message, so this
+          overlay is the only way out mid-round; press Esc first if the
+          pointer is locked). Quit goes through the guard: mid-round it asks
+          first and forfeits, after the whistle it just leaves. */}
+      <GamePauseMenu onExit={leaveNow} exitLabel="Quit to lobby" />
+
+      {/* Forfeit-on-exit: the defeat screen the confirm dialog promised —
+          the iframe never shows its own results for an abandoned round. */}
+      {forfeited && (
+        <ResultsScreen
+          won={false}
+          stake={0}
+          winnings={0}
+          moneyless
+          gameMode="Clumsy"
+          note="You left the round — counted as a loss"
+          onRematch={leaveNow}
+          onExit={leaveNow}
+        />
+      )}
+
+      {/* Practice-shaped level progression for the forfeit loss, chained
+          after the results screen; its close cues the deferred navigation. */}
+      <PostGameProgression
+        progression={practiceProgression}
+        onDone={() => {
+          clearPracticeProgression();
+          finishExit();
+        }}
+      />
+
+      {/* Mid-round "are you sure? leaving forfeits" dialog. */}
+      {confirmDialog}
     </div>
   );
 }

@@ -46,7 +46,7 @@ function PugShooterLoading() {
  * (useOnlineMatchBridge) and shown in a banner, but no shots, positions or
  * scores are shared between the matched players yet.
  */
-const PugShooterGame = ({ onExit, onGameStatusChange }: PugShooterGameProps) => {
+const PugShooterGame = ({ onExit, profile, onGameStatusChange }: PugShooterGameProps) => {
   // Practice = boot straight away. Online = boot only once matched.
   const [practiceConfig, setPracticeConfig] = useState<PugShooterMatchConfig | null>(null);
   const [match, setMatch] = useState<OnlineMatch | null>(null);
@@ -92,7 +92,7 @@ const PugShooterGame = ({ onExit, onGameStatusChange }: PugShooterGameProps) => 
     return (
       <div className="relative w-full h-full bg-[#050d1c]">
         <Suspense fallback={<PugShooterLoading />}>
-          <PugShooterPlay config={activeConfig} onExit={leaveRound} />
+          <PugShooterPlay config={activeConfig} onExit={leaveRound} profile={profile} />
         </Suspense>
         {match && <OnlineMatchBanner match={match} />}
       </div>
@@ -101,9 +101,12 @@ const PugShooterGame = ({ onExit, onGameStatusChange }: PugShooterGameProps) => 
 
   if (searching) {
     return (
-      <div className="w-full h-full relative bg-[#081616]">
-        <GameBackButton onClick={onExit} title="Back to arcade" positionClassName="absolute top-6 left-6 z-50" />
+      // Shared matchmaking page — Cancel is the only exit (the back
+      // button died with the pug-menu rework; it also skipped leaving
+      // the queue cleanly).
+      <div className="w-full h-full">
         <SearchingForMatch
+          variant="page"
           playersInQueue={playersInQueue}
           // Only show PLAYERS: n / N when the mode wants more than a pair.
           playersNeeded={playersNeeded}

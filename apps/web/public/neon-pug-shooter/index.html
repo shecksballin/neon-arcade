@@ -374,6 +374,9 @@
     min-width: 46px; height: 42px; padding: 0 9px; border-radius: 10px;
     background: rgba(0,255,209,.12); border: 1px solid rgba(0,255,209,.3); }
   #ks-level b { font: 900 italic 18px/1 sans-serif; color: var(--teal); }
+  /* a bot's badge is a WORD ('Normal'), not a two-digit level — same slot,
+     sized so it fits without stretching the strip */
+  #ks-level.word b { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
 
   #ks-timer { display: flex; align-items: center; gap: 8px; color: #fff; }
   #ks-timer svg { color: var(--teal); }
@@ -620,16 +623,18 @@
       </div>
       <div class="ks-sep"></div>
 
-      <!-- identity: profile pic, banner, level (all placeholders for now) -->
+      <!-- identity: who the cam is about. Populated by ui.showKillcam from the
+           real match — a bot killer shows its AI tier, you show your arcade
+           level (see killcamIdentity in main.js). Empty until then. -->
       <div id="ks-identity">
         <div id="ks-pic">🐶</div>
         <div id="ks-banner">
           <span class="ks-cap">Player Banner</span>
-          <span class="ks-name">Vanguard</span>
+          <span class="ks-name" id="ks-name">—</span>
         </div>
         <div id="ks-level">
-          <span class="ks-cap">Lvl</span>
-          <b id="ks-level-value">245</b>
+          <span class="ks-cap" id="ks-level-cap">Lvl</span>
+          <b id="ks-level-value">—</b>
         </div>
       </div>
       <div class="ks-sep"></div>

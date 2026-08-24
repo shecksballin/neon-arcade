@@ -166,9 +166,11 @@ export const LEADERBOARD_SIZE = 5
 
 // ── lobby (slayer / lms) ───────────────────────
 
-/** Contract: minimum 2 players (so it is testable), cap 20. */
+/** Contract: minimum 2 players (so it is testable), cap 30. Matches still
+ *  START at 2 — the queue's sweep + gather hold packs everyone compatible
+ *  who is waiting (up to the cap) into one world. */
 export const LOBBY_MIN_PLAYERS = 2
-export const LOBBY_MAX_PLAYERS = 20
+export const LOBBY_MAX_PLAYERS = 30
 
 /** Countdown between "enough players" and the first simulated tick, so
  *  every client has time to mount its canvas before anyone can be killed. */

@@ -34,6 +34,10 @@ export const STR = {
   timerLabel: "TIME",
   hudHintLabel: "CONTROLS",
   hudHint: "SHIFT sprint - SPACE jump - SPACE x2 dive",
+  // The top-right standings card. Tiles broken is Clumsy's only score, so it
+  // is the column the board ranks on (see setLeaderboard in ui.js).
+  leaderboardTitle: "LEADERBOARD",
+  leaderboardUnit: "TILES",
 
   elimFeed: "{name} took a slime bath",
   eliminatedTitle: "ELIMINATED",

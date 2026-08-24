@@ -73,13 +73,15 @@ export default function ArcadeView({
 
   return (
     /*
-      `justify-center` only from md up. On a phone the tile list is taller
-      than the viewport, and centring the overflowing content inside a scroll
-      container pushes its TOP above the scrollable area — the first game
-      becomes permanently unreachable. `justify-start` keeps the list
-      anchored; centring still applies on desktop where it fits.
+      `justify-start` at EVERY breakpoint, on purpose. Desktop used to
+      `md:justify-center`, which re-centred the whole main block every time a
+      filter changed the grid's row count — the filter strip visibly jumped
+      up and down as you clicked pills. Anchoring to the top keeps the strip
+      and the first tile row at one fixed position for every filter (and on
+      phones centring was never an option: centring overflowing content in a
+      scroll container pushes its top above the scrollable area).
     */
-    <div className="relative h-full w-full flex flex-col items-center justify-start md:justify-center overflow-y-auto overflow-x-hidden pt-24 md:pt-28 pb-24">
+    <div className="relative h-full w-full flex flex-col items-center justify-start overflow-y-auto overflow-x-hidden pt-24 md:pt-28 pb-24">
       {/* Dark Background. The WebGL blob is decoration only — on a phone it
           costs battery and GPU for something behind a full-page gradient, so
           the plain background stands in. */}
@@ -92,7 +94,7 @@ export default function ArcadeView({
           pointer, and it listens on mousemove app-wide, so skip it on touch. */}
       {!isTouch && <GlobalSpotlight gridRef={gridRef} />}
 
-      <main className="relative z-10 w-full max-w-7xl px-4 sm:px-6 md:px-8 flex flex-col items-center md:translate-y-[40px]">
+      <main className="relative z-10 w-full max-w-7xl px-4 sm:px-6 md:px-8 flex flex-col items-center">
         {/*
           FILTER STRIP. Horizontally scrollable rather than wrapping, so a
           phone gets one tidy swipeable row instead of three ragged lines that

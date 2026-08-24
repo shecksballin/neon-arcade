@@ -11,9 +11,12 @@ export const CFG = {
   killY: -3.25,           // character center below this = eliminated
   layerColors: [0xff3ea5, 0x0fa3a8, 0xffd84d, 0x8a5cff, 0xff6b81, 0x00ffd1], // bottom->top
   rimColor: 0x00ffd1,
-  fogColor: 0x171032,
-  skyTop: 0x1a1038,
-  skyBottom: 0xff5fa2,
+  // Neon-arcade night: the violet/pink dusk the game shipped with was the
+  // one sky in the arcade that didn't match the #081616/mint identity. Deep
+  // teal-black overhead falling to a mint-glow horizon, teal fog to match.
+  fogColor: 0x0a2824,
+  skyTop: 0x061a17,
+  skyBottom: 0x00bfa0,
 
   // --- tiles ---
   tileWobbleTime: 0.5,    // touched -> crumble delay

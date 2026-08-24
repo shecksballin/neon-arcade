@@ -297,7 +297,19 @@ const SELF_REPORTED_GAMES = ['golf', 'clumsy', 'pugshooter'] as const
  *     "THIS IS XP ONLY" rule, with one more fence.
  * Their ONLINE results still arrive exclusively via the socket handlers.
  */
-const PRACTICE_REPORTED_GAMES = ['chess', 'connect', 'volley', 'trivia'] as const
+const PRACTICE_REPORTED_GAMES = [
+  'chess',
+  'connect',
+  'volley',
+  // Neon Kickoff took Neon Quiz's slot: its practice shootout is the same
+  // shape (fully client-side round vs the AI keeper).
+  'kickoff',
+  // Asteroids/Cells practice is the same shape: a fully client-side round
+  // vs bots the socket layer never sees. Their ONLINE results stay
+  // socket-authoritative (freeplay worlds), exactly like the four above.
+  'asteroids',
+  'cells',
+] as const
 
 /** Modes the iframe games may report. `freeplay` keeps the platform's
  *  meaning: no win condition, so it can never carry a win/loss. */

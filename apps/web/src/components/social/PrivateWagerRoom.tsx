@@ -95,6 +95,18 @@ export interface PrivateWagerRoomProps {
   /** Close the room UI and go back to the lobby. */
   onClose: () => void;
   /**
+   * COMMUNITY CHALLENGE room: `private:create` is sent with `open: true`, so
+   * ANY signed-in player who gets the roomId from the community board may
+   * take the seat — no invite required. Ordinary rooms stay invite-only.
+   */
+  open?: boolean;
+  /**
+   * Fired ONCE with the server-assigned roomId, the first time the room
+   * exists. The community board's "post a challenge" flow publishes the
+   * roomId from here; everyone else ignores it.
+   */
+  onRoomCreated?: (roomId: string) => void;
+  /**
    * The server started the match (`private:started`).
    *
    * Most lobbies pass NOTHING: their parent screen keeps the game's start
@@ -146,13 +158,17 @@ export default function PrivateWagerRoom({
   inviteUsername = null,
   onClose,
   onStarted,
+  open = false,
+  onRoomCreated,
 }: PrivateWagerRoomProps) {
   /**
    * 'picking' — entry A: choose which ONLINE friend to invite, THEN the room.
    * 'room'    — the waiting room proper.
    */
+  // An OPEN (community-challenge) room skips the friend picker too: there is
+  // nobody to invite — the seat belongs to whoever takes it from the board.
   const [phase, setPhase] = useState<'picking' | 'room'>(
-    joinRoomId || inviteUsername ? 'room' : 'picking'
+    joinRoomId || inviteUsername || open ? 'room' : 'picking'
   );
   const [room, setRoom] = useState<PrivateRoomState | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -175,6 +191,13 @@ export default function PrivateWagerRoom({
 
   // Refs the socket effect and the unmount cleanup read without re-subscribing.
   const roomIdRef = useRef<string | null>(joinRoomId);
+  // Ref so a parent re-render with a new inline callback cannot re-run the
+  // socket effect (which would leave and recreate the room).
+  const onRoomCreatedRef = useRef(onRoomCreated);
+  onRoomCreatedRef.current = onRoomCreated;
+  // One-way latch: after OUR room closes, this instance never adopts another
+  // (private:closed nulls roomIdRef, which would otherwise re-open adoption).
+  const adoptionClosedRef = useRef(false);
   /** Has a `private:room` ever landed here? Decides whether an error is fatal. */
   const hasRoomRef = useRef(false);
   const startedRef = useRef(false);
@@ -219,8 +242,23 @@ export default function PrivateWagerRoom({
       if (!data?.roomId) return;
       // The socket is shared with every game; ignore rooms that aren't ours.
       if (roomIdRef.current && data.roomId !== roomIdRef.current) return;
+      if (roomIdRef.current === null) {
+        // ADOPTION. We created a room and are waiting for its first
+        // broadcast — but the singleton socket also carries broadcasts for
+        // OTHER rooms this player is in (a lobby's waiting room can still be
+        // mounted under the drawer). Never adopt a room for a different
+        // game/mode, and never adopt again after our room closed: without
+        // these guards a stray broadcast could be mistaken for our create
+        // ack, and onRoomCreated would publish a foreign roomId.
+        if (adoptionClosedRef.current) return;
+        if (data.gameKey !== gameKey || data.mode !== mode) return;
+      }
+      const isFirst = roomIdRef.current === null;
       roomIdRef.current = data.roomId;
       hasRoomRef.current = true;
+      // First sight of OUR room = it now exists on the server. Only meaningful
+      // for rooms this component created (a joiner seeded roomIdRef already).
+      if (isFirst) onRoomCreatedRef.current?.(data.roomId);
       setRoom(data);
       setError(null);
       setOpenFailed(null);
@@ -265,6 +303,7 @@ export default function PrivateWagerRoom({
       // just superseded) must be ignored rather than assumed to be ours.
       if (!roomIdRef.current || data?.roomId !== roomIdRef.current) return;
       roomIdRef.current = null;
+      adoptionClosedRef.current = true; // never adopt a successor room
       setCountdown(null);
       setRoom(null);
       setClosedReason(data?.reason ?? 'closed');
@@ -310,7 +349,8 @@ export default function PrivateWagerRoom({
     if (joinRoomId) {
       socket.emit('private:join', { roomId: joinRoomId });
     } else {
-      socket.emit('private:create', { gameKey, mode });
+      // `open` marks a community-challenge room (see the prop's doc).
+      socket.emit('private:create', { gameKey, mode, ...(open ? { open: true } : {}) });
     }
 
     return () => {
@@ -868,6 +908,9 @@ export function PrivateWagerHost({ onOpenGame }: PrivateWagerHostProps = {}) {
     mode: string;
     joinRoomId?: string;
     inviteUsername?: string;
+    /** Community challenge: create the room OPEN and report its roomId. */
+    openRoom?: boolean;
+    onRoomCreated?: (roomId: string) => void;
     /**
      * Monotonic, and used as the room's React `key`. A JOIN can now arrive
      * while a room is ALREADY open (an invite pop-up sits above the waiting
@@ -884,8 +927,19 @@ export function PrivateWagerHost({ onOpenGame }: PrivateWagerHostProps = {}) {
 
   /** Why a JOIN could not be honoured — shown instead of silently doing nothing. */
   const [refusal, setRefusal] = useState<string | null>(null);
+  /** The community board failed to publish an open room (CommunityPanel's
+   *  retries all failed). Shown ON TOP of the waiting room, because the room
+   *  is live — the host just isn't advertised anywhere. */
+  const [postFailed, setPostFailed] = useState(false);
 
-  const { pendingJoin, clearPendingJoin, removeInvite } = useNotifications();
+  useEffect(() => {
+    const onFail = () => setPostFailed(true);
+    window.addEventListener('neon:challenge-post-failed', onFail);
+    return () => window.removeEventListener('neon:challenge-post-failed', onFail);
+  }, []);
+
+  const { pendingJoin, clearPendingJoin, removeInvite, pendingHost, clearPendingHost } =
+    useNotifications();
 
   // Read through a ref so the JOIN effect below does not re-run (and re-open a
   // room) just because the parent re-rendered with a new inline callback.
@@ -926,6 +980,29 @@ export function PrivateWagerHost({ onOpenGame }: PrivateWagerHostProps = {}) {
     });
   }, [pendingJoin, clearPendingJoin, removeInvite]);
 
+  // Somebody pressed OPEN CHALLENGE on the community board. Same choreography
+  // as a JOIN: navigate to the game first (and surface a refusal), then open
+  // the waiting room — but this one is created OPEN, and its roomId flows
+  // back through onRoomCreated so the panel can publish the challenge post.
+  useEffect(() => {
+    if (!pendingHost) return;
+    clearPendingHost();
+    setChallenge(null);
+    const refused = onOpenGameRef.current?.(pendingHost.gameKey) ?? null;
+    if (refused) {
+      setRefusal(refused);
+      return;
+    }
+    sessionSeq.current += 1;
+    setSession({
+      gameKey: pendingHost.gameKey,
+      mode: pendingHost.mode,
+      openRoom: true,
+      onRoomCreated: pendingHost.onCreated,
+      seq: sessionSeq.current,
+    });
+  }, [pendingHost, clearPendingHost]);
+
   return (
     <>
       {challenge && !session && (
@@ -960,6 +1037,8 @@ export function PrivateWagerHost({ onOpenGame }: PrivateWagerHostProps = {}) {
           mode={session.mode}
           joinRoomId={session.joinRoomId ?? null}
           inviteUsername={session.inviteUsername ?? null}
+          open={session.openRoom ?? false}
+          onRoomCreated={session.onRoomCreated}
           onClose={() => setSession(null)}
           /* The four lobbies that only mount their ONLINE screen on demand
              hear this and do exactly what they do for a room they opened
@@ -968,6 +1047,25 @@ export function PrivateWagerHost({ onOpenGame }: PrivateWagerHostProps = {}) {
             announcePrivateWagerStarted(session.gameKey, session.mode)
           }
         />
+      )}
+
+      {postFailed && (
+        <PrivateWagerModal
+          title="Challenge not posted"
+          onCancel={() => setPostFailed(false)}
+        >
+          <p className="text-sm leading-relaxed text-white/80">
+            Your room is open, but posting it to the community board failed.
+            Invite a friend directly, or close the room and try again.
+          </p>
+          <button
+            type="button"
+            onClick={() => setPostFailed(false)}
+            className="mt-5 w-full cursor-pointer rounded-lg border border-[#00FFD1]/40 py-2.5 text-[10px] uppercase tracking-[0.25em] text-[#00FFD1] transition-all hover:bg-[#00FFD1]/10"
+          >
+            Got it
+          </button>
+        </PrivateWagerModal>
       )}
 
       {/* A JOIN we could not honour. Silently doing nothing here was the worst

@@ -99,6 +99,19 @@ export interface AuthState {
   /** null until loaded. Used by WalletPanel's export-key flow. */
   exportWallet: ExportWalletFn | null;
   /**
+   * Create the embedded Solana wallet this login should already have.
+   *
+   * `embeddedWallets.solana.createOnLogin` normally does this at sign-up,
+   * but it is not guaranteed: it can be skipped or fail (a blocked Privy
+   * iframe, a dropped network, a login that predates the setting), and the
+   * result is a Privy user with NO wallet — nothing to sign in with, and
+   * no way for the player to fix it from the UI. One such account is how
+   * this hook came to exist. Null until the SDK is up; rejects when a
+   * wallet already exists, so callers must only reach for it when the
+   * wallet list is genuinely empty.
+   */
+  createWallet: CreateWalletFn | null;
+  /**
    * Privy's own JWTs for the current session, handed to our backend at
    * sign-in so it can tell WHO is signing in rather than only WHICH wallet.
    *
@@ -132,6 +145,9 @@ type SignMessageFn = (args: {
 }) => Promise<{ signature: Uint8Array }>;
 
 type ExportWalletFn = (args: { address: string }) => Promise<unknown>;
+
+/** Privy's Solana `createWallet` — resolves once the wallet exists. */
+type CreateWalletFn = () => Promise<unknown>;
 
 // ---------------------------------------------------------------------------
 // Module-level load coordination
@@ -276,6 +292,7 @@ const UNLOADED: AuthState = {
   logout: async () => {},
   signMessage: null,
   exportWallet: null,
+  createWallet: null,
   getPrivyTokens: async () => NO_PRIVY_TOKENS,
 };
 
@@ -456,4 +473,4 @@ export function DeferredAuthProvider({ children }: { children: React.ReactNode }
   );
 }
 
-export type { SignMessageFn, ExportWalletFn };
+export type { SignMessageFn, ExportWalletFn, CreateWalletFn };

@@ -30,6 +30,10 @@ import { usePrivateWagerStarted } from "../social/PrivateWagerInvite";
 // myPlayerId/gameStatus change and re-queued freshly-matched players).
 import { connectGameSocket, getSocket, useMatchProgression } from "../../hooks/useGameSocket";
 import { PostGameProgression } from "../common/PostGameProgression";
+import { GamePauseMenu } from "../common/GamePauseMenu";
+// "Are you sure? leaving forfeits" — every mid-match exit (pause menu, side
+// panel, mode-switch cards, App nav bar) funnels through this guard.
+import { useGuardedExit } from "../common/exitGuard";
 import { usePracticeXp } from "../../hooks/usePracticeXp";
 // The one matchmaking screen every online game shows while queued.
 import { SearchingForMatch } from "../common/SearchingForMatch";
@@ -131,7 +135,7 @@ function GameMenuPanel({
   gameMode, 
   onPlayOnline, 
   onPlayComputer, 
-  onPlayLocal,
+  onPrivateWager,
   profile
 }: { 
   onReturn: () => void, 
@@ -139,7 +143,7 @@ function GameMenuPanel({
   gameMode: string | null,
   onPlayOnline: () => void,
   onPlayComputer: () => void,
-  onPlayLocal: () => void,
+  onPrivateWager: () => void,
   profile: { name: string; avatarUrl: string } | null
 }) {
   return (
@@ -157,10 +161,27 @@ function GameMenuPanel({
         >
           {(gameMode === 'multiplayer' || gameMode === 'online') && <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>}
           <Globe className={`w-5 h-5 shrink-0 ${gameMode === 'multiplayer' || gameMode === 'online' ? '' : 'text-zinc-400 group-hover:rotate-12 transition-transform block'}`} />
-          {/* NO WAGER ONLINE: this used to read "Wager Match". Online play has
-              no stake of any kind — the click goes straight to matchmaking. */}
+          {/* Branded "Wager Match" like every other lobby's online card —
+              the arcade-wide identity for ranked online play. */}
           <div className="text-center">
             <span className="block font-black text-[10px] uppercase tracking-tighter italic leading-none">Wager Match</span>
+          </div>
+        </ParticleCard>
+
+        {/* Private Wager — invite a friend into an invite-only online match.
+            Replaces the old Local Co-Op card (pass-and-play still lives in
+            the lobby tiles); ordered per design: Wager top, Private middle,
+            Practice bottom. */}
+        <ParticleCard
+          onClick={onPrivateWager}
+          className="magic-bento-card flex-1 px-3 py-3.5 rounded-xl transition-all duration-300 flex flex-col items-center justify-center gap-1.5 group relative overflow-hidden cursor-pointer bg-[#081616] border border-[#00FFD1]/40 text-white hover:border-[#00FFD1] hover:shadow-[0_0_20px_rgba(0,255,209,0.2)]"
+          style={{ backdropFilter: 'none' }}
+        >
+          <Swords className="w-5 h-5 shrink-0 text-zinc-400 group-hover:rotate-12 transition-transform block" />
+          <div className="text-center">
+            <span className="block font-black text-[10px] uppercase tracking-tighter italic leading-none">
+              Private Wager
+            </span>
           </div>
         </ParticleCard>
 
@@ -179,27 +200,6 @@ function GameMenuPanel({
           <div className="text-center">
             <span className="block font-black text-[10px] uppercase tracking-tighter italic leading-none">
               Practice
-            </span>
-          </div>
-        </ParticleCard>
-
-        {/* Local Co-Op (Placeholder in Connect for layout) */}
-        <ParticleCard
-          onClick={onPlayLocal}
-          className={`magic-bento-card flex-1 px-3 py-3.5 rounded-xl transition-all duration-300 flex flex-col items-center justify-center gap-1.5 group relative overflow-hidden cursor-pointer ${
-            gameMode === 'local_coop'
-              ? 'bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] shadow-[0_0_40px_rgba(0,255,209,0.4)] scale-[1.02]'
-              : 'bg-[#081616] border border-[#00FFD1]/40 text-white hover:border-[#00FFD1] hover:shadow-[0_0_20px_rgba(0,255,209,0.2)]'
-          }`}
-          style={{ backdropFilter: 'none' }}
-        >
-          {(gameMode === 'local_coop') && <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>}
-          <div className={`material-symbols-outlined text-[20px] block leading-none shrink-0 ${gameMode === 'local_coop' ? '' : 'text-zinc-400 group-hover:scale-110 transition-transform'}`}>
-            people
-          </div>
-          <div className="text-center">
-            <span className="block font-black text-[10px] uppercase tracking-tighter italic leading-none">
-              Local Co-Op
             </span>
           </div>
         </ParticleCard>
@@ -317,6 +317,10 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
   const gameStatusRef = useRef(gameStatus);
   const winnerRef = useRef(winner);
   const matchedRef = useRef(false); // paired into a game this online session?
+  // Set when the exit guard's forfeit already emitted neonconnect_leave, so
+  // the socket effect's cleanup doesn't send a second walk-away (the server
+  // is idempotent about it, but one leave should be one event).
+  const leaveSentRef = useRef(false);
   const profileRef = useRef(profile);
 
   useEffect(() => {
@@ -344,6 +348,71 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
   useEffect(() => {
     profileRef.current = profile;
   }, [profile]);
+
+  // ==================== Exit guard ====================
+
+  // A round the player would LOSE by leaving:
+  //  · online: seated in a live match (`searching` flips off only on
+  //    neonconnect_match — cancelling a queue is free and stays instant)
+  //  · practice ('local'): the vs-AI round is still undecided
+  //  · local co-op: the sitting is live (nothing staked — see onForfeit)
+  // 'lobby' and 'practice_wager' (the stake picker OVER the lobby) never ask.
+  const forfeitable =
+    gameStatus === "playing" &&
+    ((mode === "online" && !searching) ||
+      mode === "local" ||
+      mode === "local_coop");
+
+  const { requestExit, finishExit, abortPendingExit, confirmDialog } =
+    useGuardedExit({
+      active: forfeitable,
+      onForfeit: () => {
+        if (mode === "online") {
+          // Tell the server we walked: it hands the opponent a forfeit win
+          // and emits match:progression to BOTH sockets. We STAY MOUNTED
+          // through results + progression, so ours finally lands (the old
+          // unmount-forfeit dropped it on a dead listener).
+          socket.emit("neonconnect_leave");
+          leaveSentRef.current = true;
+          // The server sends neonconnect_ended to the OPPONENT only — the
+          // leaver paints the defeat locally.
+          setGameStatus("won");
+          setWinner(myPlayerId === HUMAN ? OPPONENT : HUMAN);
+          setCanPlay(false);
+          setEndNote("You left the match — your opponent wins by forfeit");
+          return "wait";
+        }
+        if (mode === "local") {
+          // Synthesized AI win. The end-of-round effect sees the status
+          // flip and reportRound()s the loss exactly like a played-out
+          // defeat (no payout — executeMove never ran, so the stake is
+          // simply lost); the practice progression's onDone cues finishExit.
+          setGameStatus("won");
+          setWinner(OPPONENT);
+          setCanPlay(false);
+          setEndNote("You left the match — counted as a loss");
+          return "wait";
+        }
+        // Local co-op: nothing staked, nothing scored — just go.
+        return "immediate";
+      },
+      copy: () =>
+        mode === "online"
+          ? {
+              message:
+                "Leaving now forfeits the match — your opponent takes the win. Your results and progression will play before you go.",
+              confirmLabel: "Forfeit & leave",
+            }
+          : mode === "local"
+            ? {
+                message:
+                  "Leaving now ends the practice match as a loss and forfeits your wager. Your results will play before you go.",
+              }
+            : {
+                message: "Leaving now ends the local match for both players.",
+                confirmLabel: "Leave game",
+              },
+    });
 
   // ==================== Audio Engine ====================
   useEffect(() => {
@@ -673,7 +742,12 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
     clearProgression();
     clearPracticeProgression();
     armRound();
-  }, [clearProgression, clearPracticeProgression, armRound]);
+    // A reset while a forfeit-exit is pending (Rematch clicked, or the
+    // online neonconnect_reset handshake landed) = "I changed my mind" —
+    // drop the deferred navigation. No-op on the exit continuations
+    // themselves: by then the pending flag is already cleared.
+    abortPendingExit();
+  }, [clearProgression, clearPracticeProgression, armRound, abortPendingExit]);
 
   // "New Game" — online it is a two-sided rematch handshake: we only ASK the
   // server; the board clears when the room-broadcast neonconnect_reset lands
@@ -733,6 +807,7 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
     // Lazy connect the shared authed socket (no-op when already connected).
     const s = connectGameSocket();
     matchedRef.current = false;
+    leaveSentRef.current = false; // fresh session — no forfeit sent yet
     // Until the server pairs us the board must not be playable (myTurn
     // defaults to true for local modes).
     setMyTurn(false);
@@ -878,8 +953,14 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
       // Matched? Tell the server we walked away — the shared singleton stays
       // CONNECTED, so without this a mid-game UI exit would strand the
       // opponent until our tab closed (active game = forfeit server-side).
-      if (!matchedRef.current) s.emit("leaveConnectQueue");
-      else s.emit("neonconnect_leave");
+      if (leaveSentRef.current) {
+        // The exit guard's forfeit already emitted neonconnect_leave for
+        // this session — a second one would just be noise.
+      } else if (!matchedRef.current) {
+        s.emit("leaveConnectQueue");
+      } else {
+        s.emit("neonconnect_leave");
+      }
       s.off("queue:status", onQueueStatus);
       s.off("neonconnect_match", onMatch);
       s.off("neonconnect_opponent_move", onOpponentMove);
@@ -1048,35 +1129,14 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
   // as every other online game.
   if (mode === "online" && searching) {
     return (
-      // Scrollable, top-aligned on phones. `justify-center` inside an
-    // `overflow-hidden` box taller than the viewport put the top of the
-    // lobby ABOVE the visible area with no way to scroll to it — the mode
-    // cards were simply unreachable on a phone.
-    <div className="min-h-[100dvh] max-h-[100dvh] bg-[#081616] flex flex-col items-center justify-start md:justify-center px-4 py-24 md:p-6 relative overflow-y-auto overflow-x-hidden">
-        <GameBackButton
-          onClick={cancelOnlineSearch}
-          title="Back to lobby"
-          positionClassName="absolute top-6 left-6 z-50"
-        />
-
-        {/* Same ambient glow as the lobby so the transition feels continuous. */}
-        <div className="absolute inset-0 opacity-20 pointer-events-none">
-          <div className="absolute top-20 left-20 w-96 h-96 bg-[#00FFD1] rounded-full blur-[120px] opacity-20 animate-pulse" />
-          <div
-            className="absolute bottom-20 right-20 w-96 h-96 bg-[#FF0080] rounded-full blur-[120px] opacity-20 animate-pulse"
-            style={{ animationDelay: "1s" }}
-          />
-        </div>
-
-        <div className="relative z-10 w-full max-w-2xl">
-          {/* 1v1: no playersNeeded → the PLAYERS n/N counter stays hidden. */}
-          <SearchingForMatch
-            playersInQueue={queueCount?.current}
-            playersNeeded={queueCount?.needed}
-            onCancel={cancelOnlineSearch}
-          />
-        </div>
-      </div>
+      // Shared matchmaking page — identical chrome in every game. Cancel is
+      // the one exit (back buttons left the games in the pug-menu rework).
+      <SearchingForMatch
+        variant="page"
+        playersInQueue={queueCount?.current}
+        playersNeeded={queueCount?.needed}
+        onCancel={cancelOnlineSearch}
+      />
     );
   }
 
@@ -1106,6 +1166,9 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
           deep-links into the drawer), not the old static mock-up. */}
       <GameNavSidebar gameTitle="Neon Connect" />
 
+      {/* Mid-match "are you sure? leaving forfeits" dialog. */}
+      {confirmDialog}
+
       <div className="flex-1 overflow-y-auto h-[100dvh] relative">
         {/* STACKED below lg. The side panel is a fixed 280px and the board is
             ~310px at phone width — side by side they need 620px+, so the
@@ -1113,13 +1176,17 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
         <div className="flex flex-col lg:flex-row justify-start lg:justify-center items-center py-6 lg:py-10 min-h-full gap-6 lg:gap-8 max-w-[1200px] mx-auto px-3 lg:px-0">
           {/* Game Selection */}
           <div className="order-2 lg:order-1 w-full max-w-[340px] lg:w-[280px] h-auto lg:h-[652px] flex-shrink-0 mt-0 lg:mt-[40px]">
+             {/* Every affordance here is guarded: mid-match it confirms,
+                 forfeits, plays results + progression, and only THEN runs
+                 the navigation/mode switch. With no live round the
+                 continuation runs immediately, exactly as before. */}
              <GameMenuPanel
-               onReturn={() => { applyLocalReset(); setMode("lobby"); }}
-               onExit={onExit}
+               onReturn={() => requestExit(() => { applyLocalReset(); setMode("lobby"); })}
+               onExit={() => requestExit(onExit)}
                gameMode={mode}
-               onPlayOnline={enterOnlineMatchmaking}
-               onPlayComputer={() => { applyLocalReset(); setMode("practice_wager"); }} // Practice in Connect
-               onPlayLocal={() => { applyLocalReset(); setMode("local_coop"); }}
+               onPlayOnline={() => requestExit(enterOnlineMatchmaking)}
+               onPlayComputer={() => requestExit(() => { applyLocalReset(); setMode("practice_wager"); })} // Practice in Connect
+               onPrivateWager={() => requestExit(() => setShowPrivateWager(true))}
                profile={profile}
              />
           </div>
@@ -1219,12 +1286,19 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
                       gameMode={mode === "local" ? "Practice" : (mode === "online" ? "Online" : "Local")}
                       // Online stakes nothing — hide the Wagered/Payout rows.
                       moneyless={mode === "online"}
-                      note={mode === "online" ? endNote : null}
+                      // endNote also carries the leaver's own forfeit story
+                      // now (online AND practice) — local co-op never sets it.
+                      note={endNote}
                       onRematch={resetGame}
-                      onExit={() => {
-                        applyLocalReset();
-                        setMode("lobby");
-                      }}
+                      // Guarded for the pending-exit case only (a finished
+                      // board never re-opens the confirm): clicking Exit
+                      // while the forfeit flow plays means "hurry up".
+                      onExit={() =>
+                        requestExit(() => {
+                          applyLocalReset();
+                          setMode("lobby");
+                        })
+                      }
                     />
                   )}
                 </AnimatePresence>
@@ -1237,8 +1311,37 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
                   onDone={() => {
                     clearProgression();
                     clearPracticeProgression();
+                    // When a forfeit-exit is pending, the progression's
+                    // close is the cue to finally run the deferred
+                    // navigation (no-op otherwise).
+                    finishExit();
                   }}
                 />
+
+                {/* Pug-style pause menu — uniform across every game. Quit
+                    returns to the Connect lobby; the side panel's EXIT GAME
+                    still leaves to the arcade. */}
+                <GamePauseMenu
+                  onExit={() =>
+                    requestExit(() => {
+                      applyLocalReset();
+                      setMode("lobby");
+                    })
+                  }
+                />
+
+                {/* Private-wager waiting room, openable from the side panel
+                    mid-session too (the lobby has its own copy — the two
+                    returns never render together). Started matches hand off
+                    through the same entry the WAGER MATCH card uses. */}
+                {showPrivateWager && (
+                  <PrivateWagerRoom
+                    gameKey="connect"
+                    mode="1v1"
+                    onClose={() => setShowPrivateWager(false)}
+                    onStarted={enterOnlineMatchmaking}
+                  />
+                )}
               </div>
             </div>
           </div>

@@ -1,10 +1,6 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "globalPassThroughEnv": [
-    "OPENROUTER_API_KEY",
-    "OPENROUTER_SITE_URL",
-    "OPENROUTER_SITE_NAME",
-    "QUIZ_MODEL",
     "GEMINI_API_KEY",
     "DATABASE_URL",
     "REDIS_URL",

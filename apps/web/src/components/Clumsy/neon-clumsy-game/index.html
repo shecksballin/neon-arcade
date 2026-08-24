@@ -13,8 +13,8 @@
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700;900&display=swap');
   :root {
     --mint: #00FFD1;
-    --ink: #0d0824;
-    --panel: rgba(13, 8, 36, 0.82);
+    --ink: #050d1c;
+    --panel: rgba(3, 10, 18, 0.82);
     --pink: #ff5fa2;
     --violet: #8a5cff;
     --yellow: #ffd84d;
@@ -33,46 +33,54 @@
             align-items: center; justify-content: center; z-index: 10; }
   .hidden { display: none !important; }
 
-  /* ---------- menu ---------- */
-  #menu { background: radial-gradient(120% 90% at 50% 10%, #241448 0%, #0d0824 65%);
-          gap: 14px; text-align: center; padding: 20px; }
-  .logo { font-size: clamp(44px, 9vw, 96px); font-weight: 900; letter-spacing: 0.04em;
-          color: #fff;
-          text-shadow: 0 0 12px var(--mint), 0 0 42px rgba(0,255,209,.65), 0 4px 0 #0a5c4d;
-          transform: rotate(-2deg); }
-  .logo .alt { color: var(--mint); text-shadow: 0 0 14px #fff, 0 0 42px var(--mint), 0 4px 0 #7a1650; }
-  .subtitle { font-size: clamp(14px, 2.4vw, 22px); font-weight: 800; letter-spacing: 0.34em;
-              color: var(--pink); text-shadow: 0 0 14px rgba(255,95,162,.8); margin-bottom: 8px; }
-  #nick { width: min(320px, 78vw); padding: 13px 18px; border-radius: 999px; border: 2px solid var(--violet);
-          background: rgba(20, 12, 50, 0.9); color: #fff; font-size: 17px; font-weight: 700;
+  /* ---------- menu ----------
+     Pug-spec chrome: same night gradient, 40px italic headline with a teal
+     accent word, flat teal pill buttons. The candy-gradient look this screen
+     shipped with was the one loader/menu in the arcade that didn't match. */
+  #menu { background:
+            radial-gradient(120% 90% at 50% 110%, rgba(0,255,209,.12) 0%, rgba(5,13,28,0) 55%),
+            linear-gradient(180deg, #030812 0%, #071426 60%, #0a2028 100%);
+          gap: 18px; text-align: center; padding: 20px; }
+  .logo { font-family: var(--hud-sans); font-size: clamp(32px, 6vw, 40px); font-weight: 900;
+          font-style: italic; text-transform: uppercase; letter-spacing: -0.5px; color: #e8f6f4; }
+  .logo .alt { color: var(--mint); text-shadow: 0 0 24px rgba(0,255,209,.5); }
+  .subtitle { font-family: var(--hud-mono); font-size: 12px; font-weight: 400;
+              text-transform: uppercase; letter-spacing: 0.3em;
+              color: rgba(232,246,244,.55); margin-bottom: 8px; }
+  #nick { width: min(320px, 78vw); padding: 13px 18px; border-radius: 999px; border: 1px solid rgba(255,255,255,.15);
+          background: rgba(255, 255, 255, 0.08); color: #e8f6f4; font-size: 17px; font-weight: 700;
           text-align: center; outline: none; font-family: inherit; }
   #nick:focus { border-color: var(--mint); box-shadow: 0 0 18px rgba(0,255,209,.35); }
-  .btn { cursor: pointer; border: none; border-radius: 999px; font-family: inherit; font-weight: 900;
-         letter-spacing: 0.08em; color: #06251e;
-         background: linear-gradient(180deg, #7dffe8, var(--mint) 55%, #00c9a5);
-         box-shadow: 0 6px 0 #00806a, 0 10px 26px rgba(0,255,209,.4);
+  .btn { cursor: pointer; border: none; border-radius: 999px; font-family: var(--hud-sans);
+         font-weight: 900; font-style: italic; text-transform: uppercase; letter-spacing: 0.02em;
+         color: #04211c; background: var(--mint);
+         box-shadow: 0 0 30px rgba(0,255,209,.35);
          transition: transform .08s ease, box-shadow .08s ease; }
-  .btn:hover { transform: translateY(-2px) scale(1.03); }
-  .btn:active { transform: translateY(3px); box-shadow: 0 2px 0 #00806a; }
-  .btn.big { padding: 16px 66px; font-size: 26px; }
-  .btn.mid { padding: 12px 34px; font-size: 17px; }
-  .btn.ghost { background: transparent; color: var(--mint); border: 2px solid var(--mint);
-               box-shadow: none; }
-  #controlsCard { margin-top: 10px; background: var(--panel); border: 2px solid rgba(138,92,255,.5);
+  .btn:hover { transform: translateY(-1px); box-shadow: 0 0 40px rgba(0,255,209,.5); }
+  .btn:active { transform: translateY(1px); }
+  .btn.big { padding: 12px 36px; font-size: 18px; }
+  .btn.mid { padding: 10px 28px; font-size: 14px; }
+  .btn.ghost { background: rgba(255,255,255,.08); color: #e8f6f4;
+               border: 1px solid rgba(255,255,255,.15); box-shadow: none; }
+  #controlsCard { margin-top: 10px; background: var(--panel); border: 1px solid rgba(255,255,255,.15);
                   border-radius: 18px; padding: 14px 22px; font-size: 14px; }
-  #controlsCard h3 { color: var(--yellow); letter-spacing: .2em; font-size: 13px; margin-bottom: 8px; }
+  #controlsCard h3 { color: var(--mint); letter-spacing: .2em; font-size: 13px; margin-bottom: 8px; }
   #controlsCard table { border-collapse: collapse; }
   #controlsCard td { padding: 2.5px 10px; text-align: left; }
   #controlsCard td:first-child { color: var(--mint); font-weight: 800; white-space: nowrap; }
   .version { position: fixed; bottom: 10px; left: 14px; font-size: 12px; color: rgba(255,255,255,.45); }
 
-  /* ---------- loading ---------- */
-  #loading { background: #0d0824; z-index: 40; gap: 18px; }
-  #loadBarWrap { width: min(340px, 70vw); height: 14px; border-radius: 999px;
-                 border: 2px solid var(--violet); overflow: hidden; }
-  #loadBar { height: 100%; width: 0%; background: linear-gradient(90deg, var(--pink), var(--mint));
-             transition: width .2s ease; }
-  #loadText { letter-spacing: .3em; font-weight: 800; color: var(--mint); font-size: 14px; }
+  /* ---------- loading (pug-spec: night gradient, 260x5 teal bar) ---------- */
+  #loading { background:
+               radial-gradient(120% 90% at 50% 110%, rgba(0,255,209,.12) 0%, rgba(5,13,28,0) 55%),
+               linear-gradient(180deg, #030812 0%, #071426 60%, #0a2028 100%);
+             z-index: 40; gap: 18px; }
+  #loadBarWrap { width: 260px; height: 5px; border-radius: 999px;
+                 background: rgba(255,255,255,.08); overflow: hidden; }
+  #loadBar { height: 100%; width: 0%; background: var(--mint);
+             box-shadow: 0 0 12px var(--mint); transition: width .25s ease; }
+  #loadText { font-family: var(--hud-mono); font-size: 11px; font-weight: 400;
+              text-transform: uppercase; letter-spacing: .25em; color: rgba(232,246,244,.75); }
 
   /* ---------- HUD ----------
      Matched to the NEON ASTEROIDS overlay (AsteroidsCore.tsx), so the two games
@@ -124,8 +132,40 @@
   #playersLeft .hudVal { font-size: 24px; }
   @keyframes hudPulse { 50% { opacity: .5; } }
 
-  /* --- top-right: the elimination feed (Asteroids' leaderboard column) --- */
-  #feed { position: fixed; top: 32px; right: 32px; width: 256px;
+  /* --- top-right: the match leaderboard ---
+     The arcade's in-round board, lifted verbatim from Neon Pug Shooter
+     (public/neon-pug-shooter/index.html #leaderboard-card / .lb-row) so the
+     two iframe games — and the React <MatchLeaderboard> every other game
+     mounts — render one identical card. This HUD is vanilla DOM inside the
+     frame, so the React component cannot be used here; its CSS is hand-
+     carried across the boundary instead. Any change here changes it there. */
+  #hudTopRight { position: fixed; top: 32px; right: 32px; width: 256px; }
+  #leaderboardCard { padding: 20px 22px; border-radius: 16px;
+                     background: rgba(0,0,0,.4); border: 1px solid rgba(0,255,209,.2);
+                     backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+  #leaderboardHead { display: flex; align-items: center; gap: 11px; margin-bottom: 14px; }
+  #leaderboardHead svg { width: 16px; height: 16px; flex: none; }
+  #leaderboardTitle { flex: 1; font-family: var(--hud-sans); font-size: 11px; font-weight: 900;
+                      font-style: italic; text-transform: uppercase; letter-spacing: .18em;
+                      color: #fff; }
+  #leaderboardUnit { font-family: var(--hud-mono); font-size: 9px; text-transform: uppercase;
+                     letter-spacing: .18em; color: rgba(255,255,255,.35); }
+  .lb-row { display: flex; align-items: center; justify-content: space-between;
+            padding: 7px 9px; margin-top: 6px; border-radius: 9px;
+            font-family: var(--hud-mono); font-size: 10px;
+            border: 1px solid rgba(255,255,255,.05); color: rgba(255,255,255,.35); }
+  /* The local player's row — the one number you are actually looking for. */
+  .lb-row.me { background: rgba(0,255,209,.1); color: var(--mint);
+               border-color: rgba(0,255,209,.2); }
+  .lb-row .rank { opacity: .5; }
+  .lb-row .name { flex: 1; padding: 0 11px; font-style: italic; text-transform: uppercase;
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lb-row .v { font-weight: 700; }
+
+  /* --- top-right, under the board: the elimination feed ---
+     The board took the corner (pug stacks its killfeed the same way), so the
+     feed starts below a full six-row card. */
+  #feed { position: fixed; top: 328px; right: 32px; width: 256px;
           display: flex; flex-direction: column; gap: 8px; }
   .feedMsg { background: rgba(0,0,0,.4); border: 1px solid rgba(0,255,209,.2);
              backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
@@ -153,6 +193,10 @@
      exactly where the GPU budget is smallest. Opaque panels read the same. */
   @media (pointer: coarse), (max-width: 900px) {
     #hudHint { display: none; }
+    /* A twelve-player board needs a corner a phone does not have — the
+       PLAYERS LEFT panel is the standings that still fit. The feed goes
+       back to the top of the column it now has to itself. */
+    #hudTopRight { display: none; }
     #statCluster { top: 12px; left: 12px; gap: 6px; }
     .chip { padding: 8px 14px; gap: 8px; }
     #playersLeft { top: 12px; gap: 14px; padding: 10px 20px; }
@@ -258,9 +302,10 @@
 </div>
 
 <!-- HUD. Every readout is a mono micro-label over a heavy italic value, in the
-     four Neon Asteroids zones: stats top-left, headline top-centre, feed
-     top-right, status bar bottom-left. Icons are inlined lucide glyphs — the
-     same set Asteroids draws — because this frame has no icon font. -->
+     four Neon Asteroids zones: stats top-left, headline top-centre, leaderboard
+     over the feed top-right, status bar bottom-left. Icons are inlined lucide
+     glyphs — the same set Asteroids draws — because this frame has no icon
+     font. -->
 <div id="hud" class="hidden">
   <div id="playersLeft">
     <div class="hudIcon">
@@ -304,6 +349,25 @@
   <div id="hudHint">
     <span class="hudKey" id="hudHintK"></span>
     <span id="hudHintText"></span>
+  </div>
+
+  <!-- Standings, always on: who is still wrapping tiles and where you sit
+       among them. Rows are built in ui.js (setLeaderboard) — never here. -->
+  <div id="hudTopRight">
+    <div id="leaderboardCard">
+      <div id="leaderboardHead">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#eab308" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/>
+          <path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/>
+          <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/>
+          <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>
+        </svg>
+        <span id="leaderboardTitle"></span>
+        <span id="leaderboardUnit"></span>
+      </div>
+      <div id="leaderboardRows"></div>
+    </div>
   </div>
 
   <div id="feed"></div>

@@ -1,7 +1,21 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { RefreshCw, Gamepad2, Trophy, Heart, Target, Navigation, Skull, Maximize, Flame, Zap, Sword, ShieldAlert, Radiation, Menu, Volume2, VolumeX } from 'lucide-react';
-import GameBackButton from '../common/GameBackButton';
+import { RefreshCw, Gamepad2, Heart, Target, Navigation, Skull, Maximize, Flame, Zap, Sword, ShieldAlert, Radiation, Menu, Volume2, VolumeX } from 'lucide-react';
+import { GamePauseMenu } from '../common/GamePauseMenu';
+// Shared in-match board (the Pug Shooter HUD card) — replaces the hand-rolled
+// top-right leaderboard overlay. DISPLAY ONLY: leaderboardRef stays the data
+// table (the MiniMap rank badge reads it), fed by both the practice
+// updateLeaderboard and the online snapshot mapping exactly as before.
+import { MatchLeaderboard } from '../common/MatchLeaderboard';
+// Level progression overlay + the practice-XP self-report hook. Practice is
+// the ONLY mode that self-reports ('asteroids' practice rounds are XP-only,
+// rank:null by construction); online results stay server-authoritative.
+import { PostGameProgression } from '../common/PostGameProgression';
+import { usePracticeXp } from '../../hooks/usePracticeXp';
+// "Are you sure? leaving forfeits" — every mid-run exit affordance (the pause
+// menu, both results screens, the App nav bar) funnels through this guard.
+import { useGuardedExit } from '../common/exitGuard';
+import { toggleAppFullscreen } from '../common/fullscreen';
 import { useGunSound } from './useGunSound';
 import { useGameAudio } from './useGameAudio';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
@@ -200,6 +214,11 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
     isNetworkMode ? 'playing' : 'menu'
   );
   const [score, setScore] = useState(0);
+  // Loop-side copy of `score` (same idiom as netKillsRef below). The practice
+  // XP report reads it from inside the game-over money effect, which must
+  // NEVER gain a dep that can still change after the round ends — one extra
+  // run of that effect would pay the Neon Bucks pot twice.
+  const scoreRef = useRef(0);
   const [kills, setKills] = useState(0);
   const [health, setHealth] = useState(100);
   const [ammo, setAmmo] = useState({ magazine: 100, reserve: 30, reloading: false });
@@ -474,9 +493,6 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       keysRef.current[e.key.toLowerCase()] = true;
-      if (e.key.toLowerCase() === 'f' && !e.repeat) {
-        toggleFullscreen();
-      }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
       keysRef.current[e.key.toLowerCase()] = false;
@@ -553,6 +569,85 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
   const [sessionWinnings, setSessionWinnings] = useState(0);
   const { win, wager, isFirstPractice } = useNeonBucks();
 
+  // A confirmed mid-run exit ends the run AS A LOSS: the results screen (with
+  // a forfeit note), the money effect and the practice XP report all run
+  // exactly like a death does — no second settle path exists.
+  const [forfeited, setForfeited] = useState(false);
+
+  // Practice XP — self-reported award, chained as the progression overlay
+  // (the same usePracticeXp → PostGameProgression pattern Chess/Trivia use).
+  // Online rounds NEVER touch this: freeplay results are settled by the
+  // server world, and /api/stats/session only accepts 'asteroids' as practice.
+  const { practiceProgression, armRound, reportRound, clearPracticeProgression } =
+    usePracticeXp('asteroids');
+
+  // "Leaving forfeits" guard. Active ONLY while a run is genuinely live: not
+  // on the briefing menu, not on a finished results screen, and NOT while
+  // matchmaking — gameState is optimistically 'playing' during the
+  // slayer/lms queue, but cancelling a queue costs nothing (the
+  // SearchingForMatch Cancel keeps its existing immediate path).
+  const { requestExit, finishExit, abortPendingExit, exitPending, confirmDialog } =
+    useGuardedExit({
+      active: gameState === 'playing' && !netSearching,
+      onForfeit: () => {
+        if (isNetworkMode) {
+          if (onlineMode === 'free_play') {
+            // The permanent world scores nothing on the way out — the unmount
+            // cleanup emits freeplay:leave. Nothing to show: go now.
+            return 'immediate';
+          }
+          // Slayer/LMS: leave the server match (the world treats that as a
+          // forfeit and plays on without us — no freeplay:match_end will ever
+          // arrive after leave()), then show a LOCAL loss screen. netResult
+          // stays null, so the kill-board branch is skipped and the ordinary
+          // win/lose ResultsScreen renders the defeat. The exitPending effect
+          // below cues finishExit once that screen is up.
+          netRef.current?.leave();
+          netRef.current = null;
+          setForfeited(true);
+          setNetEliminated(false);
+          setGameState('gameover');
+          return 'wait';
+        }
+        // Practice: force the exact path a death takes. 'gameover' is what the
+        // money effect reads to score the run (slayer still pays the kills
+        // already banked) and what fires the single practice-XP report.
+        // Results + progression play, then finishExit() (from
+        // PostGameProgression's onDone) releases the deferred navigation.
+        setForfeited(true);
+        setGameState('gameover');
+        return 'wait';
+      },
+      copy: () =>
+        !isNetworkMode
+          ? {
+              message:
+                wagerAmount > 0 && wagerMode
+                  ? 'Leaving now ends the run as a loss and forfeits your wager. Your results will play before you go.'
+                  : 'Leaving now ends the run as a loss. Your results will play before you go.',
+            }
+          : onlineMode === 'free_play'
+            ? {
+                title: 'Leave the world?',
+                message:
+                  'Leaving despawns your ship and drops the kills you have banked. Nothing is scored in the free-play world.',
+                confirmLabel: 'Leave world',
+              }
+            : {
+                message:
+                  'Leaving now abandons the match — it counts as a loss. Your results will play before you go.',
+              },
+    });
+
+  // Online slayer/lms forfeit: we LEFT the world, so neither a match_end nor
+  // any progression payload will ever arrive (freeplay XP settles server-side
+  // with no client event today). The results screen is the whole story — once
+  // it is up, cue the deferred navigation; the hook still holds it for the
+  // minimum dwell and has a 12s fallback regardless.
+  useEffect(() => {
+    if (exitPending && isNetworkMode && gameState === 'gameover') finishExit();
+  }, [exitPending, isNetworkMode, gameState, finishExit]);
+
   useEffect(() => {
     if (gameState === 'gameover' || gameState === 'victory') {
        // ONLINE HAS NO MONEY THIS PASS: never call wager()/win() online.
@@ -586,8 +681,22 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
        // no death sting either.
        const slayerBoard = isNetworkMode && netResult?.scoring === 'kills';
        if (gameState === 'gameover' && !slayerBoard) playDeath();
+
+       // Practice XP: the SINGLE self-report for the run. This effect is
+       // already the once-per-round end funnel, and usePracticeXp dedupes per
+       // armRound() on top, so a re-fired effect cannot double-report. A
+       // confirmed forfeit lands here too — it sets 'gameover', a loss like
+       // any death. Online rounds are settled by the server world and must
+       // NEVER self-report (the endpoint only accepts 'asteroids' as
+       // practice). 'victory' covers both the win checks and a cashout.
+       if (!isNetworkMode) {
+          reportRound({
+             result: gameState === 'victory' ? 'win' : 'loss',
+             score: Math.max(0, Math.floor(scoreRef.current)),
+          });
+       }
     }
-  }, [gameState, playDeath, wagerAmount, wagerMode, win, difficulty]);
+  }, [gameState, playDeath, wagerAmount, wagerMode, win, difficulty, isNetworkMode, reportRound]);
 
   const createExplosion = (x: number, y: number, color: string, count: number = 10) => {
     for (let i = 0; i < count; i++) {
@@ -1487,6 +1596,7 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
                 }
 
                 asteroidsRef.current.splice(aIndex, 1);
+                scoreRef.current += 100;
                 setScore(s => s + 100);
             }
         });
@@ -1542,6 +1652,7 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
               
               if (!bullet.id) {
                 playKillSound();
+                scoreRef.current += 500;
                 setScore(s => s + 500); // Player gets score
                 setHealth(h => Math.min(100, h + 20));
                 playerRef.current.reserve = (playerRef.current.reserve || 0) + 30;
@@ -2210,6 +2321,7 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
     setSessionWinnings(0);
     setRespawnInfo(null);
     setScore(0);
+    scoreRef.current = 0;
     setKills(0);
     setHealth(100);
     netKillsRef.current = 0;
@@ -2363,12 +2475,21 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
   }, [isNetworkMode]);
 
   const startGame = () => {
+    // Rematch while a forfeit-exit is pending = "I changed my mind" — drop the
+    // deferred navigation instead of yanking the fresh run away.
+    abortPendingExit();
+    setForfeited(false);
     if (isNetworkMode) {
       startNetworkGame();
       return;
     }
+    // A new practice run starts HERE (first launch and every rematch): re-arm
+    // the once-per-round XP guard and drop any still-queued progression.
+    armRound();
+    clearPracticeProgression();
     setGameState('playing');
     setScore(0);
+    scoreRef.current = 0;
     setKills(0);
     setHealth(100);
 
@@ -2713,36 +2834,21 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
               )}
             </motion.div>
 
-            {/* Top Right: Leaderboard */}
-            <motion.div 
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              className="absolute top-8 right-8 w-64 pointer-events-none z-[60]"
-            >
-              <div className="backdrop-blur-md bg-black/40 border border-[#00FFD1]/20 p-6 rounded-2xl">
-                <div className="flex items-center gap-3 mb-4">
-                  <Trophy className="w-4 h-4 text-yellow-500" />
-                  <h3 className="text-xs font-black text-white italic uppercase tracking-widest">Leaderboard</h3>
-                </div>
-                <div className="space-y-2">
-                  {leaderboard.map((entry, idx) => (
-                    <div 
-                      key={idx} 
-                      className={`flex items-center justify-between p-2 rounded-lg text-[10px] font-mono border ${
-                        entry.isPlayer 
-                        ? 'bg-[#00FFD1]/10 text-[#00FFD1] border-[#00FFD1]/20' 
-                        : 'text-white/20 border-white/5'
-                      }`}
-                    >
-                      <span className="opacity-50">#{idx + 1}</span>
-                      <span className="flex-1 px-3 truncate italic uppercase">{entry.name}</span>
-                      {/* Ranking column: kills, online and in practice. */}
-                      <span className="font-bold">{Number(entry.kills ?? 0)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </motion.div>
+            {/* Top Right — the shared match leaderboard (the Pug Shooter HUD
+                card). DISPLAY ONLY: the data writes are untouched, so
+                leaderboardRef still carries the FULL standings the MiniMap
+                rank badge indexes into. Kills are the ranking column in both
+                modes, and both sources are already capped at five rows
+                (practice slices the top 5; the server's board is LEADERBOARD_SIZE). */}
+            <MatchLeaderboard
+              rows={leaderboard.map((entry) => ({
+                name: entry.name,
+                value: Number(entry.kills ?? 0),
+                isPlayer: !!entry.isPlayer,
+              }))}
+              valueLabel="K"
+              max={5}
+            />
 
             {/* Bottom Left: Mini Map & New HUD Status */}
             <motion.div 
@@ -2818,7 +2924,11 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
               >
                 <Maximize className="w-6 h-6" />
               </button>
-              <GameBackButton onClick={onExit} title="Exit Game" />
+              {/* Pug-style pause menu (inline pill in this cluster). THE exit
+                  path; replaces the back chevron. Mid-run the guard owns the
+                  click: confirm → forfeit → results → progression → only then
+                  the exit runs. */}
+              <GamePauseMenu inline onExit={() => requestExit(onExit)} exitLabel="Exit Game" />
             </div>
 
             {/* Cashout Button for Free Play Wager */}
@@ -2861,19 +2971,18 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
       {/* ONLINE: matchmaking. Shown IMMEDIATELY on entry for slayer/lms —
           never waits for a server ack. free_play never shows this screen. */}
       {netSearching && isQueuedOnline && (
-        <div className="absolute inset-0 z-[95] bg-[#081616]/95 backdrop-blur-xl">
-          <SearchingForMatch
-            playersInQueue={netQueue.current}
-            playersNeeded={netQueue.needed}
-            subtitle={`Neon Asteroids · ${onlineLabel}`}
-            onCancel={() => {
-              netRef.current?.cancel();
-              netRef.current = null;
-              setNetSearching(false);
-              onExit();
-            }}
-          />
-        </div>
+        <SearchingForMatch
+          variant="overlay"
+          playersInQueue={netQueue.current}
+          playersNeeded={netQueue.needed}
+          subtitle={`Neon Asteroids · ${onlineLabel}`}
+          onCancel={() => {
+            netRef.current?.cancel();
+            netRef.current = null;
+            setNetSearching(false);
+            onExit();
+          }}
+        />
       )}
 
       {/* ONLINE (lobby modes): match found — the server's start countdown. */}
@@ -3017,8 +3126,10 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
           <SlayerScoreboard
             result={netResult}
             gameMode={onlineLabel}
-            onRematch={startNetworkGame}
-            onExit={onExit}
+            // startGame delegates to startNetworkGame online — going through
+            // it keeps the abortPendingExit/forfeit reset on every rematch.
+            onRematch={startGame}
+            onExit={() => requestExit(onExit)}
           />
         )}
 
@@ -3033,11 +3144,27 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
             // Online stakes nothing — hide the Wagered/Payout rows.
             moneyless={isNetworkMode}
             kills={kills}
+            note={forfeited ? 'You left the match — counted as a loss' : null}
             onRematch={startGame}
-            onExit={onExit}
+            onExit={() => requestExit(onExit)}
           />
         )}
       </AnimatePresence>
+
+      {/* Level progression, chained after the practice results screen.
+          Practice pays XP only (rank is null by construction); online
+          freeplay has no client progression payload today. When a
+          forfeit-exit is pending, its close cues the deferred navigation. */}
+      <PostGameProgression
+        progression={practiceProgression}
+        onDone={() => {
+          clearPracticeProgression();
+          finishExit();
+        }}
+      />
+
+      {/* Mid-run "are you sure? leaving forfeits" dialog (z-[130]). */}
+      {confirmDialog}
     </div>
   );
 };

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { LobbyLevelStrip } from '../common/LobbyLevelStrip';
+import { FullscreenButton } from '../common/fullscreen';
 import { ChevronLeft,
   Globe,
   Cpu,
@@ -51,23 +52,6 @@ const VolleyLobby = ({
   const [showPrivateWager, setShowPrivateWager] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen();
-    } else {
-      document.exitFullscreen();
-    }
-  };
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() === "f") {
-        toggleFullscreen();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
 
   const handleStartMultiplayer = () => {
     onFindGame({
@@ -89,6 +73,8 @@ const VolleyLobby = ({
     // cards were simply unreachable on a phone.
     <div className="min-h-[100dvh] max-h-[100dvh] bg-[#081616] flex flex-col items-center justify-start md:justify-center px-4 py-24 md:p-6 relative overflow-y-auto overflow-x-hidden">
       <LibraryBlob />
+      {/* Shared fullscreen affordance (the global 'f' bind works here too). */}
+      <FullscreenButton positionClassName="fixed bottom-8 right-8 z-[60]" />
       <GlobalSpotlight gridRef={containerRef} />
 
       {/* Animated background highlights */}
@@ -144,9 +130,8 @@ const VolleyLobby = ({
               className="magic-bento-card magic-bento-card--border-glow px-8 py-6 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl hover:shadow-[0_0_50px_rgba(0,255,209,0.3)] hover:scale-[1.02] active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
             >
               <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>
-              {/* NO MONEY ONLINE: this card used to read "Wager Match" with a
-                  dollar icon. Online play stakes nothing — it is just volley
-                  against a real person — so the copy and icon now say that. */}
+              {/* Branded "Wager Match" like every other lobby's online card —
+                  the arcade-wide identity for ranked online play. */}
               <Globe className="w-8 h-8 group-hover:rotate-12 transition-transform" />
               <div className="text-center">
                 <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">Wager Match</span>

@@ -11,7 +11,7 @@
  * bespoke; the rest are single Lucide glyphs.
  */
 
-import { Swords, Orbit, Rocket, Brain, FlagTriangleRight, Ghost, Crosshair } from "lucide-react";
+import { Swords, Orbit, Rocket, Goal, FlagTriangleRight, Ghost, Crosshair } from "lucide-react";
 import type { GameId } from "../../lib/games";
 
 export const GAME_ICONS: Record<GameId, React.ReactNode> = {
@@ -35,7 +35,7 @@ export const GAME_ICONS: Record<GameId, React.ReactNode> = {
   ),
   cells: <Orbit className="w-12 h-12" />,
   asteroids: <Rocket className="w-12 h-12 text-[#00FFD1] -rotate-45" />,
-  trivia: <Brain className="w-12 h-12 text-[#00FFD1]" />,
+  kickoff: <Goal className="w-12 h-12 text-[#00FFD1]" />,
   golf: <FlagTriangleRight className="w-12 h-12 text-[#00FFD1]" />,
   clumsy: <Ghost className="w-12 h-12 text-[#00FFD1]" />,
   pugshooter: <Crosshair className="w-12 h-12 text-[#00FFD1]" />,

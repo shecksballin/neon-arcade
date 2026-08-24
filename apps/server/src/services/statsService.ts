@@ -56,7 +56,8 @@ export const GAME_KEYS = [
   'chess',
   'volley',
   'connect',
-  'trivia',
+  'trivia', // legacy — Neon Quiz was removed; old rows stay readable
+  'kickoff',
   'cells',
   'asteroids',
   'golf',

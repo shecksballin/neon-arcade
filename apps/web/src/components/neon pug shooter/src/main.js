@@ -19,12 +19,33 @@ const EXIT_MESSAGE = 'neon-pug-shooter:exit';
 // Match results ride out the same way, so a game the server never sees still earns the
 // arcade's XP (see reportResult below).
 const RESULT_MESSAGE = 'neon-pug-shooter:result';
+// Leaving a LIVE round is a forfeit, and the arcade owns that decision (confirm dialog,
+// loss report, results, level progression). So the pause menu's Quit does not tear the
+// match down any more — it raises its hand and lets the parent drive.
+const QUIT_REQUEST_MESSAGE = 'neon-pug-shooter:quit-request';
+// ...which the parent can only arm if it knows a round went live. Boot and every
+// in-iframe rematch announce themselves.
+const ROUND_START_MESSAGE = 'neon-pug-shooter:round-start';
 const query = new URLSearchParams(location.search);
 const pick = (value, table, fallback) => (value && table[value] ? value : fallback);
 const initialMatch = {
   mode: pick(query.get('mode'), MODES, 'ffa'),
   map: pick(query.get('map'), MAPS, DEFAULT_MAP),
   difficulty: pick(query.get('difficulty'), DIFFICULTIES, DEFAULT_DIFFICULTY),
+};
+
+// WHO IS PLAYING — the killcam identity strip used to be hardcoded markup
+// ('Vanguard', 'Lvl 245'). The arcade passes the real values in: the account name
+// and the level DERIVED from career XP (never a stored level). Both are optional —
+// signed out, the strip falls back to 'you' with no level.
+const playerIdentity = {
+  name: (query.get('name') || '').trim().slice(0, 14),
+  // A level is a small positive integer or nothing at all. Anything else is a
+  // malformed query string, not a level.
+  level: (() => {
+    const n = Number.parseInt(query.get('level') ?? '', 10);
+    return Number.isInteger(n) && n > 0 && n <= 999 ? n : null;
+  })(),
 };
 
 const settings = {
@@ -269,6 +290,31 @@ function lastHitOn(victim) {
   return lastKill && lastKill.victim === victim ? lastKill : null;
 }
 
+/**
+ * The killcam identity strip — who the cam is ABOUT, and their standing.
+ *
+ * The two subjects have different kinds of standing, so the badge under the
+ * name means different things and says which it is:
+ *   a BOT      — its AI tier ('Easy'/'Normal'/'Hard'). Difficulty is
+ *                match-wide (bots carry `skill`, not a difficulty), so the
+ *                match's own setting is the honest label.
+ *   the PLAYER — their real arcade level, passed in on the query string.
+ *                Signed out there is no level, and the badge is dropped
+ *                rather than faked.
+ */
+function killcamIdentity(subject) {
+  const difficulty = DIFFICULTIES[match?.difficulty]?.label;
+  if (subject && !subject.isPlayer) {
+    return { name: subject.name, badge: difficulty ?? null, badgeLabel: 'AI' };
+  }
+  // The player themselves (the final cam), or nothing killed them at all.
+  return {
+    name: playerIdentity.name || 'you',
+    badge: playerIdentity.level ?? null,
+    badgeLabel: 'Lvl',
+  };
+}
+
 function startKillcam(killer) {
   if (!match || match.over) { ui.showRespawn(true, 3); return; }
   // Over the killer's shoulder for the whole replay, not a chase shot that only resolves
@@ -289,6 +335,8 @@ function startKillcam(killer) {
   ui.showKillcam(true, {
     title: 'Killcam',
     subject: killcam.name,
+    // The strip is about whoever just killed you — their name and AI tier.
+    identity: killcamIdentity(killer),
     weapon: WEAPON_NAME,
     headshot: !!lastHitOn(player.entity)?.headshot,
     skippable: true,
@@ -321,6 +369,9 @@ function startFinalKillcam(result) {
   ui.showKillcam(true, {
     title: 'Final Kill',
     subject: killerName,
+    // Whoever landed the match-winning kill: a bot with its tier, or you
+    // with your real level.
+    identity: killcamIdentity(kill.killer),
     weapon: WEAPON_NAME,
     headshot: !!kill.headshot,
     skippable: false,
@@ -398,6 +449,12 @@ async function startMatch(mode, mapId = world.mapId, difficulty = DEFAULT_DIFFIC
   lastKill = null;
   pendingResult = null;
   matchStartedAt = Date.now();
+  // Tell the arcade a round is live, so its exit guard can arm. Fires at boot
+  // AND on every in-iframe rematch — without the second one, round two would
+  // be quittable with no forfeit.
+  if (window.parent !== window) {
+    window.parent.postMessage({ type: ROUND_START_MESSAGE }, window.location.origin);
+  }
   replay.clear();
   ui.showKillcam(false);
   ui.dismissOptions();
@@ -459,10 +516,28 @@ function teardownMatch() {
   }
 }
 
-// Quit lands in the arcade lobby, which lives in the parent frame: tear the match down,
-// then hand control back. Opened standalone (serve.py dev) there is no parent to return
-// to, so reload into a fresh default match instead.
+/**
+ * Quit lands in the arcade lobby, which lives in the parent frame.
+ *
+ * MID-ROUND this does NOT tear the match down: leaving a live round forfeits
+ * it, and the confirm/loss/results/progression flow belongs to the arcade
+ * (see PugShooterPlay). We change nothing at all and simply raise our hand —
+ * if the player backs out of the dialog they are still standing in their
+ * paused match, exactly where they left it. After the whistle it is a free
+ * exit as ever.
+ */
 function exitToLobby() {
+  const roundLive = !!match && !match.over && window.parent !== window;
+  if (roundLive) {
+    // STAY EXACTLY AS WE ARE — paused, player disabled, pause panel open —
+    // and just raise our hand. The arcade's confirm dialog covers the frame
+    // while the player decides; leaving the match paused underneath means
+    // no keystroke reaches a character they cannot see, and the click that
+    // dismisses the dialog cannot recapture the pointer and fire a shot.
+    // Back out and the pause panel is simply revealed again, Resume and all.
+    window.parent.postMessage({ type: QUIT_REQUEST_MESSAGE }, window.location.origin);
+    return;
+  }
   running = false;
   paused = false;
   teardownMatch();

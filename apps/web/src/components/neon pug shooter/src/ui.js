@@ -48,6 +48,11 @@ export function createUI({ settings, onResume, onQuit, onRematch, onPause, onSet
     ksKiller: $('#ks-killer'),
     ksWeapon: $('#ks-weapon'),
     ksTime: $('#ks-time'),
+    // identity strip — real name + standing, no longer hardcoded markup
+    ksName: $('#ks-name'),
+    ksLevel: $('#ks-level'),
+    ksLevelCap: $('#ks-level-cap'),
+    ksLevelValue: $('#ks-level-value'),
     pause: $('#pause'),
     nameplates: $('#nameplates'),
     matchOver: $('#match-over'),
@@ -298,7 +303,7 @@ export function createUI({ settings, onResume, onQuit, onRematch, onPause, onSet
 
     const {
       title = 'Killcam', subject = '', weapon = '—', headshot = false,
-      skippable = true, progress = 0, timeLeft = 0,
+      skippable = true, progress = 0, timeLeft = 0, identity = null,
     } = opts;
 
     el.killcamTitle.textContent = title;
@@ -306,6 +311,19 @@ export function createUI({ settings, onResume, onQuit, onRematch, onPause, onSet
     el.killcam.classList.add('cinematic');
     el.killcam.classList.toggle('final', !skippable);
     el.ksKiller.textContent = subject || 'the map';
+    // IDENTITY. textContent throughout: the name can be a real account name,
+    // which is the one string on this strip we did not write ourselves.
+    // A subject with no standing (signed-out player) drops the badge rather
+    // than showing a made-up number.
+    if (el.ksName) el.ksName.textContent = identity?.name || subject || 'the map';
+    if (el.ksLevelValue) {
+      const hasBadge = identity?.badge !== null && identity?.badge !== undefined;
+      if (el.ksLevelCap) el.ksLevelCap.textContent = identity?.badgeLabel ?? 'Lvl';
+      el.ksLevelValue.textContent = hasBadge ? String(identity.badge) : '—';
+      // A tier name needs the smaller type; a level number keeps the big one.
+      el.ksLevel?.classList.toggle('word', typeof identity?.badge === 'string');
+      el.ksLevel?.classList.toggle('hidden', !hasBadge);
+    }
     el.ksWeapon.innerHTML = headshot
       ? `${weapon}<span class="ks-tag">Headshot</span>`
       : weapon;

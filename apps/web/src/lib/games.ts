@@ -12,10 +12,9 @@
  *
  *   1v1   apps/server/src/socket/games/{chess,connect,volley}.ts and
  *         LOBBY_GAME_MODES in games/lobbyGames.ts (golf/clumsy: 2 players,
- *         pugshooter duel/duo: 2) — plus trivia's '1v1' mode.
+ *         pugshooter duel/duo: 2) — plus kickoff's '1v1' shootout.
  *   ffa   the permanent free-play worlds (socket/freeplay/{cells,asteroids}
- *         World.ts), trivia's 'ffa' mode (FFA_MAX_PLAYERS = 100) and pug
- *         shooter's 'ffa'.
+ *         World.ts) and pug shooter's 'ffa'.
  *
  * `mobile` is a DELIBERATELY SHORT LIST, and it is not a guess either. It
  * means "playable with a thumb on a 390px-wide portrait screen", so a game
@@ -39,7 +38,7 @@ export type GameId =
   | "volley"
   | "cells"
   | "asteroids"
-  | "trivia"
+  | "kickoff"
   | "golf"
   | "clumsy"
   | "pugshooter";
@@ -54,7 +53,6 @@ export type GameCategory =
   | "1v1"
   | "ffa"
   | "action"
-  | "quiz"
   | "mobile";
 
 export interface GameMeta {
@@ -104,10 +102,10 @@ export const GAMES: GameMeta[] = [
     mobile: false,
   },
   {
-    id: "trivia",
-    title: "Neon Quiz",
-    blurb: "Fastest right answer takes it",
-    categories: ["quiz", "1v1", "ffa"],
+    id: "kickoff",
+    title: "Neon Kickoff",
+    blurb: "Hold your nerve from the spot",
+    categories: ["action", "1v1"],
     mobile: false,
   },
   {
@@ -147,7 +145,6 @@ export const GAME_FILTERS: { id: GameCategory | null; label: string }[] = [
   { id: "1v1", label: "1v1" },
   { id: "ffa", label: "Free For All" },
   { id: "action", label: "Action" },
-  { id: "quiz", label: "Quiz" },
   { id: "mobile", label: "Mobile" },
 ];
 

@@ -294,46 +294,48 @@ const CellsLobby = ({
           )}
 
           {view === 'practice' && (
-            <CellsDifficultySelector
-              selectedDifficulty={selectedDifficulty}
-              onSelect={setSelectedDifficulty}
-              onConfirm={handleStartComputer}
-              onCancel={() => setView('cards')}
-            />
+            <div className="space-y-6">
+              {/* Practice ruleset — lives inside the practice drill-down now.
+                  It used to be a three-card row at the bottom of the lobby, but
+                  only the practice confirm ever reads `selectedMode`, so the
+                  cards implied a choice the online path never honoured. */}
+              <div className="flex flex-col items-center gap-2">
+                <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
+                  Practice ruleset
+                </p>
+                <div className="flex gap-2 p-1 bg-[#111E1E]/80 border border-[#00FFD1]/20 rounded-lg backdrop-blur-md">
+                  {PRACTICE_MODES.map((m) => (
+                    <button
+                      key={m.id}
+                      onClick={() => setSelectedMode(m.id)}
+                      className={`px-4 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
+                        selectedMode === m.id
+                          ? 'bg-[#00FFD1] text-[#081616] shadow-[0_0_15px_rgba(0,255,209,0.5)]'
+                          : 'text-[#B1C5FF]/50 hover:text-[#B1C5FF]'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[9px] font-mono tracking-widest uppercase text-[#B1C5FF]/40">
+                  {PRACTICE_MODES.find((m) => m.id === selectedMode)?.hint}
+                </p>
+              </div>
+              <CellsDifficultySelector
+                selectedDifficulty={selectedDifficulty}
+                onSelect={setSelectedDifficulty}
+                onConfirm={handleStartComputer}
+                onCancel={() => setView('cards')}
+              />
+            </div>
           )}
         </div>
 {view === 'cards' && (
-          <>
-          <div className="space-y-3">
-            {/* These pills are the PRACTICE ruleset only — the online path
-                picks its sector+mode in the drill-down selector above. */}
-            <p className="text-[9px] font-mono tracking-[0.3em] uppercase text-white/25">
-              Practice ruleset
-            </p>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {PRACTICE_MODES.map((mode) => (
-                <ParticleCard
-                  key={mode.id}
-                  onClick={() => setSelectedMode(mode.id)}
-                  className={`magic-bento-card magic-bento-card--border-glow backdrop-blur-md p-5 rounded-xl border flex flex-col items-center gap-2 transition-all cursor-pointer ${selectedMode === mode.id ? 'border-[#00FFD1] shadow-[0_0_15px_rgba(0,255,209,0.5)]' : 'border-[#00FFD1]/40'}`}
-                >
-                  <div className="material-symbols-outlined text-[#00FFD1] text-2xl">
-                    {mode.icon}
-                  </div>
-                  <p className="text-[10px] font-mono tracking-widest uppercase text-[#B1C5FF]/70">
-                    {mode.label}
-                  </p>
-                  <p className="text-[8px] font-mono tracking-widest uppercase text-white/25">
-                    {mode.hint}
-                  </p>
-                </ParticleCard>
-              ))}
-            </div>
-          </div>
-          {/* Shared lobby footer — the same PRACTICE / ONLINE / WAGER trio
-              that closes every other arcade lobby. */}
+          /* Shared lobby footer — the same PRACTICE / ONLINE / WAGER trio
+             that closes every other arcade lobby. The practice-ruleset
+             cards that used to sit here moved into the practice view. */
           <LobbyModeTiles />
-          </>
         )}
       </div>
 

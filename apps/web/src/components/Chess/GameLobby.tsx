@@ -78,9 +78,9 @@ const GameLobby = ({
               className="magic-bento-card magic-bento-card--border-glow px-8 py-6 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl hover:shadow-[0_0_50px_rgba(0,255,209,0.3)] hover:scale-[1.02] active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
             >
               <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>
-              {/* NO MONEY ONLINE: this card used to read "Wager Match" with a
-                  dollar icon. Online play stakes nothing — it is just chess
-                  against a real person — so the copy and icon now say that. */}
+              {/* Branded "Wager Match" like every other lobby's online card —
+                  the label is the arcade-wide identity for ranked online play,
+                  whatever the stake ends up being. */}
               <Globe className="w-8 h-8 group-hover:rotate-12 transition-transform" />
               <div className="text-center">
                 <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">Wager Match</span>

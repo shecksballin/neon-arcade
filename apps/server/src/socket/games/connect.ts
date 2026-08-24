@@ -43,6 +43,7 @@ import { recordAndEmitProgression } from './progression'
 // maths so every 1v1 in the arcade pairs by the same rule.
 import {
   MATCH_RETRY_MS,
+  PARTY_GRACE_MS,
   pickSkillGroup,
   type SkillQueueEntry,
 } from '../queue'
@@ -86,7 +87,13 @@ interface ConnectPlayer {
  * at join time plus the wait clock, which is everything `pickSkillGroup`
  * needs. Both are SERVER-ONLY and never appear in any emitted payload.
  */
-interface ConnectQueueEntry extends ConnectPlayer, SkillQueueEntry {}
+interface ConnectQueueEntry extends ConnectPlayer, SkillQueueEntry {
+  /** PRIVATE-PARTY marker — see socket/queue.ts QueuePlayer.party. Connect
+   *  keeps its own local queue, so it honours the same server-side stamp
+   *  privateMatch leaves on the socket; without this a private Connect
+   *  room's members would land unprotected in the public pool. */
+  party: string | null
+}
 
 interface ConnectGame {
   gameId: string
@@ -360,7 +367,35 @@ function tryPair(io: Server, now: number = Date.now()): boolean {
     return s === undefined || s.disconnected
   })
 
-  const pair = pickSkillGroup(queue, NEEDED_PLAYERS, now)
+  // PRIVATE PARTIES FIRST — a private room's pair matches itself, and only
+  // itself; the public pool below never sees a party entry. A lone party
+  // entry (partner's socket died between the dispatches) is released to the
+  // public pool after the same grace the shared queue uses.
+  let pair: ConnectQueueEntry[] | null = null
+  const byParty = new Map<string, ConnectQueueEntry[]>()
+  for (const entry of queue) {
+    if (!entry.party) continue
+    if (now - entry.joinedAt > PARTY_GRACE_MS) {
+      entry.party = null
+      continue
+    }
+    const group = byParty.get(entry.party)
+    if (group) group.push(entry)
+    else byParty.set(entry.party, [entry])
+  }
+  for (const members of byParty.values()) {
+    if (members.length >= NEEDED_PLAYERS) {
+      pair = members.slice(0, NEEDED_PLAYERS)
+      break
+    }
+  }
+  if (!pair) {
+    pair = pickSkillGroup(
+      queue.filter((entry) => !entry.party),
+      NEEDED_PLAYERS,
+      now
+    )
+  }
   if (!pair) return false
 
   const [first, second] = pair
@@ -498,12 +533,27 @@ export function registerConnect(io: Server, socket: Socket): void {
     const waitingSince =
       queue.find((e) => e.wallet === wallet)?.joinedAt ?? Date.now()
     removeFromQueue((e) => e.wallet === wallet)
+    // PRIVATE PARTY: privateMatch.startRoom stamps the socket just before
+    // re-driving this find (server-side only, TTL-checked). A party entry
+    // takes a FRESH clock — inheriting a long public wait would trip the
+    // grace demotion instantly and undo the protection.
+    const stamp = socket.data.privateParty as
+      | { id?: unknown; until?: unknown }
+      | undefined
+    const party =
+      stamp &&
+      typeof stamp.id === 'string' &&
+      typeof stamp.until === 'number' &&
+      stamp.until > Date.now()
+        ? stamp.id
+        : null
     queue.push({
       socketId: socket.id,
       wallet,
       name: username,
       mu: skill.mu,
-      joinedAt: waitingSince,
+      party,
+      joinedAt: party ? Date.now() : waitingSince,
     })
 
     // Pair on SKILL, not arrival order. tryPair emits the match payloads (and

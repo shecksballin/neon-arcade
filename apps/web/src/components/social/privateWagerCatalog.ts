@@ -28,7 +28,7 @@ export type PrivateGameKey =
   | 'chess'
   | 'connect'
   | 'volley'
-  | 'trivia'
+  | 'kickoff'
   | 'cells'
   | 'asteroids'
   | 'golf'
@@ -72,11 +72,10 @@ export const PRIVATE_WAGER_GAMES: PrivateWagerGame[] = [
     ],
   },
   {
-    key: 'trivia',
-    title: 'Neon Quiz',
+    key: 'kickoff',
+    title: 'Neon Kickoff',
     modes: [
-      { id: '1v1', label: 'Dual Link', hint: 'one on one', capacity: 2 },
-      { id: 'ffa', label: 'Neural Storm', hint: 'free for all', capacity: 8 },
+      { id: '1v1', label: 'Shootout', hint: 'best of five from the spot', capacity: 2 },
     ],
   },
   // Cells + Asteroids are a 2×2: sector (ECLIPSE|BLITZ) × mode

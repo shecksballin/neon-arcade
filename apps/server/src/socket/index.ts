@@ -35,7 +35,7 @@ import { setSocialRealtime } from '../routes/social'
 import { registerChess } from './games/chess'
 import { registerConnect } from './games/connect'
 import { registerVolley } from './games/volley'
-import { registerTrivia } from './games/trivia'
+import { registerKickoff } from './games/kickoff'
 import { registerLobbyGames } from './games/lobbyGames'
 import { registerPrivateMatch } from './games/privateMatch'
 import { registerFreeplay, shutdownFreeplay } from './freeplay'
@@ -81,7 +81,7 @@ export function attachSocketHandlers(io: Server) {
     registerChess(io, socket)
     registerConnect(io, socket)
     registerVolley(io, socket)
-    registerTrivia(io, socket)
+    registerKickoff(io, socket)
     // Golf / Clumsy / Pug Shooter — queue + roster handoff for the iframe games
     registerLobbyGames(io, socket)
     registerFreeplay(io, socket)

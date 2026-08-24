@@ -81,9 +81,12 @@ const ClumsyGame = ({ onExit, profile, onGameStatusChange }: ClumsyGameProps) =>
 
   if (searching) {
     return (
-      <div className="w-full h-full relative bg-[#081616]">
-        <GameBackButton onClick={onExit} title="Back to arcade" positionClassName="absolute top-6 left-6 z-50" />
+      // Shared matchmaking page — Cancel is the only exit (the back
+      // button died with the pug-menu rework; it also skipped leaving
+      // the queue cleanly).
+      <div className="w-full h-full">
         <SearchingForMatch
+          variant="page"
           // 1v1 — the counter is hidden unless the server asks for a bigger roster.
           playersInQueue={playersInQueue}
           playersNeeded={playersNeeded}

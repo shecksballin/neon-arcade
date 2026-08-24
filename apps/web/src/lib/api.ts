@@ -715,13 +715,22 @@ export interface XpSummary {
  */
 export interface SessionReport {
   /**
-   * The iframe games report every mode; chess/connect/volley/trivia may
-   * ONLY report practice (vs-AI) rounds — the server forces mode
-   * 'practice' and zeroes kills/placement for them, and practice rows
-   * never count toward win rate. Online results still arrive exclusively
-   * through the socket handlers.
+   * The iframe games report every mode; chess/connect/volley/kickoff and
+   * asteroids/cells may ONLY report practice (vs-AI) rounds — the server
+   * forces mode 'practice' and zeroes kills/placement for them, and
+   * practice rows never count toward win rate. Online results still arrive
+   * exclusively through the socket handlers.
    */
-  gameKey: 'golf' | 'clumsy' | 'pugshooter' | 'chess' | 'connect' | 'volley' | 'trivia'
+  gameKey:
+    | 'golf'
+    | 'clumsy'
+    | 'pugshooter'
+    | 'chess'
+    | 'connect'
+    | 'volley'
+    | 'kickoff'
+    | 'asteroids'
+    | 'cells'
   mode?: '1v1' | 'practice' | 'ffa' | 'freeplay'
   result?: 'win' | 'loss' | 'draw' | 'none'
   kills?: number
@@ -875,6 +884,51 @@ export interface ProfileMe {
   xp?:         number
   level?:      number
 }
+
+
+// ─────────────────────────────────────────────────
+// COMMUNITY — the public board (posts + open 1v1 challenges)
+// ─────────────────────────────────────────────────
+
+export interface CommunityPost {
+  id: string;
+  /** Author. USERNAMES ONLY — the server never serves a wallet. */
+  username: string;
+  kind: 'post' | 'challenge';
+  body: string;
+  gameKey: string | null;
+  mode: string | null;
+  roomId: string | null;
+  /**
+   * Challenge liveness, answered by the server's in-memory room registry:
+   * 'open' = the seat is free (JOIN works), 'full' = taken / starting,
+   * 'gone' = the host left. Always null for kind 'post'.
+   */
+  state: 'open' | 'full' | 'gone' | null;
+  createdAt: string;
+  /** True when the signed-in account wrote it (enables the delete button). */
+  mine: boolean;
+}
+
+export const communityApi = {
+  list: () => api<{ posts: CommunityPost[] }>('/api/community'),
+
+  createPost: (body: string) =>
+    api<{ ok: true; id: string }>('/api/community', {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'post', body }),
+    }),
+
+  /** `roomId` must be an OPEN room the caller is hosting (server-verified). */
+  createChallenge: (input: { gameKey: string; mode: string; roomId: string; body: string }) =>
+    api<{ ok: true; id: string }>('/api/community', {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'challenge', ...input }),
+    }),
+
+  remove: (id: string) =>
+    api<{ ok: true }>(`/api/community/${id}`, { method: 'DELETE' }),
+};
 
 export const profileApi = {
   get: (wallet: string) =>

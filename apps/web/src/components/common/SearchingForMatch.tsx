@@ -25,9 +25,10 @@ export interface SearchingForMatchProps {
   playersInQueue?: number;
   /**
    * How many players the mode needs before the match starts. Drives the
-   * `PLAYERS: n / N` readout — omit it entirely on 1v1 modes (Chess, Volley,
-   * Connect, Quiz 1v1) to hide the counter, pass it on roster modes
-   * (Quiz FFA, Cells/Asteroids slayer + lms, Golf, Clumsy, Pug Shooter).
+   * `PLAYERS: n / N` readout. Call sites can always pass the server's
+   * `queue:status` value: the counter renders only when it is 3+, so 1v1
+   * modes (Chess, Volley, Connect, Kickoff) stay counter-free without any
+   * per-game special-casing.
    */
   playersNeeded?: number;
   /** Leave the queue and go back to the lobby. Always wired to the CANCEL button. */
@@ -36,6 +37,19 @@ export interface SearchingForMatchProps {
   subtitle?: string;
   /** Escape hatch for the outer wrapper (sizing/positioning in odd layouts). */
   className?: string;
+  /**
+   * Who owns the chrome around the radar. Pass one of these instead of
+   * hand-rolling a wrapper — this is what makes the screen IDENTICAL across
+   * games:
+   *   'page'    — full opaque #081616 surface with the shared ambient glow;
+   *               the standard for every game that unmounts its lobby while
+   *               searching (chess, volley, connect, kickoff, golf, clumsy,
+   *               pug shooter).
+   *   'overlay' — translucent blur over a still-mounted game world
+   *               (cells / asteroids, whose canvas keeps running underneath).
+   * Omitted = bare block, for the rare parent that really owns its layout.
+   */
+  variant?: 'page' | 'overlay';
 }
 
 /** Primary neon accent, matching the rest of the arcade. */
@@ -47,6 +61,7 @@ export function SearchingForMatch({
   onCancel,
   subtitle = 'Waiting for real opponents to join the grid',
   className = '',
+  variant,
 }: SearchingForMatchProps) {
   // Cosmetic only — reassures the player that the screen is alive while the
   // queue fills. Not used for any timeout logic; the parent owns that.
@@ -58,8 +73,9 @@ export function SearchingForMatch({
   const mm = Math.floor(elapsed / 60);
   const ss = String(elapsed % 60).padStart(2, '0');
 
-  // Only 1v1 modes omit `playersNeeded`; anything that needs a roster passes it.
-  const showCount = typeof playersNeeded === 'number' && playersNeeded > 0;
+  // Roster modes only: a "1 / 2" readout on a 1v1 adds nothing over the
+  // radar, so anything the server pairs head-to-head hides the counter.
+  const showCount = typeof playersNeeded === 'number' && playersNeeded > 2;
   // We are queued the moment this screen mounts, so "at least me" is the floor.
   const current = Math.max(1, playersInQueue ?? 1);
   const needed = playersNeeded ?? 0;
@@ -67,7 +83,7 @@ export function SearchingForMatch({
   // Below ~10 slots individual pips read nicely; above that use a solid bar.
   const usePips = showCount && needed <= 10;
 
-  return (
+  const core = (
     <div
       className={`w-full h-full min-h-[420px] flex flex-col items-center justify-center px-6 py-10 text-center select-none ${className}`}
     >
@@ -172,6 +188,36 @@ export function SearchingForMatch({
       </button>
     </div>
   );
+
+  if (variant === 'overlay') {
+    // Over a live canvas: translucent + blurred so the world reads as
+    // "paused behind glass", exactly the cells/asteroids treatment.
+    return (
+      <div className="absolute inset-0 z-[95] bg-[#081616]/95 backdrop-blur-xl">
+        {core}
+      </div>
+    );
+  }
+
+  if (variant === 'page') {
+    // Full standalone surface. Scrollable + top-safe so a short viewport can
+    // still reach the Cancel button, with the same ambient glow the lobbies
+    // use so the transition feels continuous.
+    return (
+      <div className="w-full h-full min-h-[100dvh] bg-[#081616] relative overflow-y-auto overflow-x-hidden flex flex-col items-center justify-center px-4 py-10">
+        <div className="absolute inset-0 opacity-20 pointer-events-none">
+          <div className="absolute top-20 left-20 w-96 h-96 bg-[#00FFD1] rounded-full blur-[120px] opacity-20 animate-pulse" />
+          <div
+            className="absolute bottom-20 right-20 w-96 h-96 bg-[#B1C5FF] rounded-full blur-[120px] opacity-20 animate-pulse"
+            style={{ animationDelay: '1s' }}
+          />
+        </div>
+        <div className="relative z-10 w-full max-w-2xl">{core}</div>
+      </div>
+    );
+  }
+
+  return core;
 }
 
 export default SearchingForMatch;

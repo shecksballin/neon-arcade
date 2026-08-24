@@ -111,7 +111,10 @@ function CapturedRow({ pieces, label, advantage, color }: any) {
 
 export default function LocalGame({
   onGameEnd,
-  onReturnToLobby
+  onReturnToLobby,
+  // Exit-guard seam: tells ChessGame when the board has a result, so the
+  // "leaving loses" confirm stops asking on a finished game.
+  onRoundStateChange
 }: any) {
   const {
     position,
@@ -139,6 +142,11 @@ export default function LocalGame({
       onGameEnd?.({ result: gameResult, history, fen });
     }
   }, [gameResult.status, onGameEnd, history, fen]);
+
+  const roundOver = ['checkmate', 'stalemate', 'draw'].includes(gameResult.status);
+  useEffect(() => {
+    onRoundStateChange?.(roundOver);
+  }, [roundOver, onRoundStateChange]);
 
   const handleSquareClick = useCallback((index: number) => {
     selectSquare(index);

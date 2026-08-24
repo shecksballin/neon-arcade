@@ -123,7 +123,11 @@ export default function OnlineGame({
   onGameEnd,
   serverGameEnd    = null, // { winner: 'white'|'black'|'draw', reason } | null
   onRematchRequest,
-  onReturnToLobby
+  onReturnToLobby,
+  // Exit-guard seam: tells ChessGame when THIS board already has a result
+  // (a locally-detected mate the server may never hear about), so leaving a
+  // finished game is not treated as a resignation.
+  onRoundStateChange
 }: any) {
   const opponentColor = playerColor === 'white' ? 'black' : 'white';
 
@@ -196,6 +200,11 @@ export default function OnlineGame({
         message: serverEndCaption(serverGameEnd.reason, serverGameEnd.winner, playerColor),
       }
     : gameResult;
+
+  const roundOver = ['checkmate', 'stalemate', 'draw'].includes(displayResult.status);
+  React.useEffect(() => {
+    onRoundStateChange?.(roundOver);
+  }, [roundOver, onRoundStateChange]);
 
   const playerCaptured   = playerColor   === 'white' ? capturedPieces.white : capturedPieces.black;
   const opponentCaptured = opponentColor === 'white' ? capturedPieces.white : capturedPieces.black;

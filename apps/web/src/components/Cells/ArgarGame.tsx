@@ -1,8 +1,21 @@
 // src/components/Cells/ArgarGame.tsx
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Maximize, Minimize, RefreshCw, Trophy, Activity, Target, Timer, Zap, Menu, Volume2, VolumeX, Globe } from 'lucide-react';
-import GameBackButton from '../common/GameBackButton';
+import { Maximize, Minimize, RefreshCw, Activity, Target, Timer, Zap, Menu, Volume2, VolumeX, Globe } from 'lucide-react';
+import { GamePauseMenu } from '../common/GamePauseMenu';
+// Shared in-match board (the Pug Shooter HUD card) — replaces the hand-rolled
+// top-right leaderboard overlay. Display only: engine.leaderboard stays the
+// gameplay source of truth (bots, zone reveal, MiniMap all read it).
+import { MatchLeaderboard } from '../common/MatchLeaderboard';
+// Level progression overlay + the practice-XP self-report hook. Practice is
+// the ONLY mode that self-reports ('cells' practice rounds are XP-only,
+// rank:null by construction); online results stay socket-authoritative.
+import { PostGameProgression } from '../common/PostGameProgression';
+import { usePracticeXp } from '../../hooks/usePracticeXp';
+// "Are you sure? leaving forfeits" — every mid-run exit affordance (pause
+// menu Quit, results Exit, the App nav bar) funnels through this guard.
+import { useGuardedExit } from '../common/exitGuard';
+import { toggleAppFullscreen } from '../common/fullscreen';
 import { GameEngine, type Entity } from './gameEngine';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
 import { useNeonBucks } from '../../NeonBucksStore';
@@ -476,6 +489,89 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
   const [sessionWinnings, setSessionWinnings] = useState(0);
   const { win, wager, isFirstPractice } = useNeonBucks();
 
+  // A confirmed mid-run exit ends the round AS A LOSS: the results screen
+  // (with a forfeit note), the money effect and the practice XP report all
+  // run exactly like a normal death — no second settle path exists.
+  const [forfeited, setForfeited] = useState(false);
+
+  // Practice XP — self-reported award, chained as the progression overlay
+  // (the same usePracticeXp → PostGameProgression pattern Chess/Trivia use).
+  // Online rounds NEVER touch this: freeplay results are settled by the
+  // server world, and /api/stats/session only accepts 'cells' as practice.
+  const { practiceProgression, armRound, reportRound, clearPracticeProgression } =
+    usePracticeXp('cells');
+
+  // "Leaving forfeits" guard. Active ONLY while a round is genuinely live:
+  // not on the menu briefing, not on a finished results screen, and NOT
+  // while matchmaking — gameState is optimistically 'playing' during the
+  // slayer/lms queue, but cancelling a queue is free (the SearchingForMatch
+  // Cancel keeps its existing immediate path).
+  const { requestExit, finishExit, abortPendingExit, exitPending, confirmDialog } =
+    useGuardedExit({
+      active: gameState === 'playing' && !netSearching,
+      onForfeit: () => {
+        if (isNetworkMode) {
+          if (onlineMode === 'free_play') {
+            // The permanent world scores nothing on the way out — the
+            // unmount cleanup emits freeplay:leave. Nothing to show: go now.
+            return 'immediate';
+          }
+          // Slayer/LMS: leave the server match (the world treats that as a
+          // forfeit and plays on without us — no netResult will ever arrive
+          // after leave()), then show a local loss results screen. The
+          // exitPending effect below cues finishExit once that screen is up.
+          netRef.current?.leave();
+          netRef.current = null;
+          setForfeited(true);
+          setGameResult('lost');
+          setGameState('gameOver');
+          if (engineRef.current) engineRef.current.gameState = 'gameOver';
+          return 'wait';
+        }
+        // Practice: force the exact loss path a death takes — engine AND
+        // React state together — so the existing money effect scores the
+        // round (slayer still pays the kills already banked) and reports
+        // the practice XP exactly once. Results + progression play, then
+        // finishExit() (from PostGameProgression's onDone) navigates.
+        setForfeited(true);
+        if (engineRef.current) {
+          engineRef.current.gameState = 'gameOver';
+          engineRef.current.gameResult = 'lost';
+        }
+        setGameResult('lost');
+        setGameState('gameOver');
+        return 'wait';
+      },
+      copy: () =>
+        !isNetworkMode
+          ? {
+              message:
+                wagerAmount > 0
+                  ? 'Leaving now ends the practice round as a loss and forfeits your wager. Your results will play before you go.'
+                  : 'Leaving now ends the practice round as a loss. Your results will play before you go.',
+            }
+          : onlineMode === 'free_play'
+            ? {
+                title: 'Leave the world?',
+                message:
+                  'Leaving despawns your cell and drops the mass you have grown. Nothing is scored in the free-play world.',
+                confirmLabel: 'Leave world',
+              }
+            : {
+                message:
+                  'Leaving now abandons the match — it counts as a loss. Your results will play before you go.',
+              },
+    });
+
+  // Online slayer/lms forfeit: we LEFT the world, so neither a match_end nor
+  // any progression payload will ever arrive (freeplay XP settles server-side
+  // with no client event today). The results screen is the whole story —
+  // once it is up, cue the deferred navigation; the hook still holds it for
+  // the minimum dwell and has a 12s fallback regardless.
+  useEffect(() => {
+    if (exitPending && isNetworkMode && gameState === 'gameOver') finishExit();
+  }, [exitPending, isNetworkMode, gameState, finishExit]);
+
   useEffect(() => {
     if (gameState === 'gameOver' && gameResult) {
        // ONLINE HAS NO MONEY THIS PASS: never call wager()/win() online.
@@ -508,8 +604,19 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
           }
        }
        playEffect(gameResult === 'win' ? 'win' : 'lost');
+
+       // Practice XP: the single self-report for the round. usePracticeXp
+       // dedupes per armRound(), so a re-fired effect cannot double-report.
+       // Online rounds are settled by the server world and must NEVER
+       // self-report (the server rejects a non-practice 'cells' row anyway).
+       if (!isNetworkMode) {
+          reportRound({
+             result: gameResult === 'win' ? 'win' : 'loss',
+             score: Math.floor(engineRef.current?.player.score ?? 0),
+          });
+       }
     }
-  }, [gameState, gameResult, playEffect, wagerAmount, wagerMode, win]);
+  }, [gameState, gameResult, playEffect, wagerAmount, wagerMode, win, isNetworkMode, reportRound]);
 
   const addKillNotification = useCallback((kill: { name: string, x: number, y: number }) => {
     const id = Math.random().toString(36).substr(2, 9);
@@ -1107,10 +1214,6 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
       netInputRef.current.boost = true; // network mode: sent with the 20Hz input
       if (engineRef.current) engineRef.current.player.isBoosting = true;
     }
-    if (e.code === 'KeyF') {
-      e.preventDefault();
-      toggleFullscreen();
-    }
   };
 
   const handleKeyUp = (e: KeyboardEvent) => {
@@ -1274,6 +1377,7 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
       return;
     }
     if (engineRef.current) {
+      armRound(); // the first practice round of this mount starts HERE
       engineRef.current.gameState = 'playing';
       setGameState('playing');
     }
@@ -1304,10 +1408,18 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
   }, [isNetworkMode]);
 
   const resetGame = () => {
+    // Rematch while a forfeit-exit is pending = "I changed my mind" — drop
+    // the deferred navigation instead of yanking the fresh round away.
+    abortPendingExit();
+    setForfeited(false);
     if (isNetworkMode) {
       startNetworkGame();
       return;
     }
+    // New practice round: re-arm the once-per-round XP guard and drop any
+    // still-queued progression overlay.
+    armRound();
+    clearPracticeProgression();
     engineRef.current?.reset();
     engineRef.current!.gameState = 'playing';
     setGameState('playing');
@@ -1544,30 +1656,22 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
         </div>
       </div>
 
-      {/* HUD: Top Right - Leaderboard */}
-      <div className="absolute top-8 right-8 w-64 pointer-events-none z-[60]">
-        <div className="backdrop-blur-md bg-black/40 border border-[#00FFD1]/20 p-6 rounded-2xl">
-          <div className="flex items-center gap-3 mb-4">
-            <Trophy className="w-5 h-5 text-yellow-500" />
-            <h3 className="text-xs font-black text-white italic uppercase tracking-widest">Leaderboard</h3>
-          </div>
-          <div className="space-y-2">
-            {leaderboard.map((entry, idx) => (
-              <div 
-                key={idx}
-                className={`flex items-center justify-between p-2 rounded-lg text-[10px] font-mono ${
-                  entry.isPlayer ? 'bg-[#00FFD1]/10 text-[#00FFD1]' : 'text-white/40'
-                }`}
-              >
-                <span className="opacity-50">#{idx + 1}</span>
-                <span className="flex-1 px-3 truncate">{entry.name}</span>
-                {/* Score column: mass/score both online and in practice. */}
-                <span className="font-bold">{Math.floor(Number(entry.score ?? 0))}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+      {/* HUD: Top Right — the shared match leaderboard (pug HUD board).
+          DISPLAY ONLY: engine.leaderboard stays the gameplay table (bot AI,
+          the canvas Blitz zone reveal and the MiniMap all read its top-5),
+          and online code still writes the server board back into it. Mass
+          is the score column both online and in practice; each row's cell
+          color rides along as the dot. */}
+      <MatchLeaderboard
+        rows={leaderboard.map((entry) => ({
+          name: entry.name,
+          value: Math.floor(Number(entry.score ?? 0)),
+          isPlayer: !!entry.isPlayer,
+          color: entry.color,
+        }))}
+        valueLabel="MASS"
+        max={10}
+      />
 
       {/* Merge Hold Loader */}
       <AnimatePresence>
@@ -1649,7 +1753,11 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
         >
           {isFullscreen ? <Minimize className="w-6 h-6" /> : <Maximize className="w-6 h-6" />}
         </button>
-        <GameBackButton onClick={onExit} title="Exit Game" />
+        {/* Pug-style pause menu (inline pill — lives in this control
+            cluster). THE exit path; replaces the back chevron. Mid-match the
+            guard owns the click: confirm → forfeit → results → progression
+            → only then the exit runs. */}
+        <GamePauseMenu inline onExit={() => requestExit(onExit)} exitLabel="Exit Game" />
       </div>
 
       {/* Cashout Button for Free Play Wager */}
@@ -1690,19 +1798,18 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
       {/* ONLINE: matchmaking. Shown IMMEDIATELY on entry for slayer/lms —
           never waits for a server ack. free_play never shows this screen. */}
       {netSearching && isQueuedOnline && (
-        <div className="absolute inset-0 z-[95] bg-[#081616]/95 backdrop-blur-xl">
-          <SearchingForMatch
-            playersInQueue={netQueue.current}
-            playersNeeded={netQueue.needed}
-            subtitle={`Neon Cells · ${onlineLabel}`}
-            onCancel={() => {
-              netRef.current?.cancel();
-              netRef.current = null;
-              setNetSearching(false);
-              onExit();
-            }}
-          />
-        </div>
+        <SearchingForMatch
+          variant="overlay"
+          playersInQueue={netQueue.current}
+          playersNeeded={netQueue.needed}
+          subtitle={`Neon Cells · ${onlineLabel}`}
+          onCancel={() => {
+            netRef.current?.cancel();
+            netRef.current = null;
+            setNetSearching(false);
+            onExit();
+          }}
+        />
       )}
 
       {/* ONLINE (lobby modes): match found — the server's start countdown. */}
@@ -1811,7 +1918,7 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
             result={netResult}
             gameMode={onlineLabel}
             onRematch={resetGame}
-            onExit={onExit}
+            onExit={() => requestExit(onExit)}
           />
         )}
 
@@ -1826,11 +1933,27 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
             // Online stakes nothing — hide the Wagered/Payout rows.
             moneyless={isNetworkMode}
             kills={kills}
+            note={forfeited ? 'You left the match — counted as a loss' : null}
             onRematch={resetGame}
-            onExit={onExit}
+            onExit={() => requestExit(onExit)}
           />
         )}
       </AnimatePresence>
+
+      {/* Level progression, chained after the practice results screen.
+          Practice pays XP only (rank is null by construction); online
+          freeplay has no client progression payload today. When a
+          forfeit-exit is pending, its close cues the deferred navigation. */}
+      <PostGameProgression
+        progression={practiceProgression}
+        onDone={() => {
+          clearPracticeProgression();
+          finishExit();
+        }}
+      />
+
+      {/* Mid-run "are you sure? leaving forfeits" dialog (z-[130]). */}
+      {confirmDialog}
     </div>
   );
 };

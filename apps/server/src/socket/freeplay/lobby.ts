@@ -48,6 +48,7 @@ import { CellsWorld } from './cellsWorld'
 import {
   FREEPLAY_GAMES,
   LOBBY_MIN_PLAYERS,
+  LOBBY_MAX_PLAYERS,
   difficultyFor,
   queueModeKey,
   type FreeplayGame,
@@ -140,7 +141,10 @@ export async function findLobbyMatch(
     io,
     game,
     mode: queueMode, // FOUR distinct queues — never cross-matched
-    needed: LOBBY_MIN_PLAYERS, // contract: 2 so it is testable (cap 20)
+    needed: LOBBY_MIN_PLAYERS, // contract: 2 so it is testable
+    // 30-player lobbies: sweep every mutually-acceptable waiter into the
+    // match (queue-side gather hold makes bursts coalesce; see queue.ts).
+    maxPlayers: LOBBY_MAX_PLAYERS,
     // §5.3: pair on hidden skill from the 'ffa' pool — the SAME pool these
     // matches settle onto, and the same one quiz FFA uses. All four
     // sector×mode queues share it: a player's free-for-all skill does not

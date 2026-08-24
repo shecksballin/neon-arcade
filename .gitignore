@@ -10,3 +10,7 @@ coverage/
 
 # Cloudflare quick-tunnel run state (pids, logs, captured URLs)
 .tunnel/
+
+# Neon Kickoff raw asset sources (fbx/textures fed to tools/merge — 60MB+,
+# never loaded at runtime; the merged runtime glbs live in public/neon-kickoff)
+apps/web/src/components/neonKickoff/raw-assets/
