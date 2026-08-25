@@ -38,7 +38,7 @@ const GolfGame = ({ onExit, onGameStatusChange }: GolfGameProps) => {
 
   const handleMatched = useCallback((found: OnlineMatch) => setMatch(found), []);
   // findMatch / cancel / leaveMatch are stable, so the callbacks below are too.
-  const { searching, playersInQueue, playersNeeded, error, findMatch, cancel, leaveMatch } =
+  const { searching, playersInQueue, playersNeeded, error, findMatch, cancel, leaveMatch, voteOpen, votes, votesNeeded, voteStart } =
     useOnlineLobbyQueue('golf', handleMatched);
 
   // Publish the roster (localStorage + postMessage) while the online round runs.
@@ -95,9 +95,12 @@ const GolfGame = ({ onExit, onGameStatusChange }: GolfGameProps) => {
       <div className="w-full h-full">
         <SearchingForMatch
           variant="page"
-          // 1v1 — the counter is hidden unless the server asks for a bigger roster.
           playersInQueue={playersInQueue}
           playersNeeded={playersNeeded}
+          voteOpen={voteOpen}
+          votes={votes}
+          votesNeeded={votesNeeded}
+          onVoteStart={voteStart}
           onCancel={cancel}
         />
       </div>

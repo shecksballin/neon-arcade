@@ -331,7 +331,9 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
       {showPrivateWager && (
         <PrivateWagerRoom
           gameKey="pugshooter"
-          mode={mode}
+          /* FFA capacity is PER MAP (Neon Suburbs 30 / Cold Storage 10), so
+             the wire mode carries the selected map for FFA rooms. */
+          mode={mode === 'ffa' ? `ffa:${map}` : mode}
           onClose={() => setShowPrivateWager(false)}
         />
       )}

@@ -316,7 +316,13 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
   // Matchmaking (slayer/lms only) — set optimistically on entry, never
   // waiting for a server ack.
   const [netSearching, setNetSearching] = useState(false);
-  const [netQueue, setNetQueue] = useState({ current: 1, needed: 2 });
+  const [netQueue, setNetQueue] = useState({
+    current: 1,
+    needed: 2,
+    voteOpen: false,
+    votes: 0,
+    votesNeeded: 0,
+  });
   // Lobby-match lifecycle (waiting -> running -> ended) for the countdown.
   const [netMatch, setNetMatch] = useState<MatchState | null>(null);
   const [netError, setNetError] = useState<string | null>(null);
@@ -2339,7 +2345,7 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
     // OPTIMISTIC searching state — set on entry, NOT on a server ack. A
     // dropped/absent ack can no longer freeze the UI on the lobby.
     setNetSearching(onlineMode !== 'free_play');
-    setNetQueue({ current: 1, needed: 2 });
+    setNetQueue({ current: 1, needed: 2, voteOpen: false, votes: 0, votesNeeded: 0 });
     setNetMatch(null);
     setNetResult(null);
     setNetEliminated(false);
@@ -2403,7 +2409,14 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
     const net = new FreeplayNet('asteroids', onlineMode, onlineSector);
     netRef.current = net;
     net.join({
-      onQueue: ({ current, needed }) => setNetQueue({ current, needed }),
+      onQueue: ({ current, needed, voteOpen, votes, votesNeeded }) =>
+        setNetQueue({
+          current,
+          needed,
+          voteOpen: voteOpen === true,
+          votes: votes ?? 0,
+          votesNeeded: votesNeeded ?? 0,
+        }),
       onJoined: (info) => {
         // The zone ruleset the server is actually simulating.
         if (typeof info.difficulty === 'number') {
@@ -2992,6 +3005,10 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
           variant="overlay"
           playersInQueue={netQueue.current}
           playersNeeded={netQueue.needed}
+          voteOpen={netQueue.voteOpen}
+          votes={netQueue.votes}
+          votesNeeded={netQueue.votesNeeded}
+          onVoteStart={() => netRef.current?.voteStart()}
           subtitle={`Neon Asteroids · ${onlineLabel}`}
           onCancel={() => {
             netRef.current?.cancel();

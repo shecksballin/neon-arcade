@@ -64,24 +64,35 @@ const PugShooterGame = ({ onExit, profile, onGameStatusChange }: PugShooterGameP
     // private:started, both players were dumped back on the lobby, and the
     // orphaned server match corrupted later queues. The server's match mode
     // is authoritative; map/difficulty fall back to defaults.
+    // The server's mode may be an ffa:<map> composite (per-map lobbies).
+    const [rawMode, rawMap] = String(found.mode).split(':');
     const serverMode = (['ffa', 'duel', 'duo'] as const).includes(
-      found.mode as PugShooterMatchConfig['mode']
+      rawMode as PugShooterMatchConfig['mode']
     )
-      ? (found.mode as PugShooterMatchConfig['mode'])
+      ? (rawMode as PugShooterMatchConfig['mode'])
       : 'ffa';
+    const serverMap = (['city', 'warehouse'] as const).includes(
+      rawMap as PugShooterMatchConfig['map']
+    )
+      ? (rawMap as PugShooterMatchConfig['map'])
+      : undefined;
     // The SERVER's mode is authoritative. The stored lobby loadout only
     // contributes its map/difficulty when its mode agrees — a stale public
     // DUEL loadout must never boot a private FFA as a 1v1.
     const stored = queuedConfig.current;
     setOnlineConfig(
-      stored && stored.mode === serverMode
+      stored && stored.mode === serverMode && (!serverMap || stored.map === serverMap)
         ? stored
-        : { mode: serverMode, map: stored?.map ?? 'city', difficulty: stored?.difficulty ?? 'normal' }
+        : {
+            mode: serverMode,
+            map: serverMap ?? stored?.map ?? 'city',
+            difficulty: stored?.difficulty ?? 'normal',
+          }
     );
     setMatch(found);
   }, []);
   // findMatch / cancel / leaveMatch are stable, so the callbacks below are too.
-  const { searching, playersInQueue, playersNeeded, error, findMatch, cancel, leaveMatch } =
+  const { searching, playersInQueue, playersNeeded, error, findMatch, cancel, leaveMatch, voteOpen, votes, votesNeeded, voteStart } =
     useOnlineLobbyQueue('pugshooter', handleMatched);
 
   useOnlineMatchBridge(match);
@@ -103,7 +114,9 @@ const PugShooterGame = ({ onExit, profile, onGameStatusChange }: PugShooterGameP
   const findOnline = useCallback(
     (config: PugShooterMatchConfig) => {
       queuedConfig.current = config;
-      findMatch(config.mode);
+      // FFA queues are PER MAP (different lobby sizes) — the wire mode
+      // carries the map; duel/duo stay plain.
+      findMatch(config.mode === 'ffa' ? `ffa:${config.map}` : config.mode);
     },
     [findMatch]
   );
@@ -147,6 +160,10 @@ const PugShooterGame = ({ onExit, profile, onGameStatusChange }: PugShooterGameP
           playersInQueue={playersInQueue}
           // Only show PLAYERS: n / N when the mode wants more than a pair.
           playersNeeded={playersNeeded}
+          voteOpen={voteOpen}
+          votes={votes}
+          votesNeeded={votesNeeded}
+          onVoteStart={voteStart}
           onCancel={cancel}
         />
       </div>

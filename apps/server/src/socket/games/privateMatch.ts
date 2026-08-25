@@ -235,10 +235,15 @@ const CATALOG: Record<string, Record<string, GameModeSpec>> = {
 
   // ── iframe lobby games ────────────────────────────────────────────────
   golf: { classic: lobbyMode('golf') },
-  // FFA: seats 6 friends, starts when all present (>=2) are ready.
-  clumsy: { classic: lobbyMode('clumsy', 6) },
+  // FFA: seats 12 friends, starts when all present (>=2) are ready.
+  clumsy: { classic: lobbyMode('clumsy', 12) },
   pugshooter: {
-    ffa: lobbyMode('pugshooter', 6), // FFA: up to 6, starts at 2+
+    // FFA is PER MAP — the map is part of the mode key and sets the seats:
+    // Neon Suburbs (city) 30, Cold Storage (warehouse) 10. Starts at 2+.
+    'ffa:city': lobbyMode('pugshooter', 30),
+    'ffa:warehouse': lobbyMode('pugshooter', 10),
+    // Legacy bare 'ffa' invites resolve to Neon Suburbs.
+    ffa: lobbyMode('pugshooter', 30),
     duel: lobbyMode('pugshooter'), // strict 1v1
     duo: lobbyMode('pugshooter', 4, 4), // 2v2: EXACTLY 4 to start
   },

@@ -350,7 +350,13 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
   // Matchmaking (slayer/lms only) — set optimistically on entry, never
   // waiting for a server ack.
   const [netSearching, setNetSearching] = useState(false);
-  const [netQueue, setNetQueue] = useState({ current: 1, needed: 2 });
+  const [netQueue, setNetQueue] = useState({
+    current: 1,
+    needed: 2,
+    voteOpen: false,
+    votes: 0,
+    votesNeeded: 0,
+  });
   // Lobby-match lifecycle (waiting -> running -> ended) for the countdown.
   const [netMatch, setNetMatch] = useState<MatchState | null>(null);
   const [netError, setNetError] = useState<string | null>(null);
@@ -1301,7 +1307,7 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
     // dropped/absent ack can no longer freeze the UI on the lobby.
     const queued = onlineMode !== 'free_play';
     setNetSearching(queued);
-    setNetQueue({ current: 1, needed: 2 });
+    setNetQueue({ current: 1, needed: 2, voteOpen: false, votes: 0, votesNeeded: 0 });
     setNetMatch(null);
 
     netRef.current?.dispose(); // safety: never stack two sessions
@@ -1310,7 +1316,14 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
     const net = new FreeplayNet('cells', onlineMode, onlineSector);
     netRef.current = net;
     net.join({
-      onQueue: ({ current, needed }) => setNetQueue({ current, needed }),
+      onQueue: ({ current, needed, voteOpen, votes, votesNeeded }) =>
+        setNetQueue({
+          current,
+          needed,
+          voteOpen: voteOpen === true,
+          votes: votes ?? 0,
+          votesNeeded: votesNeeded ?? 0,
+        }),
       onJoined: (info) => {
         // The server's world size wins over the canvas-derived local guess
         // (in the same scaled units as every other server length).
@@ -1824,6 +1837,10 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
           variant="overlay"
           playersInQueue={netQueue.current}
           playersNeeded={netQueue.needed}
+          voteOpen={netQueue.voteOpen}
+          votes={netQueue.votes}
+          votesNeeded={netQueue.votesNeeded}
+          onVoteStart={() => netRef.current?.voteStart()}
           subtitle={`Neon Cells · ${onlineLabel}`}
           onCancel={() => {
             netRef.current?.cancel();

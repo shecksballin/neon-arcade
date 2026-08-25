@@ -142,9 +142,11 @@ export async function findLobbyMatch(
     game,
     mode: queueMode, // FOUR distinct queues — never cross-matched
     needed: LOBBY_MIN_PLAYERS, // contract: 2 so it is testable
-    // 30-player lobbies: sweep every mutually-acceptable waiter into the
-    // match (queue-side gather hold makes bursts coalesce; see queue.ts).
+    // 30-player lobbies, FILL-FIRST: the queue holds for a full world;
+    // 3+ waiting for a minute may majority-vote an early start, and the
+    // 2-minute fallback starts whoever is there (queue.ts constants).
     maxPlayers: LOBBY_MAX_PLAYERS,
+    fillFirst: true,
     // §5.3: pair on hidden skill from the 'ffa' pool — the SAME pool these
     // matches settle onto, and the same one quiz FFA uses. All four
     // sector×mode queues share it: a player's free-for-all skill does not

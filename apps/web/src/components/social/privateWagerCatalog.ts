@@ -122,13 +122,14 @@ export const PRIVATE_WAGER_GAMES: PrivateWagerGame[] = [
   {
     key: 'clumsy',
     title: 'Neon Clumsy',
-    modes: [{ id: 'classic', label: 'Run', hint: 'last mummy standing · up to 6', capacity: 6 }],
+    modes: [{ id: 'classic', label: 'Run', hint: 'last mummy standing · up to 12', capacity: 12 }],
   },
   {
     key: 'pugshooter',
     title: 'Neon Pug Shooter',
     modes: [
-      { id: 'ffa', label: 'Free For All', hint: 'everyone for themselves', capacity: 6 },
+      { id: 'ffa:city', label: 'FFA · Neon Suburbs', hint: 'open streets · up to 30', capacity: 30 },
+      { id: 'ffa:warehouse', label: 'FFA · Cold Storage', hint: 'close quarters · up to 10', capacity: 10 },
       { id: 'duel', label: '1v1 Duel', hint: 'one on one', capacity: 2 },
       { id: 'duo', label: '2v2 Teams', hint: 'four players, two sides', capacity: 4, minPlayers: 4 },
     ],

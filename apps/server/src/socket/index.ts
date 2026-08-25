@@ -38,6 +38,7 @@ import { registerVolley } from './games/volley'
 import { registerKickoff } from './games/kickoff'
 import { registerLobbyGames } from './games/lobbyGames'
 import { registerPrivateMatch } from './games/privateMatch'
+import { registerQueueVotes } from './queue'
 import { registerFreeplay, shutdownFreeplay } from './freeplay'
 
 // ---------------------------------------------------------------------------
@@ -90,6 +91,8 @@ export function attachSocketHandlers(io: Server) {
     // private start drives those modules' OWN matchmaking listeners, which
     // must already be attached to this socket by then.
     registerPrivateMatch(io, socket)
+    // FFA early-start votes (fill-first public queues).
+    registerQueueVotes(io, socket)
   })
 
   // Anonymous active-user counter on its own namespace — no token needed.

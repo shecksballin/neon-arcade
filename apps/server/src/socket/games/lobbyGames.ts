@@ -65,12 +65,17 @@ export type LobbyGameId = 'golf' | 'clumsy' | 'pugshooter'
  */
 const LOBBY_GAME_MODES: Record<
   LobbyGameId,
-  Record<string, { needed: number; maxPlayers: number }>
+  Record<string, { needed: number; maxPlayers: number; fillFirst?: boolean }>
 > = {
   golf: { classic: { needed: 2, maxPlayers: 2 } },
-  clumsy: { classic: { needed: 2, maxPlayers: 6 } },
+  // FFA lobbies are FILL-FIRST: hold for a full house, majority-vote or the
+  // 2-minute fallback starts early (queue.ts).
+  clumsy: { classic: { needed: 2, maxPlayers: 12, fillFirst: true } },
   pugshooter: {
-    ffa: { needed: 2, maxPlayers: 6 },
+    // Per-map FFA capacities — the map IS part of the queue key:
+    // Cold Storage (warehouse) seats 10, Neon Suburbs (city) seats 30.
+    'ffa:city': { needed: 2, maxPlayers: 30, fillFirst: true },
+    'ffa:warehouse': { needed: 2, maxPlayers: 10, fillFirst: true },
     duel: { needed: 2, maxPlayers: 2 },
     duo: { needed: 4, maxPlayers: 4 },
   },
@@ -80,7 +85,13 @@ const LOBBY_GAME_MODES: Record<
 const DEFAULT_MODE: Record<LobbyGameId, string> = {
   golf: 'classic',
   clumsy: 'classic',
-  pugshooter: 'ffa',
+  pugshooter: 'ffa:city',
+}
+
+/** Legacy/loose mode names → canonical queue keys. */
+const MODE_ALIASES: Record<string, string> = {
+  // A bare 'ffa' (older clients, or a map-less payload) plays Neon Suburbs.
+  ffa: 'ffa:city',
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +151,8 @@ const matchBySocket = new Map<string, string>()
 /** Normalise a requested mode to one this game actually offers. */
 function resolveMode(game: LobbyGameId, requested?: string): string {
   const modes = LOBBY_GAME_MODES[game]
-  return requested && requested in modes ? requested : DEFAULT_MODE[game]
+  const canonical = requested ? (MODE_ALIASES[requested] ?? requested) : undefined
+  return canonical && canonical in modes ? canonical : DEFAULT_MODE[game]
 }
 
 /**
@@ -303,7 +315,7 @@ export function registerLobbyGames(io: Server, socket: Socket): void {
 
     const game = parsed.data.game
     const mode = resolveMode(game, parsed.data.mode)
-    const { needed, maxPlayers } = LOBBY_GAME_MODES[game][mode]!
+    const { needed, maxPlayers, fillFirst } = LOBBY_GAME_MODES[game][mode]!
 
     // ALREADY IN A LIVE MATCH OF THIS GAME+MODE? Re-send the handshake rather
     // than tearing it down and queueing again.
@@ -338,6 +350,7 @@ export function registerLobbyGames(io: Server, socket: Socket): void {
       mode,
       needed,
       maxPlayers,
+      fillFirst: fillFirst === true,
       onMatch: startLobbyMatch,
     })
   })

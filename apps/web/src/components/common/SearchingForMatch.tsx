@@ -38,6 +38,16 @@ export interface SearchingForMatchProps {
   /** Escape hatch for the outer wrapper (sizing/positioning in odd layouts). */
   className?: string;
   /**
+   * FFA early-start vote (fill-first queues). When the server opens the
+   * window (3+ waiting for a minute) the parent passes voteOpen=true and
+   * the live tally; pressing the button casts this player's single vote —
+   * a majority starts the match with everyone currently queued.
+   */
+  voteOpen?: boolean;
+  votes?: number;
+  votesNeeded?: number;
+  onVoteStart?: () => void;
+  /**
    * Who owns the chrome around the radar. Pass one of these instead of
    * hand-rolling a wrapper — this is what makes the screen IDENTICAL across
    * games:
@@ -62,7 +72,12 @@ export function SearchingForMatch({
   subtitle = 'Waiting for real opponents to join the grid',
   className = '',
   variant,
+  voteOpen = false,
+  votes = 0,
+  votesNeeded = 0,
+  onVoteStart,
 }: SearchingForMatchProps) {
+  const [voted, setVoted] = useState(false);
   // Cosmetic only — reassures the player that the screen is alive while the
   // queue fills. Not used for any timeout logic; the parent owns that.
   const [elapsed, setElapsed] = useState(0);
@@ -177,6 +192,25 @@ export function SearchingForMatch({
       <p className="mt-2 font-mono text-[10px] tracking-[0.3em] uppercase text-white/25">
         Elapsed {mm}:{ss}
       </p>
+
+      {/* ── Early-start vote (fill-first FFA queues) ───────────────── */}
+      {voteOpen && onVoteStart && (
+        <button
+          type="button"
+          onClick={() => {
+            setVoted(true);
+            onVoteStart();
+          }}
+          disabled={voted}
+          className={`mt-6 px-8 py-2.5 rounded-xl font-mono text-[11px] uppercase tracking-[0.25em] transition-all ${
+            voted
+              ? 'border border-[#00FFD1]/25 text-[#00FFD1]/50 cursor-default'
+              : 'border border-[#00FFD1] bg-[#00FFD1]/10 text-[#00FFD1] hover:bg-[#00FFD1]/20 hover:shadow-[0_0_18px_rgba(0,255,209,0.35)] cursor-pointer'
+          }`}
+        >
+          {voted ? `Voted — ${votes}/${votesNeeded} to start` : `Start now (${votes}/${votesNeeded} votes)`}
+        </button>
+      )}
 
       {/* ── Cancel — leaves the queue, returns to the lobby ────────── */}
       <button

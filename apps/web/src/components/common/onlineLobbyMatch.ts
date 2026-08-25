@@ -88,6 +88,12 @@ export interface OnlineLobbyQueue {
   cancel: () => void;
   /** Tell the server we walked away from a started match. */
   leaveMatch: (matchId?: string) => void;
+  /** FFA early-start vote state (fill-first queues; see SearchingForMatch). */
+  voteOpen: boolean;
+  votes: number;
+  votesNeeded: number;
+  /** Cast this player's early-start vote. */
+  voteStart: () => void;
 }
 
 /**
@@ -99,6 +105,7 @@ export function useOnlineLobbyQueue(
   onMatched: (match: OnlineMatch) => void
 ): OnlineLobbyQueue {
   const [searching, setSearching] = useState(false);
+  const [vote, setVote] = useState({ open: false, votes: 0, needed: 0 });
   const [playersInQueue, setPlayersInQueue] = useState(1);
   const [playersNeeded, setPlayersNeeded] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -163,6 +170,15 @@ export function useOnlineLobbyQueue(
     if (socket.connected) socket.emit('lobbyGame:leaveMatch', { matchId });
   }, []);
 
+  /** One early-start YES vote; the server ignores it unless the window is
+   *  open and we are genuinely queued (see queue.ts registerQueueVotes). */
+  const voteStart = useCallback(() => {
+    const socket = getSocket();
+    if (socket.connected) {
+      socket.emit('queue:voteStart', { game, mode: modeRef.current });
+    }
+  }, [game]);
+
   useEffect(() => {
     const socket = getSocket();
 
@@ -171,13 +187,22 @@ export function useOnlineLobbyQueue(
       inQueue?: boolean;
       current?: number;
       needed?: number;
+      voteOpen?: boolean;
+      votes?: number;
+      votesNeeded?: number;
     }) => {
       if (data?.game !== game) return; // another game's queue — ignore
       if (data.inQueue) {
         setPlayersInQueue(Math.max(1, data.current ?? 1));
         setPlayersNeeded(data.needed ?? 0);
+        setVote({
+          open: data.voteOpen === true,
+          votes: data.votes ?? 0,
+          needed: data.votesNeeded ?? 0,
+        });
         return;
       }
+      setVote({ open: false, votes: 0, needed: 0 });
       // Not queued. Ignore if we've re-joined since the leave that caused it
       // (see lastFindAt/lastLeaveAt above); otherwise the server dropped our
       // slot (cancel elsewhere, another session displaced us) — stop spinning.
@@ -243,6 +268,10 @@ export function useOnlineLobbyQueue(
     findMatch,
     cancel,
     leaveMatch,
+    voteOpen: vote.open,
+    votes: vote.votes,
+    votesNeeded: vote.needed,
+    voteStart,
   };
 }
 

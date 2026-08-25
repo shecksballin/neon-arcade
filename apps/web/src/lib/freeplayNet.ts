@@ -323,6 +323,10 @@ export interface FreeplayQueueStatus {
   inQueue: boolean;
   current: number;
   needed: number;
+  /** FFA early-start vote (fill-first queues; see SearchingForMatch). */
+  voteOpen?: boolean;
+  votes?: number;
+  votesNeeded?: number;
 }
 
 /** Server->client session events a game component can subscribe to. */
@@ -663,6 +667,9 @@ export class FreeplayNet {
         inQueue: !!p.inQueue,
         current: Math.max(0, Number(p.current ?? 0)),
         needed: Math.max(2, Number(p.needed ?? 2)),
+        voteOpen: p.voteOpen === true,
+        votes: Math.max(0, Number(p.votes ?? 0)),
+        votesNeeded: Math.max(0, Number(p.votesNeeded ?? 0)),
       };
       this.queue = status;
       // A server-side dequeue (cancel echo, displaced slot) drops the screen;
@@ -886,6 +893,15 @@ export class FreeplayNet {
    * even if we think we are not queued — a leaked server-side slot is exactly
    * what made re-searching fail before.
    */
+  /** Cast this player's FFA early-start vote (fill-first queues). */
+  voteStart(): void {
+    const socket = this.socket;
+    if (!socket?.connected) return;
+    // The queue key is the `${sector}:${mode}` composite (freeplay/lobby.ts).
+    const wireMode = this.sector ? `${this.sector}:${this.mode}` : this.mode;
+    socket.emit('queue:voteStart', { game: this.game, mode: wireMode });
+  }
+
   cancel(): void {
     if (this.socket.connected) {
       this.socket.emit('freeplay:cancel', this.cancelPayload());

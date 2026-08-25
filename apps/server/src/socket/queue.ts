@@ -179,6 +179,20 @@ export const LOBBY_GATHER_MS = 4_000
  *  public pool rather than waiting forever on a partner who never arrived. */
 export const PARTY_GRACE_MS = 15_000
 
+// --- FILL-FIRST QUEUES (public FFA lobbies) --------------------------------
+// These queues try to FILL toward maxPlayers instead of starting at `needed`:
+// a 30-seat world starting with 2 people forever defeats the point of big
+// lobbies. Three ways out of the wait:
+//   1. the queue reaches maxPlayers — start immediately;
+//   2. EARLY-START VOTE: once 3+ people have been waiting and the longest
+//      waiter passes a minute, members may vote; a majority starts the match
+//      with everyone currently queued;
+//   3. safety fallback: nobody should wait forever — after FILL_FALLBACK_MS
+//      the match starts with whoever is there (>= needed).
+export const VOTE_MIN_MEMBERS = 3
+export const VOTE_OPEN_AFTER_MS = 60_000
+export const FILL_FALLBACK_MS = 120_000
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -207,6 +221,10 @@ export interface QueueStatusPayload {
   inQueue: boolean
   current: number
   needed: number
+  /** Fill-first FFA queues: the early-start vote state. */
+  voteOpen?: boolean
+  votes?: number
+  votesNeeded?: number
 }
 
 /**
@@ -307,6 +325,9 @@ export interface JoinQueueOptions<Meta = undefined> {
    * default is `needed`, which is the pre-big-lobby behaviour byte for byte.
    */
   maxPlayers?: number
+  /** Public FFA lobbies: wait to FILL (vote / fallback to start early)
+   *  instead of starting the moment `needed` players exist. */
+  fillFirst?: boolean
   onMatch: QueueMatchHandler<Meta>
   meta?: Meta
   /**
@@ -324,6 +345,36 @@ export interface JoinQueueOptions<Meta = undefined> {
   joinRoom?: boolean
   /** Skip the "must have a registered username" gate (default false). */
   allowGuests?: boolean
+}
+
+/**
+ * C→S `queue:voteStart { game, mode }` — an early-start YES vote from a
+ * queued player. Server-authoritative: only counted from a wallet actually
+ * in that queue's public pool while the vote window is open (3+ waiting,
+ * oldest >= a minute). One vote per wallet; votes of leavers evaporate.
+ * Wire this via registerQueueVotes in socket/index.ts.
+ */
+const voteSchema = z.object({
+  game: z.string().min(1).max(32),
+  mode: z.string().min(1).max(48),
+})
+
+export function registerQueueVotes(io: Server, socket: Socket): void {
+  socket.on('queue:voteStart', (payload: unknown) => {
+    const parsed = voteSchema.safeParse(payload)
+    if (!parsed.success) return
+    const wallet = socket.data.wallet as string | undefined
+    if (!wallet) return
+    const record = queues.get(keyOf(parsed.data.game as QueueGame, parsed.data.mode))
+    if (!record || !record.fillFirst) return
+    if (!voteOpen(record, Date.now())) return
+    if (!publicPool(record).some((e) => e.wallet === wallet)) return
+    if (record.votes.has(wallet)) return
+    record.votes.add(wallet)
+    // Everyone waiting sees the new tally; a passed vote starts on the spot.
+    broadcastCounts(io, record)
+    if (record.handoff) void formMatch(io, record, record.handoff)
+  })
 }
 
 export interface LeaveQueueOptions {
@@ -393,6 +444,12 @@ interface QueueRecord {
   needed: number
   /** Sweep ceiling (>= needed); equal to `needed` for exact-size queues. */
   maxPlayers: number
+  /** Fill-toward-max queue with the early-start vote (see constants above). */
+  fillFirst: boolean
+  /** Early-start votes, by wallet. Pruned to current members on every count. */
+  votes: Set<string>
+  /** voteOpen edge detection so the transition gets a status broadcast. */
+  voteAnnounced: boolean
   /** Skill pool to pair on; null = plain FIFO (the pre-Ranked-2.0 behaviour). */
   ladder: RankLadder | null
   entries: QueuePlayer<unknown>[]
@@ -520,7 +577,8 @@ function getRecord(
   mode: string,
   needed: number,
   maxPlayers: number,
-  ladder: RankLadder | null = null
+  ladder: RankLadder | null = null,
+  fillFirst = false
 ): QueueRecord {
   const key = keyOf(game, mode)
   let record = queues.get(key)
@@ -530,6 +588,9 @@ function getRecord(
       mode,
       needed,
       maxPlayers,
+      fillFirst,
+      votes: new Set(),
+      voteAnnounced: false,
       ladder,
       entries: [],
       handoff: null,
@@ -542,8 +603,40 @@ function getRecord(
     record.needed = needed
     record.maxPlayers = maxPlayers
     record.ladder = ladder
+    record.fillFirst = fillFirst
   }
   return record
+}
+
+/** The public (non-party) pool of a record. */
+function publicPool(record: QueueRecord): QueuePlayer<unknown>[] {
+  return record.entries.filter((entry) => !entry.party)
+}
+
+/** Oldest join among the given entries (Infinity when empty). */
+function oldestJoin(entries: QueuePlayer<unknown>[]): number {
+  let oldest = Infinity
+  for (const e of entries) if (e.joinedAt < oldest) oldest = e.joinedAt
+  return oldest
+}
+
+/** Is the early-start vote OPEN for this fill-first queue right now? */
+function voteOpen(record: QueueRecord, now: number): boolean {
+  if (!record.fillFirst) return false
+  const pool = publicPool(record)
+  return pool.length >= VOTE_MIN_MEMBERS && now - oldestJoin(pool) >= VOTE_OPEN_AFTER_MS
+}
+
+/** Current YES votes among people actually still queued (stale votes drop). */
+function liveVotes(record: QueueRecord): number {
+  const wallets = new Set(publicPool(record).map((e) => e.wallet))
+  for (const w of [...record.votes]) if (!wallets.has(w)) record.votes.delete(w)
+  return record.votes.size
+}
+
+/** Majority threshold for the early-start vote. */
+function votesNeeded(record: QueueRecord): number {
+  return Math.floor(publicPool(record).length / 2) + 1
 }
 
 /** Drop entries whose socket is gone. Returns true when anything changed. */
@@ -560,6 +653,7 @@ function statusPayload(
   record: QueueRecord,
   inQueue: boolean
 ): QueueStatusPayload {
+  const open = voteOpen(record, Date.now())
   return {
     game: record.game,
     mode: record.mode,
@@ -569,6 +663,15 @@ function statusPayload(
     // for big-lobby sweep queues it is the world cap ("PLAYERS 3/30"), since
     // "n / 2" would overflow the moment a third player gathers.
     needed: record.maxPlayers,
+    // Early-start vote (fill-first FFA queues only). Clients render the
+    // "start now" button on voteOpen and show votes/votesNeeded.
+    ...(record.fillFirst
+      ? {
+          voteOpen: open,
+          votes: open ? liveVotes(record) : 0,
+          votesNeeded: open ? votesNeeded(record) : 0,
+        }
+      : {}),
   }
 }
 
@@ -684,17 +787,24 @@ function selectPlayers(record: QueueRecord, now: number): QueuePlayer<unknown>[]
   const pool = record.entries.filter((entry) => !entry.party)
   if (pool.length < record.needed) return null
 
-  // Big-lobby gather hold: enough players to start, but room for more. Wait
-  // LOBBY_GATHER_MS from the LONGEST waiter's join before committing, so a
-  // burst of joiners coalesces into one world. A full house skips the hold,
-  // and the retry heartbeat guarantees the deferred attempt happens.
-  if (
+  if (record.fillFirst && pool.length < record.maxPlayers) {
+    // FILL-FIRST: hold for a full lobby unless the players opt out.
+    const waited = now - oldestJoin(pool)
+    const votePassed =
+      voteOpen(record, now) && liveVotes(record) >= votesNeeded(record)
+    const fallback = waited >= FILL_FALLBACK_MS
+    if (!votePassed && !fallback) return null
+    // Starting early consumes the votes — a fresh queue votes afresh.
+    record.votes.clear()
+    record.voteAnnounced = false
+  } else if (
     record.maxPlayers > record.needed &&
     pool.length < record.maxPlayers &&
     // Not pool[0]: a re-join re-appends its entry while KEEPING the
     // original joinedAt, so position is not wait order.
     now - Math.min(...pool.map((e) => e.joinedAt)) < LOBBY_GATHER_MS
   ) {
+    // Big-lobby gather hold (non-fill-first): a 4s burst-coalescing pause.
     return null
   }
 
@@ -732,6 +842,7 @@ function scheduleRetry(io: Server, record: QueueRecord): void {
   // re-runs the matcher anyway.
   if (
     !record.ladder &&
+    !record.fillFirst &&
     record.maxPlayers === record.needed &&
     !record.entries.some((entry) => entry.party)
   ) {
@@ -751,6 +862,12 @@ function scheduleRetry(io: Server, record: QueueRecord): void {
 async function runRetry(io: Server, record: QueueRecord): Promise<void> {
   const handoff = record.handoff
   if (!handoff) return
+  // The vote window opens on the CLOCK, not on an event — announce the
+  // transition so every waiting client grows its "start now" button.
+  if (record.fillFirst && !record.voteAnnounced && voteOpen(record, Date.now())) {
+    record.voteAnnounced = true
+    broadcastCounts(io, record)
+  }
   try {
     await formMatch(io, record, handoff)
   } catch (err) {
@@ -928,7 +1045,7 @@ export async function joinQueue<Meta = undefined>(
     needed,
     Math.min(options.maxPlayers ?? needed, MAX_PLAYERS)
   )
-  const record = getRecord(game, mode, needed, maxPlayers, ladder)
+  const record = getRecord(game, mode, needed, maxPlayers, ladder, options.fillFirst === true)
   // Remember how to finish a match without a fresh join event (see runRetry).
   record.handoff = {
     onMatch: onMatch as QueueMatchHandler<unknown>,
