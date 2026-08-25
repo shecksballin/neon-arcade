@@ -19,9 +19,17 @@ export interface OnlineMatchBannerProps {
   match: OnlineMatch;
   /** Milliseconds before it fades out (0 keeps it up). */
   duration?: number;
+  /** 'top' (default) or 'bottom' — a PERSISTENT banner must sit where the
+   *  game's own HUD isn't (golf's round timer and clumsy's players-left
+   *  panel both live top-centre). */
+  placement?: 'top' | 'bottom';
 }
 
-export function OnlineMatchBanner({ match, duration = 9000 }: OnlineMatchBannerProps) {
+export function OnlineMatchBanner({
+  match,
+  duration = 9000,
+  placement = 'top',
+}: OnlineMatchBannerProps) {
   const [visible, setVisible] = useState(true);
 
   useEffect(() => {
@@ -35,7 +43,9 @@ export function OnlineMatchBanner({ match, duration = 9000 }: OnlineMatchBannerP
   const opponents = match.players.filter((p) => !p.you).map((p) => p.name);
 
   return (
-    <div className="absolute top-6 left-1/2 -translate-x-1/2 z-40 pointer-events-none max-w-[90vw]">
+    <div
+      className={`absolute ${placement === 'bottom' ? 'bottom-6' : 'top-6'} left-1/2 -translate-x-1/2 z-40 pointer-events-none max-w-[90vw]`}
+    >
       <div className="px-5 py-3 rounded-2xl border border-[#00FFD1]/40 bg-[#041010]/90 backdrop-blur-md shadow-[0_0_30px_rgba(0,255,209,0.18)] text-center">
         <p className="flex items-center justify-center gap-2 text-[10px] font-mono uppercase tracking-[0.3em] text-[#00FFD1]">
           <Users className="w-3.5 h-3.5" />
@@ -44,9 +54,10 @@ export function OnlineMatchBanner({ match, duration = 9000 }: OnlineMatchBannerP
         <p className="mt-1.5 text-white font-black uppercase italic tracking-tighter text-lg leading-none">
           {opponents.length > 0 ? `You vs ${opponents.join(' · ')}` : 'You'}
         </p>
-        {/* Honesty line — the queue is real, the simulation is not synced yet. */}
+        {/* Honesty line — the queue and the verdict are real; each player's
+            round still runs locally and the scores get compared. */}
         <p className="mt-2 text-[9px] font-mono uppercase tracking-[0.22em] text-[#B1C5FF]/45">
-          Matched live · this round still runs on your machine
+          Matched live · everyone plays their own round · highest score wins
         </p>
       </div>
     </div>

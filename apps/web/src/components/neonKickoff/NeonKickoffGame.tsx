@@ -289,6 +289,31 @@ export default function NeonKickoffGame({
     }
   }, [screen, phase, armRound]);
 
+  // ESC toggles the game's pause overlay while a round is live (the old
+  // Menu pill's exact conditions). The overlay's own Resume/quit buttons
+  // handle the rest; togglePause is idempotent about re-entry.
+  //
+  // ‼️ HOOK ORDER: this block MUST live above the early `if (view === …)`
+  // returns below. It used to sit after them, so leaving the lobby changed
+  // the number of hooks between renders and React threw ("rendered more
+  // hooks than during the previous render") the moment ANY match started —
+  // practice, wager and private wager alike. tsc cannot catch this.
+  const canPause = screen === 'game' && phase !== 'over';
+  const canPauseRef = useRef(false);
+  canPauseRef.current = canPause;
+  useEffect(() => {
+    if (!(view === 'practice' || view === 'online')) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.repeat) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+      if (!canPauseRef.current) return;
+      useGame.getState().togglePause();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [view]);
+
   // ── views ─────────────────────────────────────────────────────────────
 
   if (view === 'lobby') {
@@ -409,24 +434,6 @@ export default function NeonKickoffGame({
   }
 
   // practice + online share the PenaltyCore mount.
-  // ESC toggles the game's pause overlay while a round is live (the old
-  // Menu pill's exact conditions). The overlay's own Resume/quit buttons
-  // handle the rest; togglePause is idempotent about re-entry.
-  const canPause = screen === 'game' && phase !== 'over';
-  useEffect(() => {
-    if (!(view === 'practice' || view === 'online')) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.repeat) return;
-      const el = e.target as HTMLElement | null;
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
-      if (!canPauseRef.current) return;
-      useGame.getState().togglePause();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [view]);
-  const canPauseRef = useRef(false);
-  canPauseRef.current = canPause;
   const onlineOver = view === 'online' && phase === 'over';
 
   return (

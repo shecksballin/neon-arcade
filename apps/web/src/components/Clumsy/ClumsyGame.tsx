@@ -8,7 +8,9 @@ import {
   useOnlineLobbyQueue,
   useOnlineMatchBridge,
   type OnlineMatch,
+  useLobbyScoreDuel,
 } from '../common/onlineLobbyMatch';
+import LobbyDuelResults from '../common/LobbyDuelResults';
 
 // Lazy-loaded so the heavy three.js + Rapier game bundle is only fetched when
 // the player starts a match, keeping the arcade's initial load fast. The queue
@@ -54,6 +56,13 @@ const ClumsyGame = ({ onExit, profile, onGameStatusChange }: ClumsyGameProps) =>
 
   useOnlineMatchBridge(match);
 
+  // Score duel: forward the iframe's end-of-round score, receive the verdict.
+  const { duelEnd, clearDuelEnd, playerLeft } = useLobbyScoreDuel(
+    match,
+    'neon-clumsy:result',
+    (d) => Number((d as {tiles?: number}).tiles ?? 0)
+  );
+
   const playing = practice || match !== null;
 
   React.useEffect(() => {
@@ -74,7 +83,15 @@ const ClumsyGame = ({ onExit, profile, onGameStatusChange }: ClumsyGameProps) =>
               under the arcade profile name. */}
           <ClumsyPlay onExit={leaveRound} playerName={profile?.name} />
         </Suspense>
-        {match && <OnlineMatchBanner match={match} />}
+        {match && <OnlineMatchBanner match={match} duration={0} placement="bottom" />}
+        {match && playerLeft && !duelEnd && (
+          <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 pointer-events-none rounded-full border border-[#FF6B9A]/40 bg-black/70 px-4 py-1.5 font-mono text-[10px] uppercase tracking-[0.25em] text-[#FF6B9A]">
+            {playerLeft} left the match
+          </div>
+        )}
+        {duelEnd && (
+          <LobbyDuelResults end={duelEnd} onExit={leaveRound} onDismiss={clearDuelEnd} />
+        )}
       </div>
     );
   }

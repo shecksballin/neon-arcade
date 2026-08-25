@@ -235,6 +235,10 @@ export interface QueuePlayer<Meta = undefined> extends SkillQueueEntry {
    * hold). Null for every ordinary public join.
    */
   party: string | null
+  /** How many members this party has IN TOTAL — the match waits for all of
+   *  them, then takes the whole party in one group (a 3-friend FFA room must
+   *  land in ONE world, never a pair + a stranded third). */
+  partySize: number | null
   /** socket.data.username — the canonical display name (payloads are never
    *  trusted for identity). */
   username: string
@@ -666,7 +670,13 @@ function selectPlayers(record: QueueRecord, now: number): QueuePlayer<unknown>[]
     else byParty.set(entry.party, [entry])
   }
   for (const members of byParty.values()) {
-    if (members.length >= record.needed) return members.slice(0, record.needed)
+    // Wait for the WHOLE party (the dispatch fan-out enqueues them one at a
+    // time — matching at `needed` used to split a 3+ room into a pair plus
+    // stranded leftovers), then take the whole party in one group.
+    const size = members[0]?.partySize ?? record.needed
+    if (members.length >= size && members.length >= record.needed) {
+      return members.slice(0, Math.max(record.needed, record.maxPlayers))
+    }
   }
 
   // Everything below sees ONLY the public pool: entries still waiting on a
@@ -938,14 +948,17 @@ export async function joinQueue<Meta = undefined>(
   // match must never tag an ordinary public join. socket.data is server-side
   // only, so a client can never forge its way into someone's party.
   const stamp = socket.data.privateParty as
-    | { id?: unknown; until?: unknown }
+    | { id?: unknown; size?: unknown; until?: unknown }
     | undefined
-  const party =
+  const stampFresh =
     stamp &&
     typeof stamp.id === 'string' &&
     typeof stamp.until === 'number' &&
     stamp.until > Date.now()
-      ? stamp.id
+  const party = stampFresh ? (stamp.id as string) : null
+  const partySize =
+    stampFresh && typeof stamp.size === 'number' && stamp.size >= 2
+      ? Math.floor(stamp.size)
       : null
 
   const entry: QueuePlayer<Meta> = {
@@ -955,6 +968,7 @@ export async function joinQueue<Meta = undefined>(
     game,
     mode,
     party,
+    partySize,
     // A party entry gets a FRESH clock. `waitingSince` inherits the player's
     // old public wait (priorJoinedAt spans every mode of the game), and an
     // inherited 15s+ clock would trip the PARTY_GRACE_MS demotion on the very

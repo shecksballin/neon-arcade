@@ -145,6 +145,10 @@ export default function PugShooterPlay({ config, onExit, profile }: PugShooterPl
       // be — the listener drops anything it says from here on regardless.
       forfeitedRef.current = true;
       setForfeited(true);
+      // Tell the score-duel layer this round no longer counts: the iframe
+      // keeps simulating under the results overlay and would otherwise post
+      // a real score — letting a player forfeit and still win the verdict.
+      window.dispatchEvent(new CustomEvent('neon:duel-forfeit'));
       roundLiveRef.current = false;
       setRoundLive(false);
       reportRound({

@@ -49,6 +49,7 @@ import PrivateWagerInvite, {
   PrivateWagerModal,
   announcePrivateWagerStarted,
   privateWagerCapacity,
+  privateWagerMinPlayers,
   privateWagerGameTitle,
   privateWagerModeLabel,
   usePrivateWagerInviteRequests,
@@ -434,7 +435,11 @@ export default function PrivateWagerRoom({
     setLinkCopied(true);
     window.setTimeout(() => setLinkCopied(false), 2000);
   }, [gameKey, mode]);
-  const canStart = players.length >= 2;
+  // The mode's start floor: 2 everywhere, EXACTLY 4 for pugshooter duo —
+  // the server refuses to start a strict team mode half-filled, so the UI
+  // must not advertise readiness as start-capable before the floor is met.
+  const minPlayers = privateWagerMinPlayers(gameKey, mode);
+  const canStart = players.length >= minPlayers;
   const roomFull = players.length >= capacity;
 
   // ── actions ──────────────────────────────────────────────────────────────
@@ -591,7 +596,9 @@ export default function PrivateWagerRoom({
             <p className="text-[9px] font-mono tracking-[0.25em] uppercase text-[#B1C5FF]/30 text-center">
               {canStart
                 ? 'Everyone ready starts the match'
-                : 'Waiting for at least one more player'}
+                : minPlayers > 2
+                  ? `Waiting for ${minPlayers} players (${players.length}/${minPlayers})`
+                  : 'Waiting for at least one more player'}
               {' · '}
               Private matches are free — no stake
             </p>

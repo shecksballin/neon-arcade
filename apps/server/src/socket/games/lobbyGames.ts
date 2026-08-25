@@ -24,12 +24,20 @@
  *   C→S  lobbyGame:find       { game, mode? }   — enter the queue (idempotent)
  *   C→S  lobbyGame:leave      { game }          — cancel / left the lobby view
  *   C→S  lobbyGame:leaveMatch { matchId? }      — left a running match
+ *   C→S  lobbyGame:result     { matchId, score } — my round finished with
+ *        this score. When every REMAINING roster member has reported, the
+ *        match resolves: highest score wins (ties share it).
  *
  *   S→C  queue:status  { game, mode, inQueue, current, needed }   (queue.ts)
  *        …emitted on EVERY find, duplicates included — never silent.
  *   S→C  lobbyGame:start { game, mode, matchId, room, players[] } — per player,
  *        players = [{ id: socketId, name, you }] (names only, NEVER wallets).
  *   S→C  lobbyGame:playerLeft { game, matchId, name, remaining }
+ *   S→C  lobbyGame:end { game, matchId, winners[], scores:[{name,score,you}] }
+ *        — the SCORE DUEL verdict. ‼️ Scores are CLIENT-CLAIMED (each round
+ *        still runs locally), so this settles NO RP and no money — it is a
+ *        social verdict + the trigger for the results overlay. XP continues
+ *        to flow through the capped POST /api/stats/session path only.
  *   S→C  gameAuthError { code:'no_account', message }             (queue.ts)
  *
  * Identity is always socket.data.wallet / socket.data.username — client
@@ -47,17 +55,25 @@ import { joinQueue, leaveQueue, type QueueMatch } from '../queue'
 export type LobbyGameId = 'golf' | 'clumsy' | 'pugshooter'
 
 /**
- * `game → mode → players required to start`.
- *
- * These are deliberately at the design-contract minimum of 2. Pug Shooter's
- * FFA/2v2 seats (6 / 4 players) are still filled by the iframe's own bots, so
- * demanding 6 real people would make the queue unfillable while buying nothing.
- * Raise these numbers the day the in-iframe simulation is actually networked.
+ * `game → mode → {needed, maxPlayers}` — the capacity contract:
+ *   - golf classic and pugshooter duel are strict 1v1 (2/2);
+ *   - clumsy and pugshooter ffa are FFA: matches START at 2 but the queue
+ *     may sweep more waiting humans in (private parties arrive whole);
+ *   - pugshooter duo is 2v2 and requires EXACTLY 4 — the queue forms
+ *     nothing smaller, and the private room refuses to start under 4.
+ * Empty seats beyond the humans are still bot-filled by the iframes.
  */
-const LOBBY_GAME_MODES: Record<LobbyGameId, Record<string, number>> = {
-  golf: { classic: 2 },
-  clumsy: { classic: 2 },
-  pugshooter: { ffa: 2, duel: 2, duo: 2 },
+const LOBBY_GAME_MODES: Record<
+  LobbyGameId,
+  Record<string, { needed: number; maxPlayers: number }>
+> = {
+  golf: { classic: { needed: 2, maxPlayers: 2 } },
+  clumsy: { classic: { needed: 2, maxPlayers: 6 } },
+  pugshooter: {
+    ffa: { needed: 2, maxPlayers: 6 },
+    duel: { needed: 2, maxPlayers: 2 },
+    duo: { needed: 4, maxPlayers: 4 },
+  },
 }
 
 /** Mode used when the client doesn't name one (golf + clumsy have only one). */
@@ -85,6 +101,11 @@ const leaveMatchSchema = z.object({
   matchId: z.string().min(1).max(64).optional(),
 })
 
+const resultSchema = z.object({
+  matchId: z.string().min(1).max(64),
+  score: z.number().finite().min(0).max(1_000_000_000),
+})
+
 // ---------------------------------------------------------------------------
 // Match bookkeeping (in-memory, one process — same convention as chess/connect)
 // ---------------------------------------------------------------------------
@@ -101,6 +122,14 @@ interface LobbyMatch {
   matchId: string
   room: string
   players: LobbyRosterEntry[]
+  /** socketId → reported score. Resolves when every roster member has one. */
+  scores: Map<string, number>
+  /** Members who reported and THEN left — their scores still count. The
+   *  unsynced rounds finish minutes apart, so finishing first and going back
+   *  to the lobby is normal, not a forfeit. */
+  finishers: Array<{ name: string; score: number; socketId: string }>
+  /** The verdict is emitted exactly once. */
+  resolved: boolean
 }
 
 /** matchId → match. */
@@ -131,6 +160,9 @@ function startLobbyMatch(match: QueueMatch): void {
     matchId: match.matchId,
     room: match.room,
     players: roster,
+    scores: new Map(),
+    finishers: [],
+    resolved: false,
   }
   matches.set(match.matchId, record)
   for (const entry of roster) matchBySocket.set(entry.socketId, match.matchId)
@@ -178,6 +210,42 @@ function resendLobbyStart(socket: Socket, match: LobbyMatch): void {
 }
 
 /**
+ * SCORE-DUEL verdict: once every remaining roster member has a score, rank
+ * them and tell the room. Highest score wins; ties share the win. Client-
+ * claimed scores NEVER touch RP (design contract) — this is a social verdict
+ * only, XP stays on the capped session path.
+ */
+function maybeResolve(io: Server, match: LobbyMatch): void {
+  if (match.resolved) return
+  if (match.players.length + match.finishers.length < 1) return
+  if (!match.players.every((p) => match.scores.has(p.socketId))) return
+  match.resolved = true
+
+  // The board = everyone still seated + everyone who reported then left.
+  const rows = [
+    ...match.players.map((p) => ({
+      socketId: p.socketId,
+      name: p.name,
+      score: match.scores.get(p.socketId) ?? 0,
+    })),
+    ...match.finishers,
+  ].sort((a, b) => b.score - a.score)
+  const top = rows[0]?.score ?? 0
+  const winners = rows.filter((r) => r.score === top).map((r) => r.name)
+
+  for (const r of rows) {
+    io.sockets.sockets.get(r.socketId)?.emit('lobbyGame:end', {
+      game: match.game,
+      matchId: match.matchId,
+      winners,
+      scores: rows.map((row) => ({ name: row.name, score: row.score, you: row.socketId === r.socketId })),
+    })
+  }
+  // The record stays until everyone leaves (releaseMatch) so a late
+  // lobbyGame:find remount can still resendLobbyStart the roster.
+}
+
+/**
  * Take a socket out of whatever match it belongs to and tell the survivors.
  * Idempotent: a socket with no match is a no-op.
  */
@@ -193,7 +261,21 @@ function releaseMatch(io: Server, socket: Socket): void {
   match.players = match.players.filter((p) => p.socketId !== socket.id)
   socket.leave(match.room)
 
+  // Finished-then-left is NOT a forfeit: the reported score stays on the
+  // board (the leaver just gets the verdict from wherever they are — the
+  // per-socket emit in maybeResolve still reaches a connected socket).
+  if (leaver && match.scores.has(socket.id) && !match.resolved) {
+    match.finishers.push({
+      name: leaver.name,
+      score: match.scores.get(socket.id)!,
+      socketId: socket.id,
+    })
+  }
+
   if (match.players.length === 0) {
+    // Everyone has left the seats. If some of them reported, resolve the
+    // duel among the finishers before the record goes away.
+    maybeResolve(io, match)
     matches.delete(matchId)
     return
   }
@@ -204,6 +286,9 @@ function releaseMatch(io: Server, socket: Socket): void {
     name: leaver?.name ?? 'A player',
     remaining: match.players.length,
   })
+
+  // A leaver forfeits: if everyone still in has reported, resolve now.
+  maybeResolve(io, match)
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +303,7 @@ export function registerLobbyGames(io: Server, socket: Socket): void {
 
     const game = parsed.data.game
     const mode = resolveMode(game, parsed.data.mode)
-    const needed = LOBBY_GAME_MODES[game][mode]
+    const { needed, maxPlayers } = LOBBY_GAME_MODES[game][mode]!
 
     // ALREADY IN A LIVE MATCH OF THIS GAME+MODE? Re-send the handshake rather
     // than tearing it down and queueing again.
@@ -234,7 +319,7 @@ export function registerLobbyGames(io: Server, socket: Socket): void {
     // path keeps releasing the old match below.
     const currentMatchId = matchBySocket.get(socket.id)
     const current = currentMatchId ? matches.get(currentMatchId) : undefined
-    if (current && current.game === game && current.mode === mode) {
+    if (current && !current.resolved && current.game === game && current.mode === mode) {
       resendLobbyStart(socket, current)
       return
     }
@@ -252,8 +337,22 @@ export function registerLobbyGames(io: Server, socket: Socket): void {
       game,
       mode,
       needed,
+      maxPlayers,
       onMatch: startLobbyMatch,
     })
+  })
+
+  // ----------------------------------------------------- lobbyGame:result
+  socket.on('lobbyGame:result', (payload: unknown) => {
+    const parsed = resultSchema.safeParse(payload)
+    if (!parsed.success) return
+    const match = matches.get(parsed.data.matchId)
+    if (!match || match.resolved) return
+    // Roster members only, first report wins (no score revisions).
+    if (!match.players.some((p) => p.socketId === socket.id)) return
+    if (match.scores.has(socket.id)) return
+    match.scores.set(socket.id, parsed.data.score)
+    maybeResolve(io, match)
   })
 
   // ------------------------------------------------------ lobbyGame:leave

@@ -105,6 +105,10 @@ const NeonGolfClash = ({ onExit }: NeonGolfClashProps) => {
       // one settlement — the listener ignores anything it says from now on.
       forfeitedRef.current = true;
       setForfeited(true);
+      // Tell the score-duel layer this round no longer counts: the iframe
+      // keeps simulating under the results overlay and would otherwise post
+      // a real score — letting a player forfeit and still win the verdict.
+      window.dispatchEvent(new CustomEvent('neon:duel-forfeit'));
       reportRound({
         result: 'loss',
         durationMs: roundStartedAtRef.current

@@ -307,3 +307,128 @@ export function useOnlineMatchBridge(match: OnlineMatch | null): void {
 export function opponentsOf(match: OnlineMatch | null): OnlineRosterPlayer[] {
   return match ? match.players.filter((p) => !p.you) : [];
 }
+
+// ---------------------------------------------------------------------------
+// SCORE DUEL — the resolution layer over the roster handoff
+// ---------------------------------------------------------------------------
+
+/** What `lobbyGame:end` delivers — the score-duel verdict. */
+export interface LobbyDuelEnd {
+  game: string;
+  matchId: string;
+  /** Highest score wins; ties share it. Usernames only. */
+  winners: string[];
+  scores: Array<{ name: string; score: number; you: boolean }>;
+}
+
+/**
+ * The client half of the lobby-game score duel (golf / clumsy / pug shooter).
+ *
+ * Each player's round still runs locally; the game's own end-of-round
+ * postMessage carries the score. While a real match is live this hook
+ * forwards that score to the server (`lobbyGame:result`, once per match) and
+ * surfaces the verdict (`lobbyGame:end`) once every remaining member has
+ * reported. ‼️ Scores are client-claimed: the verdict is social — the server
+ * settles NO RP from it, and XP stays on the capped session path.
+ *
+ * `resultMessageType` is the iframe's result postMessage type; `scoreOf`
+ * extracts the score from that message's data.
+ */
+export function useLobbyScoreDuel(
+  match: OnlineMatch | null,
+  resultMessageType: string,
+  scoreOf: (data: Record<string, unknown>) => number
+): {
+  duelEnd: LobbyDuelEnd | null;
+  clearDuelEnd: () => void;
+  /** "<name> left" — transient, newest only. */
+  playerLeft: string | null;
+} {
+  const [duelEnd, setDuelEnd] = useState<LobbyDuelEnd | null>(null);
+  const [playerLeft, setPlayerLeft] = useState<string | null>(null);
+  const reportedFor = useRef<string | null>(null);
+  /** A report that couldn't go out (transport blip) — flushed on reconnect. */
+  const pendingReport = useRef<{ matchId: string; score: number } | null>(null);
+  const matchRef = useRef(match);
+  matchRef.current = match;
+  const scoreOfRef = useRef(scoreOf);
+  scoreOfRef.current = scoreOf;
+
+  // Fresh match = fresh verdict state.
+  useEffect(() => {
+    setDuelEnd(null);
+    setPlayerLeft(null);
+    pendingReport.current = null;
+  }, [match?.matchId]);
+
+  // The leaver toast is transient, not a permanent HUD fixture.
+  useEffect(() => {
+    if (!playerLeft) return;
+    const id = window.setTimeout(() => setPlayerLeft(null), 8000);
+    return () => window.clearTimeout(id);
+  }, [playerLeft]);
+
+  useEffect(() => {
+    const socket = getSocket();
+
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if ((event.data as { type?: string })?.type !== resultMessageType) return;
+      const m = matchRef.current;
+      if (!m || reportedFor.current === m.matchId) return;
+      reportedFor.current = m.matchId;
+      const raw = scoreOfRef.current((event.data ?? {}) as Record<string, unknown>);
+      const score = Number.isFinite(raw) ? Math.max(0, raw) : 0;
+      if (socket.connected) {
+        socket.emit('lobbyGame:result', { matchId: m.matchId, score });
+      } else {
+        // A round ends exactly once — a blip at that moment must not
+        // swallow the report forever. Flushed on the next connect.
+        pendingReport.current = { matchId: m.matchId, score };
+      }
+    };
+
+    // FORFEIT: the round's own overlay confirmed a leave. The iframe keeps
+    // simulating underneath and will still post a result — latch WITHOUT
+    // reporting so a forfeited round can never win the verdict.
+    const onForfeit = () => {
+      const m = matchRef.current;
+      if (m) reportedFor.current = m.matchId;
+      pendingReport.current = null;
+    };
+
+    const onConnect = () => {
+      const pending = pendingReport.current;
+      if (pending) {
+        pendingReport.current = null;
+        socket.emit('lobbyGame:result', pending);
+      }
+    };
+
+    const onEnd = (data: LobbyDuelEnd) => {
+      if (!data?.matchId || data.matchId !== matchRef.current?.matchId) return;
+      setDuelEnd(data);
+    };
+
+    const onLeft = (data: { matchId?: string; name?: string }) => {
+      if (!data?.matchId || data.matchId !== matchRef.current?.matchId) return;
+      setPlayerLeft(data.name ?? 'A player');
+    };
+
+    window.addEventListener('message', onMessage);
+    window.addEventListener('neon:duel-forfeit', onForfeit);
+    socket.on('lobbyGame:end', onEnd);
+    socket.on('lobbyGame:playerLeft', onLeft);
+    socket.on('connect', onConnect);
+    return () => {
+      window.removeEventListener('message', onMessage);
+      window.removeEventListener('neon:duel-forfeit', onForfeit);
+      socket.off('lobbyGame:end', onEnd);
+      socket.off('lobbyGame:playerLeft', onLeft);
+      socket.off('connect', onConnect);
+    };
+  }, [resultMessageType]);
+
+  const clearDuelEnd = useCallback(() => setDuelEnd(null), []);
+  return { duelEnd, clearDuelEnd, playerLeft };
+}

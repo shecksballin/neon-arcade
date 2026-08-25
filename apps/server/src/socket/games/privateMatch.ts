@@ -128,6 +128,9 @@ interface GameModeSpec {
   findPayload: (mode: string) => unknown
   /** The S→C start event the players will receive — documentation only. */
   startEvent: string
+  /** Players REQUIRED to start (default MIN_PLAYERS=2). pugshooter duo is a
+   *  strict 2v2: it refuses to start with anything but exactly 4. */
+  minPlayers?: number
 }
 
 /** volley: one queue per regulation; the client sends `matchMode`. */
@@ -154,7 +157,10 @@ function freeplayMode(
   mode: 'slayer' | 'lms'
 ): GameModeSpec {
   return {
-    capacity: 2,
+    // FFA: the room seats up to 8 friends and starts once everyone present
+    // (>=2) is ready — the whole party lands in ONE match world (the queue
+    // matches complete parties atomically; the world admits up to 30).
+    capacity: 8,
     findEvent: 'freeplay:find',
     // `sector` is REQUIRED by findSchema; the server derives the practice
     // difficulty code (10/11/12/13) from it — never sent from here.
@@ -164,9 +170,10 @@ function freeplayMode(
 }
 
 /** golf / clumsy / pugshooter: the iframe roster handoff queue. */
-function lobbyMode(game: string): GameModeSpec {
+function lobbyMode(game: string, capacity = 2, minPlayers?: number): GameModeSpec {
   return {
-    capacity: 2,
+    capacity,
+    ...(minPlayers !== undefined ? { minPlayers } : {}),
     findEvent: 'lobbyGame:find',
     findPayload: (mode: string) => ({ game, mode }),
     startEvent: 'lobbyGame:start',
@@ -228,11 +235,12 @@ const CATALOG: Record<string, Record<string, GameModeSpec>> = {
 
   // ── iframe lobby games ────────────────────────────────────────────────
   golf: { classic: lobbyMode('golf') },
-  clumsy: { classic: lobbyMode('clumsy') },
+  // FFA: seats 6 friends, starts when all present (>=2) are ready.
+  clumsy: { classic: lobbyMode('clumsy', 6) },
   pugshooter: {
-    ffa: lobbyMode('pugshooter'),
-    duel: lobbyMode('pugshooter'),
-    duo: lobbyMode('pugshooter'),
+    ffa: lobbyMode('pugshooter', 6), // FFA: up to 6, starts at 2+
+    duel: lobbyMode('pugshooter'), // strict 1v1
+    duo: lobbyMode('pugshooter', 4, 4), // 2v2: EXACTLY 4 to start
   },
 }
 
@@ -542,6 +550,12 @@ function releaseSocket(io: Server, socket: Socket): void {
   if (room.status === 'starting') {
     clearCountdown(room)
     room.status = 'open'
+    // Everyone re-readies explicitly. Leaving the survivors flagged ready
+    // deadlocked multi-seat rooms: maybeStart only runs from private:ready,
+    // and re-clicking READY on an unchanged flag is a no-op — so an
+    // all-ready reopened room sat behind "everyone ready starts the match"
+    // forever. (Unreachable at capacity 2; routine at 6-8.)
+    for (const member of room.players) member.ready = false
   }
   broadcastRoom(io, room)
 }
@@ -600,10 +614,13 @@ function startRoom(io: Server, room: PrivateRoom): void {
     if (socket && !socket.disconnected) sockets.push(socket)
   }
 
-  if (sockets.length < MIN_PLAYERS) {
+  if (sockets.length < (room.spec.minPlayers ?? MIN_PLAYERS)) {
     // Somebody vanished during the countdown — fall back to the waiting room
-    // instead of starting a match nobody can play.
+    // instead of starting a match nobody can play (a strict 2v2 aborts on
+    // ANY dropout: 3 players is not a duo). Ready flags reset so maybeStart
+    // can fire again (see the identical note in releaseSocket).
     room.status = 'open'
+    for (const member of room.players) member.ready = false
     for (const socket of sockets) {
       emitError(socket, 'start_failed', 'A player left before the match started')
     }
@@ -636,7 +653,14 @@ function startRoom(io: Server, room: PrivateRoom): void {
   // before they reach joinQueue; a stale stamp self-expires long before the
   // player could be back on a lobby clicking a public Find button.
   for (const socket of sockets) {
-    socket.data.privateParty = { id: partyId, until: Date.now() + 5_000 }
+    socket.data.privateParty = {
+      id: partyId,
+      size: sockets.length,
+      // 10s (was 5): freeplay members pass an awaited getSkill before the
+      // stamp is read — a slow DB roundtrip must not silently strip one
+      // member's party marker and strand the rest of the room.
+      until: Date.now() + 10_000,
+    }
   }
 
   // SAME TICK for every player: the queue pairs them with each other.
@@ -647,10 +671,13 @@ function startRoom(io: Server, room: PrivateRoom): void {
   }
 }
 
-/** Everyone ready AND at least two players? Run the 3-2-1 and start. */
+/** Everyone ready AND the mode's player floor met? Run the 3-2-1 and start.
+ *  The floor is MIN_PLAYERS (2) everywhere except strict team modes —
+ *  pugshooter duo requires exactly 4 (its capacity), so a 2v2 can never
+ *  launch half-filled. */
 function maybeStart(io: Server, room: PrivateRoom): void {
   if (room.status !== 'open') return
-  if (room.players.length < MIN_PLAYERS) return
+  if (room.players.length < (room.spec.minPlayers ?? MIN_PLAYERS)) return
   if (!room.players.every((member) => member.ready)) return
 
   room.status = 'starting'

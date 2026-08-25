@@ -8,7 +8,9 @@ import {
   useOnlineLobbyQueue,
   useOnlineMatchBridge,
   type OnlineMatch,
+  useLobbyScoreDuel,
 } from '../common/onlineLobbyMatch';
+import LobbyDuelResults from '../common/LobbyDuelResults';
 
 // Lazy-loaded so the iframe host (and with it the whole three.js + Rapier game
 // behind it) is only fetched when the player starts a match, keeping the
@@ -56,7 +58,26 @@ const PugShooterGame = ({ onExit, profile, onGameStatusChange }: PugShooterGameP
   const [onlineConfig, setOnlineConfig] = useState<PugShooterMatchConfig | null>(null);
 
   const handleMatched = useCallback((found: OnlineMatch) => {
-    setOnlineConfig(queuedConfig.current);
+    // PRIVATE-WAGER PATH: the room drives lobbyGame:find server-side, so no
+    // lobby click ever stored a loadout — queuedConfig is null and (before
+    // this fallback) the round could never boot: the room closed itself on
+    // private:started, both players were dumped back on the lobby, and the
+    // orphaned server match corrupted later queues. The server's match mode
+    // is authoritative; map/difficulty fall back to defaults.
+    const serverMode = (['ffa', 'duel', 'duo'] as const).includes(
+      found.mode as PugShooterMatchConfig['mode']
+    )
+      ? (found.mode as PugShooterMatchConfig['mode'])
+      : 'ffa';
+    // The SERVER's mode is authoritative. The stored lobby loadout only
+    // contributes its map/difficulty when its mode agrees — a stale public
+    // DUEL loadout must never boot a private FFA as a 1v1.
+    const stored = queuedConfig.current;
+    setOnlineConfig(
+      stored && stored.mode === serverMode
+        ? stored
+        : { mode: serverMode, map: stored?.map ?? 'city', difficulty: stored?.difficulty ?? 'normal' }
+    );
     setMatch(found);
   }, []);
   // findMatch / cancel / leaveMatch are stable, so the callbacks below are too.
@@ -64,6 +85,13 @@ const PugShooterGame = ({ onExit, profile, onGameStatusChange }: PugShooterGameP
     useOnlineLobbyQueue('pugshooter', handleMatched);
 
   useOnlineMatchBridge(match);
+
+  // Score duel: forward the iframe's end-of-round score, receive the verdict.
+  const { duelEnd, clearDuelEnd, playerLeft } = useLobbyScoreDuel(
+    match,
+    'neon-pug-shooter:result',
+    (d) => Number((d as {score?: number}).score ?? 0)
+  );
 
   const activeConfig = practiceConfig ?? (match ? onlineConfig : null);
 
@@ -83,6 +111,7 @@ const PugShooterGame = ({ onExit, profile, onGameStatusChange }: PugShooterGameP
   /** Back to the lobby from a round — tells the server we left the match. */
   const leaveRound = useCallback(() => {
     if (match) leaveMatch(match.matchId);
+    queuedConfig.current = null; // a dead loadout must not haunt later matches
     setMatch(null);
     setOnlineConfig(null);
     setPracticeConfig(null);
@@ -95,6 +124,14 @@ const PugShooterGame = ({ onExit, profile, onGameStatusChange }: PugShooterGameP
           <PugShooterPlay config={activeConfig} onExit={leaveRound} profile={profile} />
         </Suspense>
         {match && <OnlineMatchBanner match={match} />}
+        {match && playerLeft && !duelEnd && (
+          <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 pointer-events-none rounded-full border border-[#FF6B9A]/40 bg-black/70 px-4 py-1.5 font-mono text-[10px] uppercase tracking-[0.25em] text-[#FF6B9A]">
+            {playerLeft} left the match
+          </div>
+        )}
+        {duelEnd && (
+          <LobbyDuelResults end={duelEnd} onExit={leaveRound} onDismiss={clearDuelEnd} />
+        )}
       </div>
     );
   }

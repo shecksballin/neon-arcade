@@ -8,7 +8,9 @@ import {
   useOnlineLobbyQueue,
   useOnlineMatchBridge,
   type OnlineMatch,
+  useLobbyScoreDuel,
 } from '../common/onlineLobbyMatch';
+import LobbyDuelResults from '../common/LobbyDuelResults';
 
 interface GolfGameProps {
   onExit: () => void;
@@ -42,6 +44,19 @@ const GolfGame = ({ onExit, onGameStatusChange }: GolfGameProps) => {
   // Publish the roster (localStorage + postMessage) while the online round runs.
   useOnlineMatchBridge(match);
 
+  // Score duel: forward the iframe's end-of-round score, receive the verdict.
+  const { duelEnd, clearDuelEnd, playerLeft } = useLobbyScoreDuel(
+    match,
+    'neon-golf:result',
+    // Beating your CPU dominates the score (1000 + rounds won): raw round
+    // wins alone tied every both-won and both-swept match, crowning two
+    // "winners" — including two LOSERS at 0-0.
+    (d) => {
+      const r = d as { won?: boolean; rounds?: number };
+      return (r.won ? 1000 : 0) + Number(r.rounds ?? 0);
+    }
+  );
+
   const playing = practice || match !== null;
 
   React.useEffect(() => {
@@ -59,7 +74,15 @@ const GolfGame = ({ onExit, onGameStatusChange }: GolfGameProps) => {
     return (
       <div className="relative w-full h-full">
         <NeonGolfClash onExit={leaveRound} />
-        {match && <OnlineMatchBanner match={match} />}
+        {match && <OnlineMatchBanner match={match} duration={0} placement="bottom" />}
+        {match && playerLeft && !duelEnd && (
+          <div className="absolute top-24 left-1/2 -translate-x-1/2 z-40 pointer-events-none rounded-full border border-[#FF6B9A]/40 bg-black/70 px-4 py-1.5 font-mono text-[10px] uppercase tracking-[0.25em] text-[#FF6B9A]">
+            {playerLeft} left the match
+          </div>
+        )}
+        {duelEnd && (
+          <LobbyDuelResults end={duelEnd} onExit={leaveRound} onDismiss={clearDuelEnd} />
+        )}
       </div>
     );
   }

@@ -3009,7 +3009,7 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
             <p className="text-[#00FFD1] font-mono text-sm tracking-[0.4em] uppercase">Match found</p>
             <p className="text-8xl font-black italic text-white">{Math.ceil(netMatch.startsIn / 1000)}</p>
             <p className="text-white/50 font-mono text-xs uppercase tracking-widest">
-              {netMatch.total} pilots · no bots
+              {netMatch.total} pilots
             </p>
           </div>
         </div>

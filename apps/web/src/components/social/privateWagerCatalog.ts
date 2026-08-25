@@ -42,6 +42,9 @@ export interface PrivateWagerMode {
   hint?: string;
   /** Seats the server gives this room. 2 = the 1v1 diagonal waiting-room. */
   capacity: number;
+  /** Players REQUIRED to start (server minPlayers). Only strict team modes
+   *  set it — pugshooter duo needs exactly 4; everything else starts at 2. */
+  minPlayers?: number;
 }
 
 export interface PrivateWagerGame {
@@ -95,20 +98,20 @@ export const PRIVATE_WAGER_GAMES: PrivateWagerGame[] = [
     key: 'cells',
     title: 'Neon Cells',
     modes: [
-      { id: 'eclipse:slayer', label: 'ECLIPSE · SLAYER', hint: 'safe zones · kill count', capacity: 2 },
-      { id: 'eclipse:lms', label: 'ECLIPSE · LAST MAN STANDING', hint: 'safe zones · last one standing', capacity: 2 },
-      { id: 'blitz:slayer', label: 'BLITZ · SLAYER', hint: 'fast collapse · kill count', capacity: 2 },
-      { id: 'blitz:lms', label: 'BLITZ · LAST MAN STANDING', hint: 'fast collapse · last one standing', capacity: 2 },
+      { id: 'eclipse:slayer', label: 'ECLIPSE · SLAYER', hint: 'safe zones · kill count', capacity: 8 },
+      { id: 'eclipse:lms', label: 'ECLIPSE · LAST MAN STANDING', hint: 'safe zones · last one standing', capacity: 8 },
+      { id: 'blitz:slayer', label: 'BLITZ · SLAYER', hint: 'fast collapse · kill count', capacity: 8 },
+      { id: 'blitz:lms', label: 'BLITZ · LAST MAN STANDING', hint: 'fast collapse · last one standing', capacity: 8 },
     ],
   },
   {
     key: 'asteroids',
     title: 'Neon Asteroids',
     modes: [
-      { id: 'eclipse:slayer', label: 'ECLIPSE · SLAYER', hint: 'safe zones · kill count', capacity: 2 },
-      { id: 'eclipse:lms', label: 'ECLIPSE · LAST MAN STANDING', hint: 'safe zones · last one standing', capacity: 2 },
-      { id: 'blitz:slayer', label: 'BLITZ · SLAYER', hint: 'fast collapse · kill count', capacity: 2 },
-      { id: 'blitz:lms', label: 'BLITZ · LAST MAN STANDING', hint: 'fast collapse · last one standing', capacity: 2 },
+      { id: 'eclipse:slayer', label: 'ECLIPSE · SLAYER', hint: 'safe zones · kill count', capacity: 8 },
+      { id: 'eclipse:lms', label: 'ECLIPSE · LAST MAN STANDING', hint: 'safe zones · last one standing', capacity: 8 },
+      { id: 'blitz:slayer', label: 'BLITZ · SLAYER', hint: 'fast collapse · kill count', capacity: 8 },
+      { id: 'blitz:lms', label: 'BLITZ · LAST MAN STANDING', hint: 'fast collapse · last one standing', capacity: 8 },
     ],
   },
   {
@@ -119,15 +122,15 @@ export const PRIVATE_WAGER_GAMES: PrivateWagerGame[] = [
   {
     key: 'clumsy',
     title: 'Neon Clumsy',
-    modes: [{ id: 'classic', label: 'Run', hint: 'head to head', capacity: 2 }],
+    modes: [{ id: 'classic', label: 'Run', hint: 'last mummy standing · up to 6', capacity: 6 }],
   },
   {
     key: 'pugshooter',
     title: 'Neon Pug Shooter',
     modes: [
-      { id: 'ffa', label: 'Free For All', hint: 'everyone for themselves', capacity: 2 },
+      { id: 'ffa', label: 'Free For All', hint: 'everyone for themselves', capacity: 6 },
       { id: 'duel', label: '1v1 Duel', hint: 'one on one', capacity: 2 },
-      { id: 'duo', label: '2v2 Teams', hint: 'you and an ally', capacity: 2 },
+      { id: 'duo', label: '2v2 Teams', hint: 'four players, two sides', capacity: 4, minPlayers: 4 },
     ],
   },
 ];
@@ -153,6 +156,13 @@ export function privateWagerModeLabel(gameKey: PrivateGameKey, mode: string): st
  */
 export function privateWagerCapacity(gameKey: PrivateGameKey, mode: string): number {
   return privateWagerGame(gameKey)?.modes.find((m) => m.id === mode)?.capacity ?? 2;
+}
+
+/** Players REQUIRED before a private room can start (server minPlayers).
+ *  2 everywhere except strict team modes (pugshooter duo = 4). */
+export function privateWagerMinPlayers(gameKey: string, modeId: string): number {
+  const game = PRIVATE_WAGER_GAMES.find((g) => g.key === gameKey);
+  return game?.modes.find((m) => m.id === modeId)?.minPlayers ?? 2;
 }
 
 /**

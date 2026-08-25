@@ -1015,15 +1015,20 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
       engine.food = netFoodMappedRef.current;
     }
 
-    // Publish input: normalized mouse direction from the screen centre (the
-    // player's cell is camera-locked there) + the boost key. Sent at 20Hz by
-    // the FreeplayNet interval; we just keep the latest values fresh.
-    const mdx = engine.mouseX - engine.width / 2;
-    const mdy = engine.mouseY - engine.height / 2;
-    const len = Math.hypot(mdx, mdy);
-    const DEADZONE_PX = 12; // cell rests when the cursor sits on top of it
-    netInputRef.current.dx = len > DEADZONE_PX ? mdx / len : 0;
-    netInputRef.current.dy = len > DEADZONE_PX ? mdy / len : 0;
+    // Publish input: direction from the CELL to the cursor, in WORLD space —
+    // exactly how practice samples it. The old screen-centre version assumed
+    // the cell sits at the centre, but the camera LAGS the cell (lerp 0.1),
+    // so any parked cursor >12px from centre became a perpetual full-speed
+    // move command and the cell "drove itself". Sent at 20Hz by the
+    // FreeplayNet interval; we just keep the latest values fresh.
+    const worldMx = (engine.mouseX - engine.width / 2) / engine.camera.zoom + engine.camera.x;
+    const worldMy = (engine.mouseY - engine.height / 2) / engine.camera.zoom + engine.camera.y;
+    const cdx = worldMx - engine.player.x;
+    const cdy = worldMy - engine.player.y;
+    const clen = Math.hypot(cdx, cdy);
+    const STOP_DIST = 5 * NET_WORLD_SCALE; // cell rests when the cursor sits on it
+    netInputRef.current.dx = clen > STOP_DIST ? cdx / clen : 0;
+    netInputRef.current.dy = clen > STOP_DIST ? cdy / clen : 0;
     net?.setInput({ ...netInputRef.current });
 
     // Camera runs every frame (it is canvas-only, no React involved).
@@ -1836,7 +1841,7 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
             <p className="text-[#00FFD1] font-mono text-sm tracking-[0.4em] uppercase">Match found</p>
             <p className="text-8xl font-black italic text-white">{Math.ceil(netMatch.startsIn / 1000)}</p>
             <p className="text-white/50 font-mono text-xs uppercase tracking-widest">
-              {netMatch.total} players · no bots
+              {netMatch.total} players
             </p>
           </div>
         </div>

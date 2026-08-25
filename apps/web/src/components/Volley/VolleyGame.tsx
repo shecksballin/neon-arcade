@@ -70,6 +70,32 @@ const VolleyGame = ({ onExit, profile, onGameStatusChange }: VolleyGameProps) =>
     const onVolleyGameStart = (data: any) => {
       setGameData(data);
       setGameMode('multiplayer');
+      // PRIVATE-WAGER PATH: the server started this match for us (the room
+      // re-drove findVolleyGame server-side), so the lobby click that
+      // normally builds playerInfo never ran — and the playing branch
+      // renders NOTHING without it (this was the private-wager blank
+      // screen). Derive it from the payload: my own p1/p2 entry (matched by
+      // socket.id, the same rule PingPongGame uses) carries the canonical
+      // server name/avatar, and matchMode is the room's regulation.
+      setPlayerInfo((prev) => {
+        const me = data?.p1?.socketId === socket.id ? data?.p1 : data?.p2;
+        // The SERVER's regulation always wins — a playerInfo left over from
+        // a cancelled public search (say 'classic') must not score a private
+        // 'sudden' match to 11.
+        const matchMode = (data?.matchMode ?? prev?.matchMode ?? 'classic') as
+          | 'classic'
+          | 'bestof3'
+          | 'sudden';
+        return {
+          name: prev?.name ?? me?.name ?? profile?.name ?? 'Player',
+          avatarUrl:
+            prev?.avatarUrl ??
+            me?.avatarUrl ??
+            profile?.avatarUrl ??
+            'https://api.dicebear.com/7.x/avataaars/svg?seed=Felix',
+          matchMode,
+        };
+      });
       setGameState('playing');
     };
     // A mid-match disconnect is handled ENTIRELY by the server's

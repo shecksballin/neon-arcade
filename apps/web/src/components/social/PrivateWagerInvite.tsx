@@ -64,6 +64,7 @@ export {
   privateWagerGameTitle,
   privateWagerModeLabel,
   privateWagerCapacity,
+  privateWagerMinPlayers,
   isPrivateGameKey,
 } from './privateWagerCatalog';
 export type {

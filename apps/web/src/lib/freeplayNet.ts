@@ -74,7 +74,14 @@ export interface FreeplayJoinedInfo {
   matchId: string;
   playerId: string; // opaque per-session id (NOT the wallet)
   entryFee: number; // legacy field — no money is used this pass
-  world: { w: number; h: number; game: FreeplayGame };
+  world: {
+    w: number;
+    h: number;
+    game: FreeplayGame;
+    /** True server frame — cells is origin-centred (-3000..3000), asteroids
+     *  zero-based. Never assume [0,w]x[0,h]. */
+    bounds?: { minX: number; minY: number; maxX: number; maxY: number };
+  };
   tick: number;
   mode?: FreeplayMode;
   /** Lobby matches: ms until the first simulated tick (0 once running). */
@@ -461,6 +468,8 @@ interface Prediction {
   r: number;           // smoothed render radius
   /** Time not yet consumed by a whole 1/60s frame. */
   accum: number;
+  /** Cells: server-side boost bank non-empty (mirrors you.boostRemaining). */
+  boostOk?: boolean;
 }
 
 /** Practice's "realign the jet" pull toward the nearest of north/south. */
@@ -1032,7 +1041,12 @@ export class FreeplayNet {
         // Direction only — a diagonal must not be √2 faster.
         const nx = (input.dx ?? 0) / len;
         const ny = (input.dy ?? 0) / len;
-        const accel = (CELLS_ACCEL_NUM / Math.sqrt(Math.max(1, p.r))) * (input.boost ? CELLS_BOOST_MULT : 1);
+        // Boost only counts when the server-side bank is non-empty
+        // (p.boostOk mirrors you.boostRemaining) — predicting a x1.65 the
+        // server refuses ran the client hot and rubber-banded it back.
+        const accel =
+          (CELLS_ACCEL_NUM / Math.sqrt(Math.max(1, p.r))) *
+          (input.boost && p.boostOk !== false ? CELLS_BOOST_MULT : 1);
         p.vx += nx * accel;
         p.vy += ny * accel;
       }
@@ -1040,6 +1054,7 @@ export class FreeplayNet {
       p.vy *= CELLS_VEL_DECAY;
       p.x += p.vx * FRAME_DT;
       p.y += p.vy * FRAME_DT;
+      this.clampToWorld(p);
     } else {
       const input = this.input as AsteroidsInput;
       const turn = input.turn ?? 0;
@@ -1059,6 +1074,34 @@ export class FreeplayNet {
       p.y += p.vy * FRAME_DT;
       p.vx *= AST_VEL_FRICTION;
       p.vy *= AST_VEL_FRICTION;
+      this.clampToWorld(p);
+    }
+  }
+
+  /** The server bounces off the world edge at half speed
+   *  (cellsWorld/asteroidsWorld) — without mirroring it, prediction sails
+   *  past the wall and the reconciler drags it back in a visible smear.
+   *  ‼️ Uses the server's OWN bounds from freeplay:joined: cells is
+   *  origin-centred (-3000..3000) while asteroids is zero-based — assuming
+   *  [0,w]x[0,h] here once built an invisible wall through half the cells
+   *  map. No bounds in the payload = no clamping at all. */
+  private clampToWorld(p: Prediction): void {
+    const b = this.joined?.world?.bounds;
+    if (!b) return;
+    const r = Math.max(0, p.r);
+    if (p.x < b.minX + r) {
+      p.x = b.minX + r;
+      if (p.vx < 0) p.vx *= -0.5;
+    } else if (p.x > b.maxX - r) {
+      p.x = b.maxX - r;
+      if (p.vx > 0) p.vx *= -0.5;
+    }
+    if (p.y < b.minY + r) {
+      p.y = b.minY + r;
+      if (p.vy < 0) p.vy *= -0.5;
+    } else if (p.y > b.maxY - r) {
+      p.y = b.maxY - r;
+      if (p.vy > 0) p.vy *= -0.5;
     }
   }
 
@@ -1072,11 +1115,18 @@ export class FreeplayNet {
    * server stays authoritative because every frame pulls us back toward its
    * position, and a big divergence (respawn, kill, wall) snaps outright.
    */
-  private predictSelf(latestYou: NetEntity, dt: number): NetEntity {
+  private predictSelf(latestYou: NetEntity, dt: number, snapshotAgeSec = 0): NetEntity {
     const serverR = Number(latestYou.r ?? latestYou.radius ?? 0);
     const serverAngle = Number(latestYou.angle ?? 0);
     const serverVx = Number(latestYou.vx ?? 0);
     const serverVy = Number(latestYou.vy ?? 0);
+    // Reconcile toward the snapshot EXTRAPOLATED to render time using its
+    // own velocity — the raw snapshot is (half-RTT + up to one tick) stale
+    // and only steps at 20Hz, so pulling toward it every frame both erased
+    // the prediction's latency win (~100-150ms of felt input lag) and
+    // rippled at 20Hz. Clamped so a hiccup cannot fling the target.
+    const targetX = latestYou.x + serverVx * snapshotAgeSec;
+    const targetY = latestYou.y + serverVy * snapshotAgeSec;
 
     if (!this.pred) {
       this.pred = {
@@ -1104,8 +1154,11 @@ export class FreeplayNet {
       if (p.accum > FRAME_DT) p.accum = 0; // came back from a background tab
     }
 
+    // Cells: mirror the server's boost bank into the next predictFrame runs.
+    p.boostOk = Number((latestYou as { boostRemaining?: number }).boostRemaining ?? 1) > 0;
+
     // ── Reconcile against the newest server truth ──
-    const err = Math.hypot(latestYou.x - p.x, latestYou.y - p.y);
+    const err = Math.hypot(targetX - p.x, targetY - p.y);
     if (err > SNAP_DIST) {
       // Teleport (respawn, kill, wall clamp, big desync): take the server's word.
       p.x = latestYou.x;
@@ -1116,8 +1169,8 @@ export class FreeplayNet {
       p.av = 0;
     } else if (dt > 0) {
       const k = 1 - Math.exp(-RECONCILE_RATE * dt);
-      p.x = lerp(p.x, latestYou.x, k);
-      p.y = lerp(p.y, latestYou.y, k);
+      p.x = lerp(p.x, targetX, k);
+      p.y = lerp(p.y, targetY, k);
       // Velocity too, so a wall bounce or a collision we didn't simulate
       // doesn't leave us fighting the server for the next second.
       p.vx = lerp(p.vx, serverVx, k);
@@ -1134,10 +1187,18 @@ export class FreeplayNet {
     }
 
     // Base on the NEWEST server entity so HUD fields (hp, ammo, kills) are
-    // never delayed — only the pose comes from prediction.
-    const out: NetEntity = { ...latestYou, x: p.x, y: p.y };
+    // never delayed — only the pose comes from prediction. The pose includes
+    // the SUB-FRAME remainder (p.accum, 0..16.6ms): whole-quantum output
+    // made render frames alternately consume 0 or 2 physics steps, and with
+    // the camera locked to this entity every such frame lurched the entire
+    // world by one physics frame of motion.
+    const out: NetEntity = {
+      ...latestYou,
+      x: p.x + p.vx * p.accum,
+      y: p.y + p.vy * p.accum,
+    };
     if (p.r > 0) out.r = p.r;
-    if (this.game === 'asteroids') out.angle = p.angle;
+    if (this.game === 'asteroids') out.angle = p.angle + p.av * p.accum;
     return out;
   }
 
@@ -1228,7 +1289,11 @@ export class FreeplayNet {
     this.lastPredictAt = nowMs;
     let you: NetEntity | null = null;
     if (latest.you) {
-      you = this.predictSelf(latest.you, dt);
+      const age =
+        this.clockOffset !== null && latest.t > 0
+          ? Math.min(0.25, Math.max(0, (nowMs - this.clockOffset - latest.t) / 1000))
+          : 0;
+      you = this.predictSelf(latest.you, dt, age);
     } else {
       this.pred = null; // dead / despawned — restart prediction on respawn
     }
