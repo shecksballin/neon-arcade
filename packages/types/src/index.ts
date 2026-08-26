@@ -13,3 +13,6 @@ export * from './auth'
 
 // Account registration rules (username / PIN / TOTP)
 export * from './profile'
+
+// Player-selectable server regions (Fly.io codes + fly-replay routing).
+export * from './regions'

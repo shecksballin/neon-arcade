@@ -98,6 +98,9 @@ export class ApiError extends Error {
  */
 const REQUEST_TIMEOUT_MS = 30_000
 
+// (imported lazily-safe: region.ts has no dependency back on this module)
+import { getRegion } from './region';
+
 async function api<T>(
   path: string,
   options: RequestInit = {}
@@ -113,6 +116,10 @@ async function api<T>(
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        // Region routing: on Fly, a mismatched region answers with
+        // fly-replay and the platform re-delivers this request to the
+        // player's chosen region. Elsewhere the header is inert.
+        'x-neon-region': getRegion(),
         ...options.headers,
       },
     })
@@ -864,6 +871,8 @@ export interface ProfileMe {
   username:    string | null
   hasPin:      boolean
   totpEnabled: boolean
+  /** Preferred game region (@neon/types GAME_REGIONS id); null = unset. */
+  region?:     string | null
   /** @deprecated legacy mirror of `rp` (1v1 ladder). */
   elo:         number
   /** @deprecated legacy mirror of `rpFfa`. */
@@ -942,6 +951,13 @@ export const profileApi = {
 
   /** Account status for the sign-in gate: has this wallet finished setup? */
   me: () => api<ProfileMe>('/api/profile/me'),
+
+  /** Persist the preferred game region on the account (see lib/region.ts). */
+  setRegion: (region: string) =>
+    api<{ ok: true; region: string }>('/api/profile/region', {
+      method: 'POST',
+      body: JSON.stringify({ region }),
+    }),
 
   /** Claim a unique username + 4-digit PIN; returns the TOTP QR to scan. */
   register: (username: string, pin: string) =>

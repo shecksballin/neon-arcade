@@ -141,6 +141,7 @@ import { useActiveUsers } from "./hooks/useActiveUsers";
 import ParticleText from "./components/ParticleText";
 import TargetCursor from "./components/TargetCursor";
 import type { PrivateGameKey } from "./components/social/privateWagerCatalog";
+import { hasChosenRegion, setRegion } from "./lib/region";
 import Particles from "./components/glass/Particles";
 
 // Auth comes from our own deferred context, not from Privy's hooks — the SDK
@@ -424,6 +425,10 @@ export default function App() {
   const refreshAccount = React.useCallback(async (): Promise<BackendAccount | null> => {
     try {
       const me = await profileApi.me();
+      // Region follows the ACCOUNT across devices: adopt the stored choice
+      // on any browser that hasn't picked one locally yet. (A local choice
+      // always wins — the pickers write both.)
+      if (me.region && !hasChosenRegion()) setRegion(me.region);
       const next = { username: me.username, totpEnabled: me.totpEnabled };
       setAccount(next);
       return next;

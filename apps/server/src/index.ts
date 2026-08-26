@@ -8,6 +8,7 @@ import profile from './routes/profile'
 import social from './routes/social'
 import stats from './routes/stats'
 import community from './routes/community'
+import { isGameRegion } from '@neon/types'
 import { attachSocketHandlers } from './socket'
 
 const app = new Hono()
@@ -123,11 +124,47 @@ attachSocketHandlers(io)
 // would kill engine.io long-polling requests mid-poll.
 const { websocket, idleTimeout } = engine.handler()
 
+/**
+ * REGION ROUTING (Fly.io fly-replay).
+ *
+ * Each region is a separate player pool: this process keeps matches, queues
+ * and private rooms in memory, so the player's chosen region must decide
+ * WHICH machine serves them. The client says where it wants to be —
+ * `region` query param on the socket handshake (browsers cannot set custom
+ * websocket headers), `x-neon-region` header on API fetches — and when that
+ * differs from the region this machine runs in (FLY_REGION, set by Fly), we
+ * answer with a `fly-replay` header instead of serving: Fly's proxy then
+ * re-delivers the ORIGINAL request to a machine in the requested region.
+ *
+ * ‼️ For websocket upgrades the replay decision MUST happen before the
+ * upgrade is negotiated (fly-replay rides a plain HTTP response), which is
+ * why this lives here in the fetch handler, ahead of the engine.
+ *
+ * Off Fly (Railway, local dev) FLY_REGION is unset and this is a no-op.
+ */
+const FLY_REGION = process.env.FLY_REGION ?? null
+
+function wantedRegion(req: Request, url: URL): string | null {
+  const want = url.searchParams.get('region') ?? req.headers.get('x-neon-region')
+  return want && isGameRegion(want) ? want : null
+}
+
+function replayTo(region: string): Response {
+  return new Response('replaying to your region', {
+    status: 409,
+    headers: { 'fly-replay': `region=${region}` },
+  })
+}
+
 export default {
   port: config.PORT,
   idleTimeout,
   fetch(req: Request, server: Bun.Server<WebSocketData>) {
     const url = new URL(req.url)
+    if (FLY_REGION) {
+      const want = wantedRegion(req, url)
+      if (want && want !== FLY_REGION) return replayTo(want)
+    }
     // Engine traffic (polling + upgrade requests) goes to the engine;
     // everything else is the ordinary Hono API, untouched.
     if (url.pathname.startsWith('/socket.io/')) {

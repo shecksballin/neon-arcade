@@ -13,6 +13,9 @@ import {
   Users,
 } from 'lucide-react';
 import { AVATAR_LIST } from '../lib/avatars';
+import RegionSelect from './common/RegionSelect';
+import { getRegion, setRegion } from '../lib/region';
+import { profileApi } from '../lib/api';
 import { CurrencySelector } from './CurrencySelector';
 import { useCurrency } from '../CurrencyStore';
 import { useNotifications } from '../notifications/NotificationsStore';
@@ -232,8 +235,29 @@ function NotificationSettings({
   prefs: NotificationPrefs;
   setPref: (key: keyof NotificationPrefs, value: boolean) => void;
 }) {
+  const [region, setRegionState] = useState<string>(() => getRegion());
   return (
     <div className="space-y-6">
+      {/* ── Game region — which server pool this player lives in ── */}
+      <div className="space-y-3">
+        <label className="text-[10px] font-mono uppercase tracking-[3px] text-[#00FFD1]/60 px-1 block">
+          Game region
+        </label>
+        <RegionSelect
+          value={region}
+          onChange={(r) => {
+            setRegionState(r);
+            // Local first (routing reads this instantly and the socket
+            // reconnects to the new region), then persist on the account.
+            setRegion(r);
+            void profileApi.setRegion(r).catch(() => {});
+          }}
+        />
+        <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-[#FF6B9A]/60 px-1">
+          Changing region reconnects you — leave any live match first
+        </p>
+      </div>
+
       <ToggleRow
         icon={<Bell className="w-4 h-4" />}
         title="In-app pop-ups"

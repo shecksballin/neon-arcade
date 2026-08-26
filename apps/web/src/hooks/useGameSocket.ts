@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { getRegion, onRegionChange } from '../lib/region';
 import type {
   KillRewardPayload,
   PlayerEliminatedPayload,
@@ -83,9 +84,27 @@ export function getSocket(): Socket {
     socketInstance = io(SOCKET_URL ?? window.location.origin, {
       autoConnect: false, // games connect lazily via connectGameSocket()
       reconnection: true,
+      // REGION ROUTING: browsers cannot set custom headers on websocket
+      // upgrades, so the chosen region rides the handshake query — the
+      // server fly-replays a mismatched upgrade to the right region's
+      // machine before negotiating the websocket.
+      query: { region: getRegion() },
       // Function form: socket.io invokes this on every (re)connect, so the
       // freshest token from localStorage is used even after a token refresh.
       auth: (cb) => cb({ token: localStorage.getItem(AUTH_TOKEN_KEY) }),
+    });
+
+    // A region change means a DIFFERENT machine owns this player now: update
+    // the handshake and reconnect so every queue/room membership restarts in
+    // the new region. In-flight matches are forfeited by design — the picker
+    // UIs only offer the change from lobby/settings surfaces.
+    onRegionChange((region) => {
+      const s = socketInstance!;
+      (s.io.opts.query as Record<string, string>).region = region;
+      if (s.connected) {
+        s.disconnect();
+        s.connect();
+      }
     });
 
     // Global auth-failure logging. Games layer their own status UI on top;

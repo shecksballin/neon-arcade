@@ -45,6 +45,7 @@ import {
   TOTP_CODE_REGEX,
   TOTP_ISSUER,
   getLevelInfo,
+  isGameRegion,
 } from '@neon/types'
 import { config } from '../config/env'
 import { requireDb } from '../db'
@@ -108,6 +109,8 @@ profile.get('/me', async (c) => {
     // the level is never stored, exactly like the rank badge.
     xp: row?.xp ?? 0,
     level: getLevelInfo(row?.xp ?? 0).level,
+    // Preferred game region (see @neon/types GAME_REGIONS); null = unset.
+    region: row?.region ?? null,
   })
 })
 
@@ -119,6 +122,27 @@ const RegisterSchema = z.object({
     message: 'Username must be 3–20 characters: letters, numbers, underscore',
   }),
   pin: z.string().regex(PIN_REGEX, { message: 'PIN must be exactly 4 digits' }),
+})
+
+/**
+ * POST /region { region } — set the preferred game region. A routing
+ * preference only: the client also mirrors it in localStorage and reconnects
+ * its socket; this row is what makes the choice follow the account across
+ * devices. Validated against the shared GAME_REGIONS catalog.
+ */
+profile.post('/region', async (c) => {
+  const db = requireDb()
+  if (!db) return c.json({ error: 'Database is not configured on this server' }, 503)
+  const wallet = c.get('wallet')
+  const body = (await c.req.json().catch(() => null)) as { region?: unknown } | null
+  if (!body || !isGameRegion(body.region)) {
+    return c.json({ error: 'Unknown region' }, 400)
+  }
+  await db
+    .update(users)
+    .set({ region: body.region })
+    .where(eq(users.wallet, wallet))
+  return c.json({ ok: true, region: body.region })
 })
 
 profile.post('/register', async (c) => {

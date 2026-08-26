@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { User, ShieldCheck, Copy, Check, ArrowRight, Loader2, Smartphone, RefreshCw, LogIn } from 'lucide-react';
 import { useAuth } from '../auth';
+import RegionSelect from './common/RegionSelect';
+import { getRegion, setRegion } from '../lib/region';
 import { AVATAR_LIST } from '../lib/avatars';
 import { ApiError, profileApi, NETWORK_ERROR_MESSAGE } from '../lib/api';
 import { useBackendAuth, abandonSignIn, AUTH_TOKEN_KEY } from '../hooks/useBackendAuth';
@@ -172,6 +174,7 @@ export const AccountSetup: React.FC<AccountSetupProps> = ({ onComplete }) => {
   // step 1 state
   const [selectedAvatar, setSelectedAvatar] = useState(AVATARS[0]);
   const [username, setUsername] = useState('');
+  const [region, setRegionState] = useState<string>(() => getRegion());
   const [pin, setPin] = useState('');
   const [pinConfirm, setPinConfirm] = useState('');
 
@@ -750,6 +753,22 @@ export const AccountSetup: React.FC<AccountSetupProps> = ({ onComplete }) => {
             </div>
 
             <form onSubmit={handleRegister} className="space-y-5">
+              <div>
+                <label className="block text-xs font-mono uppercase tracking-[2px] text-[#00FFD1]/60 mb-3 text-center">
+                  Choose your region
+                </label>
+                {/* Region = which server pool you play in. Saved locally the
+                    moment it's tapped and persisted to the account (fire and
+                    forget — the local copy is what routing reads). */}
+                <RegionSelect
+                  value={region}
+                  onChange={(r) => {
+                    setRegionState(r);
+                    setRegion(r);
+                    void profileApi.setRegion(r).catch(() => {});
+                  }}
+                />
+              </div>
               <div>
                 <label className="block text-xs font-mono uppercase tracking-[2px] text-[#00FFD1]/60 mb-3 text-center">
                   Choose your avatar

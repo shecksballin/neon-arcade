@@ -70,6 +70,12 @@ export const users = pgTable(
     totpSecret: text('totp_secret'),
     totpEnabled: boolean('totp_enabled').notNull().default(false),
 
+    // Preferred game region (Fly.io code from @neon/types GAME_REGIONS).
+    // A ROUTING preference, not identity: it decides which regional machine
+    // the client connects to. Null until chosen (client falls back to the
+    // default region).
+    region: text('region'),
+
     /**
      * SIGN-OUT, SERVER SIDE. Epoch SECONDS; every session token issued
      * before this instant is refused.
