@@ -121,10 +121,22 @@ const WAGERING_KEYS = [
 const present = WAGERING_KEYS.filter((k) => config[k])
 if (present.length > 0 && present.length < WAGERING_KEYS.length) {
   const missing = WAGERING_KEYS.filter((k) => !config[k])
-  throw new Error(
-    `[env] Wagering is PARTIALLY configured — refusing to boot. ` +
-      `Set the missing Doppler vars (${missing.join(', ')}) or unset ` +
-      `the present ones (${present.join(', ')}) to disable wagering entirely.`
+  if (config.HOUSE_WALLET_PRIVATE_KEY) {
+    // KEY MATERIAL half-wired is the dangerous state — a signing key with a
+    // mismatched/missing address set must never run. Crash loudly.
+    throw new Error(
+      `[env] HOUSE_WALLET_PRIVATE_KEY is set but wagering is incomplete — ` +
+        `refusing to boot. Set the missing Doppler vars (${missing.join(', ')}) ` +
+        `or unset the key to disable wagering entirely.`
+    )
+  }
+  // No key present → no money code CAN run; a stray leftover (a lone
+  // SOLANA_RPC_URL survived the pre-wagering drafts and crash-looped the
+  // first deploy of this guard) just leaves wagering disabled, loudly.
+  console.warn(
+    `[env] Wagering is PARTIALLY configured (${present.join(', ')} set; ` +
+      `${missing.join(', ')} missing) — wagering stays DISABLED until all ` +
+      `four are set.`
   )
 }
 
