@@ -6,7 +6,8 @@ import { LibraryBlob } from "../glass/LibraryBlob";
 import { ParticleCard, GlobalSpotlight } from "../glass/MagicGameTile";
 import PrivateWagerRoom from "../social/PrivateWagerRoom";
 import LobbyModeTiles from "../common/LobbyModeTiles";
-import MorphSlider from "./MorphSlider";
+import PugShooterMapSelect from "./PugShooterMapSelect";
+import { MAPS, type PugShooterMap } from "./pugShooterMaps";
 import {
   loadPugShooterOptions,
   savePugShooterOptions,
@@ -15,7 +16,9 @@ import {
 } from "./pugShooterOptions";
 
 export type PugShooterMode = "ffa" | "duel" | "duo";
-export type PugShooterMap = "city" | "warehouse";
+// The map union lives in pugShooterMaps.ts (shared with the selection
+// page); re-exported here so PugShooterGame's imports stay unchanged.
+export type { PugShooterMap } from "./pugShooterMaps";
 export type PugShooterDifficulty = "easy" | "normal" | "hard";
 
 /** Everything the game's boot needs — serialized onto the iframe query string. */
@@ -30,18 +33,6 @@ const MODES: { id: PugShooterMode; label: string; detail: string }[] = [
   { id: "duel", label: "1v1 Duel", detail: "one sharp bot · first to 10" },
   { id: "duo", label: "2v2 Teams", detail: "you + an ally · first team to 20" },
 ];
-
-const MAPS: { id: PugShooterMap; label: string; detail: string }[] = [
-  { id: "city", label: "Neon Suburbs", detail: "open streets · long sightlines" },
-  { id: "warehouse", label: "Cold Storage", detail: "interior · close quarters" },
-];
-
-// Slides for the map picker. Module-level so the array identity is stable —
-// MorphSlider tears down and rebuilds its WebGL engine whenever `items` changes.
-const MAP_SLIDES = MAPS.map((m) => ({
-  image: `/pug-map-previews/${m.id}.jpg`,
-  caption: m.label,
-}));
 
 // Mirrors DIFFICULTIES in the game's src/difficulty.js — the pill value is just an
 // index into this list, since the shared selector speaks numbers.
@@ -78,6 +69,9 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
   const containerRef = useRef<HTMLDivElement>(null);
   const [mode, setMode] = useState<PugShooterMode>("ffa");
   const [map, setMap] = useState<PugShooterMap>("city");
+  // Map selection is a full-screen PAGE (PugShooterMapSelect) — the tile
+  // below navigates there; only CONFIRM on that page writes `map` back.
+  const [showMapSelect, setShowMapSelect] = useState(false);
   const [difficultyIndex, setDifficultyIndex] = useState(1); // normal
   const [showOptions, setShowOptions] = useState(false);
   // PRIVATE WAGER: invite-only round against a friend, in the mode selected
@@ -178,28 +172,31 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
 
             <div className="flex flex-col items-center gap-3">
               <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
-                Select Map
+                Map
               </p>
-              {/* MorphSlider fills its container absolutely, so the wrapper sets the
-                  box. The slider is the ONLY map input (the button row is gone), so
-                  one-way slider → state sync via onIndexChange is sufficient. */}
-              <div className="relative h-40 sm:h-48 w-56 sm:w-64">
-                <MorphSlider
-                  items={MAP_SLIDES}
-                  startIndex={MAPS.findIndex((m) => m.id === map)}
-                  onIndexChange={(i) => setMap(MAPS[i].id)}
-                  transition="melt"
-                  intensity={0.55}
-                  aberration={0.35}
-                  drift={0.4}
-                  overlayColor="#00FFD1"
-                  radius={16}
-                  duration={0.9}
-                  showCaptions
-                  showControls
-                  showIndicators
+              {/* The chosen map as a preview TILE — clicking navigates to the
+                  full-screen selection page (PugShooterMapSelect), which owns
+                  the MorphSlider now. */}
+              <button
+                onClick={() => setShowMapSelect(true)}
+                title="Change map"
+                className="group relative h-28 w-56 sm:h-32 sm:w-64 rounded-2xl overflow-hidden border border-[#00FFD1]/30 hover:border-[#00FFD1] transition-all cursor-pointer shadow-[0_0_20px_rgba(0,255,209,0.12)] hover:shadow-[0_0_35px_rgba(0,255,209,0.3)]"
+              >
+                <img
+                  src={`/pug-map-previews/${map}.jpg`}
+                  alt=""
+                  className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                 />
-              </div>
+                <div className="absolute inset-0 bg-gradient-to-t from-[#081616]/90 via-transparent to-transparent" />
+                <div className="absolute bottom-2 left-3 right-3 flex items-end justify-between text-left">
+                  <span className="font-black text-sm uppercase tracking-tighter italic text-white drop-shadow-[0_0_10px_rgba(0,255,209,0.5)]">
+                    {MAPS.find((m) => m.id === map)?.label}
+                  </span>
+                  <span className="text-[8px] font-mono uppercase tracking-[0.2em] text-[#00FFD1]/80 group-hover:text-[#00FFD1]">
+                    Change ›
+                  </span>
+                </div>
+              </button>
               <p className="text-[9px] font-mono tracking-widest uppercase text-[#B1C5FF]/40">
                 {MAPS.find((m) => m.id === map)?.detail}
               </p>
@@ -336,6 +333,20 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
             </p>
           </div>
         </div>
+      )}
+
+      {/* Full-screen map selection page. The lobby stays mounted underneath,
+          so mode/difficulty/options survive the round-trip; only CONFIRM on
+          the page commits a new map, back/Esc discards the draft. */}
+      {showMapSelect && (
+        <PugShooterMapSelect
+          initialMap={map}
+          onConfirm={(picked) => {
+            setMap(picked);
+            setShowMapSelect(false);
+          }}
+          onBack={() => setShowMapSelect(false)}
+        />
       )}
 
       {/* Private-wager waiting room. The room seats 2 in every Pug Shooter
