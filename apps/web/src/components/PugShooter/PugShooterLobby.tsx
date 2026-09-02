@@ -6,6 +6,7 @@ import { LibraryBlob } from "../glass/LibraryBlob";
 import { ParticleCard, GlobalSpotlight } from "../glass/MagicGameTile";
 import PrivateWagerRoom from "../social/PrivateWagerRoom";
 import LobbyModeTiles from "../common/LobbyModeTiles";
+import MorphSlider from "./MorphSlider";
 import {
   loadPugShooterOptions,
   savePugShooterOptions,
@@ -34,6 +35,13 @@ const MAPS: { id: PugShooterMap; label: string; detail: string }[] = [
   { id: "city", label: "Neon Suburbs", detail: "open streets · long sightlines" },
   { id: "warehouse", label: "Cold Storage", detail: "interior · close quarters" },
 ];
+
+// Slides for the map picker. Module-level so the array identity is stable —
+// MorphSlider tears down and rebuilds its WebGL engine whenever `items` changes.
+const MAP_SLIDES = MAPS.map((m) => ({
+  image: `/pug-map-previews/${m.id}.jpg`,
+  caption: m.label,
+}));
 
 // Mirrors DIFFICULTIES in the game's src/difficulty.js — the pill value is just an
 // index into this list, since the shared selector speaks numbers.
@@ -172,20 +180,25 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
               <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
                 Select Map
               </p>
-              <div className="flex gap-2 p-1 bg-[#111E1E]/80 border border-[#00FFD1]/20 rounded-lg backdrop-blur-md">
-                {MAPS.map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => setMap(m.id)}
-                    className={`px-4 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      map === m.id
-                        ? "bg-[#00FFD1] text-[#081616] shadow-[0_0_15px_rgba(0,255,209,0.5)]"
-                        : "text-[#B1C5FF]/50 hover:text-[#B1C5FF]"
-                    }`}
-                  >
-                    {m.label}
-                  </button>
-                ))}
+              {/* MorphSlider fills its container absolutely, so the wrapper sets the
+                  box. The slider is the ONLY map input (the button row is gone), so
+                  one-way slider → state sync via onIndexChange is sufficient. */}
+              <div className="relative h-40 sm:h-48 w-56 sm:w-64">
+                <MorphSlider
+                  items={MAP_SLIDES}
+                  startIndex={MAPS.findIndex((m) => m.id === map)}
+                  onIndexChange={(i) => setMap(MAPS[i].id)}
+                  transition="melt"
+                  intensity={0.55}
+                  aberration={0.35}
+                  drift={0.4}
+                  overlayColor="#00FFD1"
+                  radius={16}
+                  duration={0.9}
+                  showCaptions
+                  showControls
+                  showIndicators
+                />
               </div>
               <p className="text-[9px] font-mono tracking-widest uppercase text-[#B1C5FF]/40">
                 {MAPS.find((m) => m.id === map)?.detail}
