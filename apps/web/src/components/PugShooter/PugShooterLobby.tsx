@@ -1,6 +1,6 @@
 import React, { useRef, useState } from "react";
 import { LobbyLevelStrip } from '../common/LobbyLevelStrip';
-import { Cpu, Globe, Settings, Swords, X } from "lucide-react";
+import { ChevronRight, Cpu, Globe, Settings, Swords, X } from "lucide-react";
 import { DifficultySelector } from "../common/DifficultySelector";
 import { LibraryBlob } from "../glass/LibraryBlob";
 import { ParticleCard, GlobalSpotlight } from "../glass/MagicGameTile";
@@ -69,9 +69,13 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
   const containerRef = useRef<HTMLDivElement>(null);
   const [mode, setMode] = useState<PugShooterMode>("ffa");
   const [map, setMap] = useState<PugShooterMap>("city");
-  // Map selection is a full-screen PAGE (PugShooterMapSelect) — the tile
-  // below navigates there; only CONFIRM on that page writes `map` back.
+  // TWO-STEP FLOW: this screen picks mode/difficulty/how-to-play; NEXT
+  // (bottom) advances to the full-screen map page, whose CONFIRM launches
+  // the chosen action. The map never appears on this screen.
   const [showMapSelect, setShowMapSelect] = useState(false);
+  // Which launch path CONFIRM on the map page will run. The three cards
+  // below select this instead of launching directly.
+  const [action, setAction] = useState<"online" | "private" | "practice">("online");
   const [difficultyIndex, setDifficultyIndex] = useState(1); // normal
   const [showOptions, setShowOptions] = useState(false);
   // PRIVATE WAGER: invite-only round against a friend, in the mode selected
@@ -100,12 +104,6 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [showOptions]);
-
-  const config = (): PugShooterMatchConfig => ({
-    mode,
-    map,
-    difficulty: DIFFICULTY_TIERS[difficultyIndex].id,
-  });
 
   return (
     // h-full + overflow-y-auto (not min-h-screen + hidden like the other lobbies):
@@ -142,73 +140,47 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
         <LobbyLevelStrip />
 
         <div className="space-y-6">
-          {/* Mode + Map side by side (stacked only on narrow phones) —
-              two stacked full-width selector rows spent a whole screen of
-              lobby height on four buttons. */}
-          <div className="flex flex-col sm:flex-row items-center sm:items-start justify-center gap-x-10 gap-y-6">
-            <div className="flex flex-col items-center gap-3">
-              <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
-                Select Mode
-              </p>
-              <div className="flex gap-2 p-1 bg-[#111E1E]/80 border border-[#00FFD1]/20 rounded-lg backdrop-blur-md">
-                {MODES.map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => setMode(m.id)}
-                    className={`px-4 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
-                      mode === m.id
-                        ? "bg-[#00FFD1] text-[#081616] shadow-[0_0_15px_rgba(0,255,209,0.5)]"
-                        : "text-[#B1C5FF]/50 hover:text-[#B1C5FF]"
-                    }`}
-                  >
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-              <p className="text-[9px] font-mono tracking-widest uppercase text-[#B1C5FF]/40">
-                {MODES.find((m) => m.id === mode)?.detail}
-              </p>
+          {/* Mode only — the MAP is deliberately absent from this screen:
+              it is step two of the flow, the full-screen selection page the
+              NEXT button (bottom) navigates to. */}
+          <div className="flex flex-col items-center gap-3">
+            <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
+              Select Mode
+            </p>
+            <div className="flex gap-2 p-1 bg-[#111E1E]/80 border border-[#00FFD1]/20 rounded-lg backdrop-blur-md">
+              {MODES.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => setMode(m.id)}
+                  className={`px-4 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
+                    mode === m.id
+                      ? "bg-[#00FFD1] text-[#081616] shadow-[0_0_15px_rgba(0,255,209,0.5)]"
+                      : "text-[#B1C5FF]/50 hover:text-[#B1C5FF]"
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
             </div>
-
-            <div className="flex flex-col items-center gap-3">
-              <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
-                Map
-              </p>
-              {/* The chosen map as a preview TILE — clicking navigates to the
-                  full-screen selection page (PugShooterMapSelect), which owns
-                  the MorphSlider now. */}
-              <button
-                onClick={() => setShowMapSelect(true)}
-                title="Change map"
-                className="group relative h-28 w-56 sm:h-32 sm:w-64 rounded-2xl overflow-hidden border border-[#00FFD1]/30 hover:border-[#00FFD1] transition-all cursor-pointer shadow-[0_0_20px_rgba(0,255,209,0.12)] hover:shadow-[0_0_35px_rgba(0,255,209,0.3)]"
-              >
-                <img
-                  src={`/pug-map-previews/${map}.jpg`}
-                  alt=""
-                  className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-[#081616]/90 via-transparent to-transparent" />
-                <div className="absolute bottom-2 left-3 right-3 flex items-end justify-between text-left">
-                  <span className="font-black text-sm uppercase tracking-tighter italic text-white drop-shadow-[0_0_10px_rgba(0,255,209,0.5)]">
-                    {MAPS.find((m) => m.id === map)?.label}
-                  </span>
-                  <span className="text-[8px] font-mono uppercase tracking-[0.2em] text-[#00FFD1]/80 group-hover:text-[#00FFD1]">
-                    Change ›
-                  </span>
-                </div>
-              </button>
-              <p className="text-[9px] font-mono tracking-widest uppercase text-[#B1C5FF]/40">
-                {MAPS.find((m) => m.id === map)?.detail}
-              </p>
-            </div>
+            <p className="text-[9px] font-mono tracking-widest uppercase text-[#B1C5FF]/40">
+              {MODES.find((m) => m.id === mode)?.detail}
+            </p>
           </div>
         </div>
 
         <div className="w-full">
+          {/* HOW-TO-PLAY cards — SELECTORS now, not launchers: the choice is
+              held in `action` and executed by the map page's CONFIRM. The
+              selected card keeps the neon ring; unselected ones dim. */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full text-left">
             <ParticleCard
-              onClick={() => onFindGame(config())}
-              className="magic-bento-card magic-bento-card--border-glow px-8 py-6 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl hover:shadow-[0_0_50px_rgba(0,255,209,0.3)] hover:scale-[1.02] active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
+              onClick={() => setAction("online")}
+              aria-pressed={action === "online"}
+              className={`magic-bento-card magic-bento-card--border-glow px-8 py-6 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl hover:scale-[1.02] active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer ${
+                action === "online"
+                  ? "ring-2 ring-[#00FFD1] ring-offset-2 ring-offset-[#081616] shadow-[0_0_50px_rgba(0,255,209,0.3)]"
+                  : "opacity-60 hover:opacity-90"
+              }`}
             >
               <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>
               <Globe className="w-8 h-8 group-hover:rotate-12 transition-transform" />
@@ -222,8 +194,13 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
             {/* PRIVATE WAGER — new card (this lobby has no local co-op to
                 replace), styled exactly like Practice per the contract. */}
             <ParticleCard
-              onClick={() => setShowPrivateWager(true)}
-              className="magic-bento-card magic-bento-card--border-glow px-8 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
+              onClick={() => setAction("private")}
+              aria-pressed={action === "private"}
+              className={`magic-bento-card magic-bento-card--border-glow px-8 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer ${
+                action === "private"
+                  ? "ring-2 ring-[#00FFD1] ring-offset-2 ring-offset-[#081616] border-[#00FFD1]"
+                  : "opacity-60 hover:opacity-90"
+              }`}
             >
               <Swords className="w-8 h-8 text-zinc-400 group-hover:rotate-12 transition-transform group-hover:text-[#00FFD1]" />
               <div className="text-center">
@@ -236,8 +213,13 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
               </div>
             </ParticleCard>
             <ParticleCard
-              onClick={() => onPlayComputer(config())}
-              className="magic-bento-card magic-bento-card--border-glow px-8 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer"
+              onClick={() => setAction("practice")}
+              aria-pressed={action === "practice"}
+              className={`magic-bento-card magic-bento-card--border-glow px-8 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer ${
+                action === "practice"
+                  ? "ring-2 ring-[#00FFD1] ring-offset-2 ring-offset-[#081616] border-[#00FFD1]"
+                  : "opacity-60 hover:opacity-90"
+              }`}
             >
               <Cpu className="w-8 h-8 text-zinc-400 group-hover:rotate-12 transition-transform" />
               <div className="text-center">
@@ -282,6 +264,16 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
         >
           <Settings className="w-4 h-4" />
           Game Options
+        </button>
+
+        {/* NEXT — done with this screen: advance to the full-screen map
+            selection page, whose CONFIRM launches the selected action. */}
+        <button
+          onClick={() => setShowMapSelect(true)}
+          className="w-full max-w-xl mx-auto flex items-center justify-center gap-3 px-10 py-4 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl font-black text-lg uppercase tracking-tighter italic shadow-[0_0_40px_rgba(0,255,209,0.35)] hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
+        >
+          Next — Select Map
+          <ChevronRight className="w-5 h-5" />
         </button>
 
         <LobbyModeTiles />
@@ -335,15 +327,31 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
         </div>
       )}
 
-      {/* Full-screen map selection page. The lobby stays mounted underneath,
-          so mode/difficulty/options survive the round-trip; only CONFIRM on
-          the page commits a new map, back/Esc discards the draft. */}
+      {/* STEP TWO — the full-screen map selection page. CONFIRM here is the
+          LAUNCH: it runs whichever action the lobby's cards selected, with
+          the freshly picked map (built inline — setMap hasn't flushed yet).
+          Back/Esc returns to the lobby with everything intact. */}
       {showMapSelect && (
         <PugShooterMapSelect
           initialMap={map}
+          confirmLabel={
+            action === "online"
+              ? "Find Match"
+              : action === "private"
+                ? "Open Private Room"
+                : "Start Practice"
+          }
           onConfirm={(picked) => {
             setMap(picked);
             setShowMapSelect(false);
+            const chosen: PugShooterMatchConfig = {
+              mode,
+              map: picked,
+              difficulty: DIFFICULTY_TIERS[difficultyIndex].id,
+            };
+            if (action === "online") onFindGame(chosen);
+            else if (action === "practice") onPlayComputer(chosen);
+            else setShowPrivateWager(true);
           }}
           onBack={() => setShowMapSelect(false)}
         />

@@ -21,6 +21,7 @@ export default function PugShooterMapSelect({
   initialMap,
   onConfirm,
   onBack,
+  confirmLabel,
 }: {
   /** The lobby's current map — where the slider starts. */
   initialMap: PugShooterMap
@@ -28,6 +29,9 @@ export default function PugShooterMapSelect({
   onConfirm: (map: PugShooterMap) => void
   /** Discard the draft and return to the lobby. */
   onBack: () => void
+  /** CONFIRM button copy — the lobby passes the launch action's name
+   *  ("Find Match" / "Start Practice" / …) since confirming here starts it. */
+  confirmLabel?: string
 }) {
   // The draft: what the slider is showing, committed only by CONFIRM.
   const [draftIndex, setDraftIndex] = useState(() =>
@@ -112,7 +116,7 @@ export default function PugShooterMapSelect({
           className="inline-flex items-center gap-3 px-10 py-4 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl font-black text-lg uppercase tracking-tighter italic shadow-[0_0_40px_rgba(0,255,209,0.35)] hover:scale-[1.03] active:scale-[0.97] transition-all cursor-pointer"
         >
           <Check className="w-5 h-5" />
-          Confirm {draft.label}
+          {confirmLabel ?? `Confirm ${draft.label}`}
         </button>
       </div>
     </div>
