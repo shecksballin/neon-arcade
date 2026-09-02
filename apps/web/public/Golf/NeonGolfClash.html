@@ -444,6 +444,12 @@ addEventListener("keydown", (e) => {
   else if (e.code === "KeyS" || e.code === "ArrowDown") { downHeldF = 0; e.preventDefault(); }
   else if (e.code === "Escape") uiPauseToggle();   // must work while sim is frozen
   else if (e.code === "Enter") uiConfirm();
+  else if (e.code === "KeyF" && !e.ctrlKey && !e.metaKey && !e.altKey && window.parent !== window) {
+    // Fullscreen belongs to the arcade shell's document, and while this
+    // iframe has focus the parent never sees the keydown — forward it
+    // (common/fullscreen.tsx listens for exactly this type).
+    window.parent.postMessage({ type: "neon:fullscreen-toggle" }, window.location.origin);
+  }
 });
 addEventListener("keyup", (e) => {
   if (BIND_HELD[e.code]) held.delete(BIND_HELD[e.code]);

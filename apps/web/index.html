@@ -15,6 +15,38 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover"
     />
     <meta name="theme-color" content="#081616" />
+
+    <!-- Browser-tab logo. The PNG works everywhere; apple-touch-icon covers
+         iOS home-screen pins. -->
+    <link rel="icon" type="image/png" href="/NeonArcadeLogo.png" />
+    <link rel="apple-touch-icon" href="/NeonArcadeLogo.png" />
+
+    <!-- LINK PREVIEWS (Open Graph + Twitter). One static card serves every
+         shared URL — the regular site link AND the ?wager= duel invite links
+         (same origin, same index.html). og:image must be ABSOLUTE for
+         Discord/iMessage/Twitter to render it; update the domain here when
+         the custom production domain lands. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Neon Arcade" />
+    <meta property="og:title" content="Neon Arcade — Skill-Based Betting" />
+    <meta
+      property="og:description"
+      content="Ten neon arcade games, ranked matchmaking, and shareable duel links. Join a match with one tap."
+    />
+    <meta
+      property="og:image"
+      content="https://neon-arcade-git-bhvr-migration-shecksballins-projects.vercel.app/NeonArcadeLogo.png"
+    />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Neon Arcade — Skill-Based Betting" />
+    <meta
+      name="twitter:description"
+      content="Ten neon arcade games, ranked matchmaking, and shareable duel links. Join a match with one tap."
+    />
+    <meta
+      name="twitter:image"
+      content="https://neon-arcade-git-bhvr-migration-shecksballins-projects.vercel.app/NeonArcadeLogo.png"
+    />
     <meta name="mobile-web-app-capable" content="yes" />
 
     <!--

@@ -77,9 +77,8 @@ export const CFG = {
     { n: 3, replan: 0.85, speed: 0.9,  mistake: 0.13, bump: 0.15, dive: 0.15 },
   ],
 
-  // --- audio mix (music quiet under SFX, per the audio reference) ---
+  // --- audio mix (music loop only — SFX were removed by request) ---
   musicGain: 0.14,
-  sfxGain: { crumble: 0.32, jump: 0.4, dive: 0.38, splat: 0.55, crowd: 0.5 },
 
   // --- rendering / perf budget: 60fps on a mid laptop ---
   dprCap: 1.75,

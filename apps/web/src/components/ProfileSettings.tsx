@@ -11,6 +11,7 @@ import {
   MessageSquare,
   Swords,
   Users,
+  Globe,
 } from 'lucide-react';
 import { AVATAR_LIST } from '../lib/avatars';
 import RegionSelect from './common/RegionSelect';
@@ -33,7 +34,8 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ currentProfile
   const [name, setName] = useState(currentProfile.name);
   const [selectedAvatar, setSelectedAvatar] = useState(currentProfile.avatarUrl);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'profile' | 'currency' | 'notifications'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'currency' | 'notifications' | 'region'>('profile');
+  const [regionValue, setRegionValue] = useState<string>(() => getRegion());
   const { currency } = useCurrency();
   const { prefs, setPref } = useNotifications();
 
@@ -112,6 +114,21 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ currentProfile
             </span>
           </button>
 
+          <button
+            onClick={() => setActiveTab('region')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
+              activeTab === 'region' ? 'bg-[#00FFD1] text-black font-black italic' : 'text-white/40 hover:text-white/80 transition-colors'
+            }`}
+          >
+            <Globe className="w-4 h-4" />
+            <span className="uppercase text-xs tracking-widest flex-1 text-left">Region</span>
+            <span className={`text-[10px] font-mono tracking-widest ${
+              activeTab === 'region' ? 'text-black/60' : 'text-white/25'
+            }`}>
+              {regionValue.toUpperCase()}
+            </span>
+          </button>
+
           <div className="pt-4 mt-4 border-t border-white/5">
              <button 
                 onClick={() => {
@@ -135,7 +152,9 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ currentProfile
                   ? 'Display Currency'
                   : activeTab === 'notifications'
                     ? 'Notifications'
-                    : 'Profile Settings'}
+                    : activeTab === 'region'
+                      ? 'Game Region'
+                      : 'Profile Settings'}
               </h2>
               <div className="flex items-center gap-4 mt-1">
                 <p className="text-white/40 text-[10px] font-mono">
@@ -143,7 +162,9 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ currentProfile
                     ? `SHOWING AMOUNTS IN: ${currency.code}`
                     : activeTab === 'notifications'
                       ? `IN-APP POP-UPS: ${prefs.popups ? 'ENABLED' : 'DISABLED'}`
-                      : `USER_ID: ${currentProfile.name.toUpperCase()}`}
+                      : activeTab === 'region'
+                        ? `CONNECTED TO: ${regionValue.toUpperCase()}`
+                        : `USER_ID: ${currentProfile.name.toUpperCase()}`}
                 </p>
               </div>
             </div>
@@ -156,6 +177,13 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ currentProfile
 
           {activeTab === 'notifications' && (
             <NotificationSettings prefs={prefs} setPref={setPref} />
+          )}
+
+          {activeTab === 'region' && (
+            <RegionSettings
+              value={regionValue}
+              onChange={(r) => setRegionValue(r)}
+            />
           )}
 
           <div className={`space-y-8 ${activeTab === 'profile' ? '' : 'hidden'}`}>
@@ -216,6 +244,43 @@ export const ProfileSettings: React.FC<ProfileSettingsProps> = ({ currentProfile
 };
 
 // ---------------------------------------------------------------------------
+// REGION TAB
+// ---------------------------------------------------------------------------
+/**
+ * Which regional game server this player lives on. A region is a separate
+ * PLAYER POOL (matches, queues and invites all live on that region's
+ * machine), so the copy leads with the social rule. Selection is applied
+ * instantly: localStorage first (routing + the socket reconnect read it),
+ * then persisted on the account so it follows the player across devices.
+ */
+function RegionSettings({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (region: string) => void;
+}) {
+  return (
+    <div className="space-y-5">
+      <RegionSelect
+        value={value}
+        onChange={(r) => {
+          onChange(r);
+          setRegion(r);
+          void profileApi.setRegion(r).catch(() => {});
+        }}
+      />
+      <div className="rounded-xl border border-[#FF6B9A]/20 bg-[#FF6B9A]/5 px-4 py-3">
+        <p className="text-[10px] font-mono uppercase tracking-[0.2em] text-[#FF6B9A]/80">
+          Changing region reconnects you to a different server — leave any
+          live match first, or it counts as a forfeit.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // NOTIFICATIONS TAB
 // ---------------------------------------------------------------------------
 /**
@@ -235,29 +300,8 @@ function NotificationSettings({
   prefs: NotificationPrefs;
   setPref: (key: keyof NotificationPrefs, value: boolean) => void;
 }) {
-  const [region, setRegionState] = useState<string>(() => getRegion());
   return (
     <div className="space-y-6">
-      {/* ── Game region — which server pool this player lives in ── */}
-      <div className="space-y-3">
-        <label className="text-[10px] font-mono uppercase tracking-[3px] text-[#00FFD1]/60 px-1 block">
-          Game region
-        </label>
-        <RegionSelect
-          value={region}
-          onChange={(r) => {
-            setRegionState(r);
-            // Local first (routing reads this instantly and the socket
-            // reconnects to the new region), then persist on the account.
-            setRegion(r);
-            void profileApi.setRegion(r).catch(() => {});
-          }}
-        />
-        <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-[#FF6B9A]/60 px-1">
-          Changing region reconnects you — leave any live match first
-        </p>
-      </div>
-
       <ToggleRow
         icon={<Bell className="w-4 h-4" />}
         title="In-app pop-ups"

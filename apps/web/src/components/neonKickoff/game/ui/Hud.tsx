@@ -1,6 +1,8 @@
 import { AnimatePresence, motion } from 'motion/react';
 import { useMediaQuery } from 'react-responsive';
-import { Menu, Volume2, VolumeX } from 'lucide-react';
+import { Maximize, Menu, Minimize, Volume2, VolumeX } from 'lucide-react';
+import { toggleAppFullscreen, useIsFullscreen } from '../../../common/fullscreen';
+import { PerfHud } from '../../../common/PerfHud';
 import { ZONE_COLOR } from '../ring';
 import { goals } from '../shootout';
 import { useGame } from '../store';
@@ -69,6 +71,7 @@ export function Hud() {
 
   const inPlay = phase !== 'over';
   const isCoarse = useMediaQuery({ query: '(pointer: coarse) and (hover: none)' });
+  const isFullscreen = useIsFullscreen();
   const striking = turn === 'player';
   const keeperGuess = flipDir(playerGuess);
 
@@ -202,8 +205,23 @@ export function Hud() {
         )}
       </AnimatePresence>
 
-      {/* ---- bottom right: mute / pause */}
+      {/* ---- top right: FPS/ping (this corner is deliberately clear — the
+          old leaderboard card was removed — so the metrics take it). */}
+      <PerfHud positionClassName="absolute top-6 right-6" />
+
+      {/* ---- bottom right: fullscreen / mute / pause */}
       <div className="absolute bottom-6 right-6 flex gap-3 pointer-events-auto">
+        {/* Desktop only, like the shared FullscreenButton (phones get no
+            fullscreen affordance); same document toggle as the 'f' key. */}
+        {!isCoarse && (
+          <button
+            onClick={toggleAppFullscreen}
+            className="p-3.5 bg-white/5 border border-white/10 rounded-2xl text-[#00FFD1] hover:bg-[#00FFD1]/10 hover:border-[#00FFD1]/50 transition-all shadow-2xl active:scale-90 cursor-pointer"
+            title={isFullscreen ? 'Exit Fullscreen (F)' : 'Fullscreen (F)'}
+          >
+            {isFullscreen ? <Minimize className="w-5 h-5" /> : <Maximize className="w-5 h-5" />}
+          </button>
+        )}
         <button
           onClick={toggleMute}
           className="p-3.5 bg-white/5 border border-white/10 rounded-2xl text-[#00FFD1] hover:bg-[#00FFD1]/10 hover:border-[#00FFD1]/50 transition-all shadow-2xl active:scale-90 cursor-pointer"

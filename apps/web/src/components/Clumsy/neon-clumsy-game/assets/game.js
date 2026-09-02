@@ -44,7 +44,7 @@ const audio = new AudioSys();
 
 // ---------- renderer / scene ----------
 const canvas = document.getElementById("c");
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.12;
 if (CFG.shadows && !touchMode) {
@@ -274,10 +274,9 @@ function playerInput(dt) {
   if (len > 1) { ix /= len; iz /= len; }
 
   // smoothed yaw velocity drives the sprint-turn animations
-  // (mouse right -> positive dx -> visual right turn -> SprintTurnR)
-  const yawVel = mouseDX / Math.max(dt, 1e-4);
-  mouseDX = 0;
-  yawVelSmooth += (yawVel - yawVelSmooth) * Math.min(1, dt * 10);
+  // (mouse right -> positive dx -> visual right turn -> SprintTurnR).
+  // yawVelSmooth is sampled once per rendered frame in frame() — mouseDX
+  // accumulates per frame, so a 2-tick frame would read 0 on tick two here.
   const yawRate = yawVelSmooth * CFG.mouseSens;
   const turnDir = yawRate > CFG.yawTurnAnimThreshold ? 1
     : yawRate < -CFG.yawTurnAnimThreshold ? -1 : 0;
@@ -306,11 +305,7 @@ async function boot() {
     world.timestep = STEP;
     rags = new RagdollSystem(RAPIER, world);
 
-    level = new Level(scene, RAPIER, world, {
-      onCrumble: (pos) => {
-        audio.sfx("crumble", { rate: 0.92 + Math.random() * 0.2 });
-      },
-    });
+    level = new Level(scene, RAPIER, world);
     level.setBillboardTexts([STR.billboard1, STR.billboard2, STR.billboard3]);
     level.build();
     bump(0.45);
@@ -359,8 +354,6 @@ function buildPawns() {
   });
   scene.add(playerChar.group);
   player = new Pawn(playerChar, level, { name: "you", isPlayer: true });
-  player.onJump = () => audio.sfx("jump", { rate: 0.95 + Math.random() * 0.1 });
-  player.onDive = () => audio.sfx("dive");
   pawns.push(player);
 
   const tiers = [];
@@ -408,6 +401,7 @@ function startRound() {
   camYaw = Math.atan2(player.pos.x, player.pos.z);
   camPitch = -0.36;
   camDist = 11;
+  smoothedTarget.set(player.pos.x, player.pos.y + CFG.camHeight, player.pos.z);
 
   mode = "COUNTDOWN";
   countdownT = 0;
@@ -424,7 +418,6 @@ function eliminate(pawn) {
   aliveCount--;
   ui.setPlayersLeft(aliveCount);
   ui.feed(pawn.isPlayer ? ui.nickname() : pawn.name);
-  audio.sfx("crowd", { throttle: 0.6 });
   const rag = rags.spawn(pawn.character, pawn.vel);
   elims.push({ rag, pawn, splat: false, age: 0 });
 
@@ -486,7 +479,6 @@ function roundEnd() {
   const win = winner === player;
   if (win) {
     level.confetti(player.pos.x, player.pos.y, player.pos.z);
-    audio.sfx("crowd", { vol: 0.6, throttle: 0 });
     ui.showEnd({ win: true, stats: player.stats });
   } else {
     ui.showEnd({
@@ -602,6 +594,9 @@ function simTick(dt) {
   if (mode === "PLAYING" || mode === "ENDED" || mode === "COUNTDOWN") {
     if (mode === "PLAYING") roundTime += dt;
 
+    // snapshot pre-integration transforms for frame()'s render interpolation
+    for (const p of pawns) { p.prevPos.copy(p.pos); p.prevYaw = p.yaw; }
+
     // inputs
     const pin = (player.alive && mode !== "ENDED") ? playerInput(dt) : { mx: 0, mz: 0 };
     player.update(dt, pin);
@@ -651,7 +646,6 @@ function simTick(dt) {
       if (!e.splat && hips && hips.y < CFG.slimeY + 0.3) {
         e.splat = true;
         level.splash(hips.x, hips.z);
-        audio.sfx("splat", { rate: 0.92 + Math.random() * 0.16 });
       }
       if (e.age > 2.8) {
         rags.release(e.rag);
@@ -672,15 +666,41 @@ function simTick(dt) {
       if (endDelay <= 0 && mode !== "ENDED") roundEnd();
     }
   }
+  // level.update + character mixers moved to frame(): they advance on real
+  // frame time, so tile FX and animation stay smooth between 60Hz sim ticks.
+}
 
+// Tile wobble/crumble timers and mixer 'finished' callbacks (Trip -> GetUp
+// state flips) live here, so this ALSO advances game state simTick reads —
+// both are wall-clock timers, so per-frame dt keeps their timing identical;
+// a state flip lands between tick batches instead of between ticks.
+function visualUpdate(dt) {
   level.update(dt, perfNow() / 1000);
   for (const p of pawns) p.character.update(dt);
+}
+
+// Write interpolated transforms to the scene (alpha = fraction of a sim step
+// the render sits past the last tick). Ragdolled/dead pawns are excluded:
+// their bones are physics-driven and their group deliberately stays put.
+function applyRenderTransforms(alpha) {
+  for (const p of pawns) {
+    if (!p.alive || p.state === PSTATE.RAGDOLL) continue;
+    const g = p.character.group;
+    g.position.lerpVectors(p.prevPos, p.pos, alpha);
+    let dy = p.yaw - p.prevYaw;
+    while (dy > Math.PI) dy -= Math.PI * 2;
+    while (dy < -Math.PI) dy += Math.PI * 2;
+    g.rotation.y = p.prevYaw + dy * alpha;
+  }
 }
 
 function perfNow() { return performance.now(); }
 
 // ---------- camera ----------
 const camTargetV = new THREE.Vector3(), camPosV = new THREE.Vector3();
+// lookAt is smoothed too (same k as position) or the two lerps shear against
+// each other; snapped in startRound so a round never inherits a stale target
+const smoothedTarget = new THREE.Vector3();
 function updateCamera(dt) {
   if (mode === "MENU" || mode === "LOADING") { menuCamera(dt); return; }
   if (mode === "COUNTDOWN") {
@@ -707,9 +727,11 @@ function updateCamera(dt) {
     camTargetV.y + -sp * camDist,
     camTargetV.z + Math.cos(camYaw) * cp * camDist);
   if (camPosV.y < CFG.slimeY + 0.5) camPosV.y = CFG.slimeY + 0.5;
-  const k = Math.min(1, CFG.camLerp * dt);
+  // exponential decay: same smoothing per second at any framerate
+  const k = 1 - Math.exp(-CFG.camLerp * dt);
   camera.position.lerp(camPosV, mode === "COUNTDOWN" ? Math.min(1, dt * 3) : k);
-  camera.lookAt(camTargetV);
+  smoothedTarget.lerp(camTargetV, k);
+  camera.lookAt(smoothedTarget);
 }
 
 let menuA = 0;
@@ -789,13 +811,20 @@ function frame(now) {
   last = now;
   if (paused || document.hidden) return;
   ft = Math.min(ft, 100);
+  const fdt = ft / 1000;
+  // mouseDX accumulates per frame — smooth it here, once, so every sim tick
+  // in this frame reads the same yaw velocity (units: px/s, as before)
+  yawVelSmooth += (mouseDX / Math.max(fdt, 1e-4) - yawVelSmooth) * Math.min(1, fdt * 10);
+  mouseDX = 0;
   acc += ft;
   while (acc >= STEP * 1000) {
     simTick(STEP);
     acc -= STEP * 1000;
   }
-  updateCamera(ft / 1000);
-  updateHUD(ft / 1000);
+  applyRenderTransforms(acc / (STEP * 1000));
+  if (level) visualUpdate(fdt);   // boot() may not have built the level yet
+  updateCamera(fdt);
+  updateHUD(fdt);
   renderer.render(scene, camera);
   updateDev(now);
 }
@@ -829,6 +858,17 @@ addEventListener("keydown", (e) => {
     }
   }
 });
+// 'f' fullscreen: the arcade owns fullscreen (one global keybind in App), but
+// keypresses land in this iframe while it has focus — forward, don't handle.
+addEventListener("keydown", (e) => {
+  if ((e.key !== "f" && e.key !== "F") || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" ||
+            t.isContentEditable)) return;
+  if (window.parent !== window) {
+    window.parent.postMessage({ type: "neon:fullscreen-toggle" }, window.location.origin);
+  }
+});
 
 // dev-only hooks (?dev=1): manual stepping for headless verification
 if (devMode) {
@@ -836,7 +876,9 @@ if (devMode) {
     play: () => startRound(),
     forceUnpause: () => { paused = false; ui.show("pause", false); },
     tick: (n = 1) => {
-      for (let i = 0; i < n; i++) simTick(STEP);
+      // mirror frame(): the visual/state updates that used to live in simTick
+      for (let i = 0; i < n; i++) { simTick(STEP); visualUpdate(STEP); }
+      applyRenderTransforms(1);
       updateCamera(STEP * n > 0.5 ? 0.5 : STEP * n);
       updateHUD(1);
       renderer.render(scene, camera);

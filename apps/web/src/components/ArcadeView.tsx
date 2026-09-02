@@ -81,7 +81,12 @@ export default function ArcadeView({
       phones centring was never an option: centring overflowing content in a
       scroll container pushes its top above the scrollable area).
     */
-    <div className="relative h-full w-full flex flex-col items-center justify-start overflow-y-auto overflow-x-hidden pt-24 sm:pt-32 pb-24">
+    /*
+      sm+ top padding clears the nav bar AND the "online" ActiveUsers pill
+      under it (hidden on phones — pt-24 there clears the nav alone) with
+      breathing room before the filter strip.
+    */
+    <div className="relative h-full w-full flex flex-col items-center justify-start overflow-y-auto overflow-x-hidden pt-24 sm:pt-40 pb-24">
       {/* Dark Background. The WebGL blob is decoration only — on a phone it
           costs battery and GPU for something behind a full-page gradient, so
           the plain background stands in. */}

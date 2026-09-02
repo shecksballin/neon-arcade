@@ -121,7 +121,10 @@ export function createSky({
 
   const geometry = new THREE.SphereGeometry(radius, 64, 32);
   const mesh = new THREE.Mesh(geometry, material);
-  mesh.renderOrder = -1;   // draw first, behind everything
+  // Draw after the opaque scene: depthTest is on and the dome never writes depth, so any
+  // pixel already covered by geometry rejects the star/cloud shader instead of paying for
+  // it and then being painted over. (Camera far plane must stay >= the dome radius.)
+  mesh.renderOrder = 999;
 
   // call this every frame from your loop
   mesh.tick = (elapsed) => { uniforms.uTime.value = elapsed; };

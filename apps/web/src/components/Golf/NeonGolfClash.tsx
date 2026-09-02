@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { GamePauseMenu } from '../common/GamePauseMenu';
+import { FullscreenButton } from '../common/fullscreen';
+import { PerfHud } from '../common/PerfHud';
 import { reportGameSession } from '../../lib/sessionXp';
 import { usePracticeXp } from '../../hooks/usePracticeXp';
 import { useGuardedExit } from '../common/exitGuard';
@@ -209,6 +211,16 @@ const NeonGolfClash = ({ onExit }: NeonGolfClashProps) => {
           guard: mid-match it asks first and forfeits, after the whistle it
           just leaves. */}
       <GamePauseMenu onExit={() => requestExit(onExit)} exitLabel="Quit to lobby" />
+
+      {/* Fullscreen from the parent frame, bottom-right like every game.
+          The game forwards its 'f' presses out via postMessage (see
+          common/fullscreen.tsx), so key and button match. Desktop-only by
+          construction (null on coarse pointers) — never collides with the
+          touch Menu pill in this corner. */}
+      <FullscreenButton positionClassName="absolute bottom-8 right-8 z-30" />
+
+      {/* FPS/ping — below the in-iframe top HUD strip's right-side block. */}
+      <PerfHud positionClassName="absolute top-24 right-4 z-30" />
 
       <iframe
         ref={frameRef}

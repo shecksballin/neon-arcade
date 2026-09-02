@@ -48,7 +48,7 @@ export const MAPS = {
     letLightThrough: /roof|ceiling/i,
     // The model ships its own light fittings. Hanging a lamp under each one puts pools on
     // the floor, which is most of what sells a shed as interior rather than a lit box.
-    lamps: { match: /^Lamp/i, color: '#ffd9a8', intensity: 26, distance: 26, max: 6 },
+    lamps: { match: /^Lamp/i, color: '#ffd9a8', intensity: 26, distance: 26, max: 4 },
   },
 };
 

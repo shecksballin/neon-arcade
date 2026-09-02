@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
 import { LobbyLevelStrip } from '../common/LobbyLevelStrip';
-import { FullscreenButton } from '../common/fullscreen';
 import { ChevronLeft,
   Globe,
   Cpu,
@@ -73,8 +72,9 @@ const VolleyLobby = ({
     // cards were simply unreachable on a phone.
     <div className="min-h-[100dvh] max-h-[100dvh] bg-[#081616] flex flex-col items-center justify-start md:justify-center px-4 py-24 md:p-6 relative overflow-y-auto overflow-x-hidden">
       <LibraryBlob />
-      {/* Shared fullscreen affordance (the global 'f' bind works here too). */}
-      <FullscreenButton positionClassName="fixed bottom-8 right-8 z-[60]" />
+      {/* No FullscreenButton of its own any more: the App-level one moved to
+          this same corner (fixed bottom-6 right-6) and is visible on every
+          lobby — a second copy here doubled it up. */}
       <GlobalSpotlight gridRef={containerRef} />
 
       {/* Animated background highlights */}

@@ -7,6 +7,7 @@ import { GameNavSidebar } from '../common/GameNavSidebar';
 // Private-wager waiting room, openable from the in-game side panel.
 import PrivateWagerRoom from '../social/PrivateWagerRoom';
 import { GamePauseMenu } from '../common/GamePauseMenu';
+import { PerfHud } from '../common/PerfHud';
 // Shared matchmaking screen — identical copy/look in every online game.
 import SearchingForMatch from '../common/SearchingForMatch';
 import GameLobby from './GameLobby';
@@ -523,6 +524,12 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
           the Chess lobby; the side panel's EXIT GAME still leaves to the
           arcade. Both are guarded mid-match. */}
       <GamePauseMenu onExit={handleReturnToLobby} />
+
+      {/* FPS/ping — fixed so it survives the content pane's scroll; top-24
+          keeps it clear of the floating nav (still visible during chess). */}
+      {gameState !== 'waiting' && (
+        <PerfHud positionClassName="fixed top-24 right-4 sm:right-6 z-40" />
+      )}
 
       {/* Main Content Area */}
       <div className="flex-1 overflow-y-auto h-[100dvh] relative">

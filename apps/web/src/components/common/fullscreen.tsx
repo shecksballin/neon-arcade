@@ -13,9 +13,12 @@
  * also works on the main menu), and it ignores keystrokes aimed at inputs,
  * textareas, selects and contenteditables.
  *
- * Iframe caveat, by design: while an iframe game (Clumsy/Pug/Golf) holds
- * focus, parent-window key events never fire — the visible FullscreenButton
- * is the affordance there.
+ * Iframe games (Clumsy/Pug/Golf): while an iframe holds focus, parent-window
+ * key events never fire — so each game's own document forwards its 'f'
+ * presses as a `neon:fullscreen-toggle` postMessage, and the SAME App-mounted
+ * hook below receives them. A keydown inside a same-origin iframe grants the
+ * parent transient user activation too, which is why requestFullscreen is
+ * allowed to succeed from the message handler.
  */
 import { useEffect, useState } from 'react'
 import { Maximize, Minimize } from 'lucide-react'
@@ -57,9 +60,17 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 /**
+ * Message the iframe games post when 'f' is pressed INSIDE them (their
+ * documents own those key events — see the header). Each game binds its own
+ * tiny keydown → postMessage forwarder; the one listener here toggles.
+ */
+export const FULLSCREEN_TOGGLE_MESSAGE = 'neon:fullscreen-toggle'
+
+/**
  * THE 'f' keybind. Mount exactly ONCE (App.tsx) — every per-screen listener
  * was removed when this landed, so a second mount would reintroduce the
- * double-toggle those caused.
+ * double-toggle those caused. Also the ONE receiver for the iframe games'
+ * forwarded 'f' presses, for the same reason.
  */
 export function useGlobalFullscreenKey(): void {
   useEffect(() => {
@@ -70,8 +81,20 @@ export function useGlobalFullscreenKey(): void {
       if (isTypingTarget(e.target)) return
       toggleAppFullscreen()
     }
+    // 'f' pressed inside an iframe game, forwarded out. Same-origin only —
+    // the games are served from our own /public, so a message from anywhere
+    // else is not one of ours.
+    const onMessage = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return
+      if (e.data?.type !== FULLSCREEN_TOGGLE_MESSAGE) return
+      toggleAppFullscreen()
+    }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    window.addEventListener('message', onMessage)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('message', onMessage)
+    }
   }, [])
 }
 

@@ -1,14 +1,9 @@
-// WebAudio: generated music loop + one-shot SFX, mixed per the audio
-// reference (music sits far below SFX).
+// WebAudio: the music loop only — one-shot SFX were removed by request
+// (the class shape survives so the mute button and boot flow are unchanged).
 import { CFG } from "./config.js";
 
 const FILES = {
   music: "./assets/audio/music.m4a",
-  crumble: "./assets/audio/crumble.mp3",
-  jump: "./assets/audio/jump.mp3",
-  dive: "./assets/audio/dive.mp3",
-  splat: "./assets/audio/splat.mp3",
-  crowd: "./assets/audio/crowd.mp3",
 };
 
 export class AudioSys {
@@ -18,7 +13,6 @@ export class AudioSys {
     this.muted = false;
     this.musicNodes = null;
     this.master = null;
-    this._lastPlay = new Map();
   }
 
   async load() {
@@ -50,21 +44,6 @@ export class AudioSys {
     src.connect(g); g.connect(this.master);
     src.start();
     this.musicNodes = { src, g };
-  }
-
-  sfx(name, { vol = null, rate = 1, throttle = 0.09 } = {}) {
-    if (!this.buffers.has(name) || !this.ctx) return;
-    const now = this.ctx.currentTime;
-    const last = this._lastPlay.get(name) || -9;
-    if (now - last < throttle) return;
-    this._lastPlay.set(name, now);
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.buffers.get(name);
-    src.playbackRate.value = rate;
-    const g = this.ctx.createGain();
-    g.gain.value = vol !== null ? vol : (CFG.sfxGain[name] || 0.4);
-    src.connect(g); g.connect(this.master);
-    src.start();
   }
 
   toggleMute() {

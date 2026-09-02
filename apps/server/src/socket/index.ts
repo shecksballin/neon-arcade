@@ -40,6 +40,7 @@ import { registerLobbyGames } from './games/lobbyGames'
 import { registerPrivateMatch } from './games/privateMatch'
 import { registerQueueVotes } from './queue'
 import { registerFreeplay, shutdownFreeplay } from './freeplay'
+import { registerLatency } from './latency'
 
 // ---------------------------------------------------------------------------
 // attachSocketHandlers
@@ -78,6 +79,9 @@ export function attachSocketHandlers(io: Server) {
     // FIRST: friend presence, so the wallet counts as online before anything
     // else can push to it (and so its friends' lists refresh immediately).
     registerSocial(io, socket)
+
+    // Stateless RTT echo for the client PerfHud — no ordering dependency.
+    registerLatency(io, socket)
 
     registerChess(io, socket)
     registerConnect(io, socket)

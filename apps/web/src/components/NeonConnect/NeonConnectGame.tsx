@@ -31,6 +31,7 @@ import { usePrivateWagerStarted } from "../social/PrivateWagerInvite";
 import { connectGameSocket, getSocket, useMatchProgression } from "../../hooks/useGameSocket";
 import { PostGameProgression } from "../common/PostGameProgression";
 import { GamePauseMenu } from "../common/GamePauseMenu";
+import { PerfHud } from "../common/PerfHud";
 // "Are you sure? leaving forfeits" — every mid-match exit (pause menu, side
 // panel, mode-switch cards, App nav bar) funnels through this guard.
 import { useGuardedExit } from "../common/exitGuard";
@@ -1168,6 +1169,10 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
 
       {/* Mid-match "are you sure? leaving forfeits" dialog. */}
       {confirmDialog}
+
+      {/* FPS/ping — fixed so it survives the content pane's scroll; top-24
+          keeps it clear of the floating nav (still visible during Connect). */}
+      <PerfHud positionClassName="fixed top-24 right-4 sm:right-6 z-40" />
 
       <div className="flex-1 overflow-y-auto h-[100dvh] relative">
         {/* STACKED below lg. The side panel is a fixed 280px and the board is

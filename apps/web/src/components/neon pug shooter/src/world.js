@@ -99,8 +99,10 @@ const WarmGradeShader = {
 };
 
 export async function createWorld(onProgress = () => {}, initialMap = DEFAULT_MAP) {
-  const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  // MSAA off: the SMAA pass in the composer is the AA this game actually shows, so the
+  // multisampled render target was pure cost. 1.5 is plenty of density under SMAA too.
+  const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.NoToneMapping;      // phase 1: no ACES, keep it pastel
@@ -194,7 +196,7 @@ export async function createWorld(onProgress = () => {}, initialMap = DEFAULT_MA
   }
 
   // Maps are built once and kept, because rebuilding one is not cheap: scattering the
-  // city's grass alone means 8000 raycasts against a 235k-triangle model, which stalls
+  // city's grass alone means thousands of raycasts against a 235k-triangle model, which stalls
   // the tab for the better part of ten seconds. Holding both resident costs a few tens of
   // megabytes and makes every switch after the first one instant. Revisit if this ever
   // grows past a handful of maps.

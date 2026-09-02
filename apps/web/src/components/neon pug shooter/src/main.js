@@ -448,6 +448,8 @@ async function startMatch(mode, mapId = world.mapId, difficulty = DEFAULT_DIFFIC
   pendingCam = null;
   lastKill = null;
   pendingResult = null;
+  hudDataTimer = 0;          // force the throttled HUD data to rebuild for the new match
+  hudLeaderboard = null;
   matchStartedAt = Date.now();
   // Tell the arcade a round is live, so its exit guard can arm. Fires at boot
   // AND on every in-iframe rematch — without the second one, round two would
@@ -589,6 +591,15 @@ document.addEventListener('keydown', (e) => {
     ui.showScoreboard(true);
     ui.updateScoreboard(match.scoreboardModel());
   }
+  // 'f' is the arcade's global fullscreen key, but the iframe swallows it while focused —
+  // forward the intent and let the parent (common/fullscreen) own the toggle.
+  if ((e.key === 'f' || e.key === 'F') && !e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat
+      && window.parent !== window) {
+    const t = e.target;
+    const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA'
+      || t.tagName === 'SELECT' || t.isContentEditable);
+    if (!typing) window.parent.postMessage({ type: 'neon:fullscreen-toggle' }, window.location.origin);
+  }
 });
 document.addEventListener('keyup', (e) => {
   if (e.code === 'Tab') ui.showScoreboard(false);
@@ -622,6 +633,14 @@ function loop() {
   world.composer.render();
 }
 
+// The slow half of the HUD — score line, leaderboard, minimap — only moves on kills and
+// clock ticks, so it refreshes on a coarse cadence while health/ammo/speed stay per-frame.
+// The last computed values ride along in between; updateHud skips falsy minimap/leaderboard.
+const HUD_DATA_INTERVAL = 0.15;
+let hudDataTimer = 0;
+let hudScoreText = '';
+let hudLeaderboard = null;
+
 function step(dt, elapsed) {
   simTime += dt;
   collision.update();          // keeps Rapier's query pipeline current
@@ -650,6 +669,14 @@ function step(dt, elapsed) {
     ui.showCrosshair(!!aim);
     if (aim) ui.updateCrosshair(player.state.adsAmount, ...aim);
     ui.updateNameplates(match.entities, world.camera, player.entity);
+    hudDataTimer -= dt;
+    let hudMinimap = null;      // null between ticks — updateHud leaves the canvas alone
+    if (hudDataTimer <= 0 || !hudLeaderboard) {
+      hudDataTimer = HUD_DATA_INTERVAL;
+      hudScoreText = match.scoreText();
+      hudLeaderboard = match.scoreboardRows();
+      hudMinimap = { entities: match.entities, playerEntity: player.entity, bounds: collision.bounds };
+    }
     ui.updateHud({
       health: player.entity.health,
       kills: player.entity.kills,
@@ -661,9 +688,9 @@ function step(dt, elapsed) {
       speed: player.state.speed,
       bhopChain: player.state.bhopChain,
       bhopLocked: player.bhopLocked,
-      scoreText: match.scoreText(),
-      leaderboard: match.scoreboardRows(),
-      minimap: { entities: match.entities, playerEntity: player.entity, bounds: collision.bounds },
+      scoreText: hudScoreText,
+      leaderboard: hudLeaderboard,
+      minimap: hudMinimap,
     });
     // player.update() above can kill you and open a killcam mid-frame — don't slap the
     // death overlay back over it on the way out, nor over the seconds we're still

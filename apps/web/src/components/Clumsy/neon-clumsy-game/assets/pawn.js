@@ -21,6 +21,10 @@ export class Pawn {
     this.pos = new THREE.Vector3();
     this.vel = new THREE.Vector3();
     this.yaw = 0;
+    // previous-tick transform, captured by game.js at the top of each sim
+    // tick; frame() lerps prev -> current so 60Hz sim looks smooth at any hz
+    this.prevPos = new THREE.Vector3();
+    this.prevYaw = 0;
     this.state = PSTATE.FROZEN;
     this.grounded = false;
     this.layer = CFG.layers - 1;
@@ -37,6 +41,8 @@ export class Pawn {
     this.pos.set(x, y, z);
     this.vel.set(0, 0, 0);
     this.yaw = yaw;
+    this.prevPos.copy(this.pos);   // teleport: never interpolate across a spawn
+    this.prevYaw = yaw;
     this.state = PSTATE.FROZEN;
     this.grounded = true;
     this.layer = CFG.layers - 1;
@@ -167,9 +173,7 @@ export class Pawn {
       }
     }
 
-    // --- write to scene ---
-    this.character.group.position.copy(this.pos);
-    this.character.group.rotation.y = this.yaw;
+    // (no scene write here — frame() interpolates prevPos/prevYaw -> pos/yaw)
   }
 
   _touch(L, idx) {
@@ -252,6 +256,8 @@ export class Pawn {
       this.state = PSTATE.AIR;
       this.character.playLoop("Fall", 0.1);
     }
+    this.prevPos.copy(this.pos);   // teleport: never interpolate across a recover
+    this.prevYaw = this.yaw;
   }
 
   die() {

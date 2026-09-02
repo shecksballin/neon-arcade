@@ -74,7 +74,18 @@ export function applyCamera(camera, {
   camera.fov = snap ? targetFov + speedKick
                     : THREE.MathUtils.damp(camera.fov, targetFov + speedKick, FOV_DAMP, dt);
   camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  camera.projectionMatrix.elements[0] *= settings.stretch;
-  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  // Rebuild the projection (and the manual stretched inverse) only when an input actually
+  // moved — the damped fov sits still most of the time and aspect only changes on resize.
+  // The stretch multiply must live inside the guard or it would compound every frame.
+  const proj = camera.userData.projCache
+    ?? (camera.userData.projCache = { fov: Infinity, aspect: 0, stretch: 0 });
+  if (Math.abs(proj.fov - camera.fov) > 1e-4
+      || proj.aspect !== camera.aspect || proj.stretch !== settings.stretch) {
+    proj.fov = camera.fov;
+    proj.aspect = camera.aspect;
+    proj.stretch = settings.stretch;
+    camera.updateProjectionMatrix();
+    camera.projectionMatrix.elements[0] *= settings.stretch;
+    camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+  }
 }

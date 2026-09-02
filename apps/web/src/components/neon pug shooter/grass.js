@@ -6,8 +6,8 @@ import * as THREE from 'three';
 const BLOCKED = /road|driveway|building|light|planter|tree|construction|barrier|cone|fence/i;
 
 export function createGrass(mapRoot, {
-  clusters = 8000,    // raycast samples — the expensive part
-  perCluster = 12,    // blades spawned per accepted sample, jittered, no extra rays
+  clusters = 3000,    // raycast samples — the expensive part
+  perCluster = 8,     // blades spawned per accepted sample, jittered, no extra rays
   area = 92,          // half-extent of the scatter square, in world units
   gradientMap = null,
   color = '#7ac74f',
@@ -43,7 +43,6 @@ export function createGrass(mapRoot, {
   material.customProgramCacheKey = () => 'grass-wind';
 
   const raycaster = new THREE.Raycaster();
-  raycaster.firstHitOnly = true;
   const origin = new THREE.Vector3();
   const down = new THREE.Vector3(0, -1, 0);
   const matrix = new THREE.Matrix4();
@@ -54,8 +53,17 @@ export function createGrass(mapRoot, {
 
   const mesh = new THREE.InstancedMesh(blade, material, clusters * perCluster);
   mesh.castShadow = false;      // tens of thousands of shadow casters is not worth the frame time
-  mesh.receiveShadow = true;
+  mesh.receiveShadow = false;   // sampling the shadow map per blade fragment isn't worth it either
   mesh.frustumCulled = false;   // one draw call covering the whole map
+
+  // firstHitOnly needs three-mesh-bvh, which isn't installed — so trim the work per ray
+  // instead: a straight-down ray can only hit a mesh whose world bounds straddle the
+  // sample's XZ column, and pre-boxing every mesh once makes that test cheap.
+  const meshBounds = [];
+  mapRoot.traverse((o) => {
+    if (o.isMesh) meshBounds.push({ mesh: o, box: new THREE.Box3().setFromObject(o) });
+  });
+  const candidates = [];
 
   const axisY = new THREE.Vector3(0, 1, 0);
   let placed = 0;
@@ -69,7 +77,11 @@ export function createGrass(mapRoot, {
     const cz = (Math.random() * 2 - 1) * area;
     origin.set(cx, 40, cz);
     raycaster.set(origin, down);
-    const hit = raycaster.intersectObject(mapRoot, true)[0];
+    candidates.length = 0;
+    for (const { mesh: m, box } of meshBounds) {
+      if (cx >= box.min.x && cx <= box.max.x && cz >= box.min.z && cz <= box.max.z) candidates.push(m);
+    }
+    const hit = raycaster.intersectObjects(candidates, false)[0];
     if (!hit || BLOCKED.test(hit.object.name)) continue;
     samples++;
 

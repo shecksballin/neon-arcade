@@ -16,6 +16,7 @@ import { usePracticeXp } from '../../hooks/usePracticeXp';
 // menu Quit, results Exit, the App nav bar) funnels through this guard.
 import { useGuardedExit } from '../common/exitGuard';
 import { toggleAppFullscreen } from '../common/fullscreen';
+import { PerfHud } from '../common/PerfHud';
 import { GameEngine, type Entity } from './gameEngine';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
 import { useNeonBucks } from '../../NeonBucksStore';
@@ -1454,15 +1455,10 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
     setGameResult(null);
   };
 
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      containerRef.current?.requestFullscreen();
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen();
-      setIsFullscreen(false);
-    }
-  };
+  // Document-level on purpose (was containerRef.requestFullscreen): the
+  // global 'f' keybind toggles the DOCUMENT, and the button must be the same
+  // action as the key. isFullscreen tracks via the fullscreenchange listener.
+  const toggleFullscreen = () => toggleAppFullscreen();
 
   const [cashoutHoldProgress, setCashoutHoldProgress] = useState(0);
   const [isCashingOut, setIsCashingOut] = useState(false);
@@ -1700,6 +1696,9 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
         valueLabel="MASS"
         max={10}
       />
+
+      {/* FPS/ping, slotted just LEFT of the w-64 leaderboard above. */}
+      <PerfHud positionClassName="absolute top-8 right-[19rem] z-[60]" />
 
       {/* Merge Hold Loader */}
       <AnimatePresence>

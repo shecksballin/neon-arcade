@@ -389,66 +389,89 @@ export function createUI({ settings, onResume, onQuit, onRematch, onPause, onSet
       if (e === playerEntity) continue;
       let plate = plates.get(e);
       if (!plate) {
-        plate = document.createElement('div');
-        plate.className = 'nameplate';
-        plate.innerHTML = `<span class="np-name"></span><span class="np-bar"><i></i></span>`;
-        el.nameplates.appendChild(plate);
+        // Name and side never change mid-match, so both are written once here; the
+        // per-frame work is position, opacity and the dirty-checked health bar.
+        const root = document.createElement('div');
+        root.className = `nameplate ${e.team === playerEntity.team ? 'ally' : 'enemy'}`;
+        root.innerHTML = `<span class="np-name"></span><span class="np-bar"><i></i></span>`;
+        root.querySelector('.np-name').textContent = e.name;
+        el.nameplates.appendChild(root);
+        plate = { root, bar: root.querySelector('.np-bar i'), barWidth: '' };
         plates.set(e, plate);
       }
-      if (!e.alive) { plate.style.display = 'none'; continue; }
+      if (!e.alive) { plate.root.style.display = 'none'; continue; }
 
       worldPos.copy(e.position);
       worldPos.y += 2.1;
       worldPos.project(camera);
       const behind = worldPos.z > 1;
       if (behind || Math.abs(worldPos.x) > 1.1 || Math.abs(worldPos.y) > 1.1) {
-        plate.style.display = 'none';
+        plate.root.style.display = 'none';
         continue;
       }
       const dist = camera.position.distanceTo(e.position);
-      plate.style.display = 'block';
-      plate.style.left = `${(worldPos.x * 0.5 + 0.5) * window.innerWidth}px`;
-      plate.style.top = `${(-worldPos.y * 0.5 + 0.5) * window.innerHeight}px`;
-      plate.style.opacity = String(THREE.MathUtils.clamp(1.1 - dist / 90, 0.15, 1));
-      plate.classList.toggle('enemy', e.team !== playerEntity.team);
-      plate.classList.toggle('ally', e.team === playerEntity.team);
-      plate.querySelector('.np-name').textContent = e.name;
-      plate.querySelector('.np-bar i').style.width = `${Math.max(0, e.health)}%`;
+      plate.root.style.display = 'block';
+      // transform instead of left/top: same visual anchor (the CSS centring translate is
+      // kept), but the browser can move the plate without a layout pass
+      const x = (worldPos.x * 0.5 + 0.5) * window.innerWidth;
+      const y = (-worldPos.y * 0.5 + 0.5) * window.innerHeight;
+      plate.root.style.transform = `translate(${x}px, ${y}px) translate(-50%, -100%)`;
+      plate.root.style.opacity = String(THREE.MathUtils.clamp(1.1 - dist / 90, 0.15, 1));
+      const barWidth = `${Math.max(0, e.health)}%`;
+      if (barWidth !== plate.barWidth) {
+        plate.barWidth = barWidth;
+        plate.bar.style.width = barWidth;
+      }
     }
   }
 
   function clearNameplates() {
-    for (const plate of plates.values()) plate.remove();
+    for (const plate of plates.values()) plate.root.remove();
     plates.clear();
   }
 
   // ---- hud (AsteroidsCore layout: chips, zone card, leaderboard, minimap, status bar)
   const mapCtx = el.minimap?.getContext('2d');
   let lbSignature = '';
+  // Same idea as lbSignature, per field: updateHud runs every frame but most of what it
+  // shows changes rarely, and an identical DOM write still costs style work.
+  const hudLast = {};
+  const changed = (key, value) => {
+    if (hudLast[key] === value) return false;
+    hudLast[key] = value;
+    return true;
+  };
 
   function updateHud({ health, kills, ammo, reserve, magSize, reloading, reloadFrac = 0, speed, bhopChain, bhopLocked = false, scoreText, leaderboard, minimap }) {
     const hp = Math.max(0, Math.ceil(health));
-    el.kills.textContent = kills;
-    el.health.textContent = `${hp}%`;
-    el.health2.textContent = `${hp}%`;
-    el.healthBar.style.width = `${Math.max(0, health)}%`;
+    if (changed('kills', kills)) el.kills.textContent = kills;
+    if (changed('hp', hp)) {
+      el.health.textContent = `${hp}%`;
+      el.health2.textContent = `${hp}%`;
+    }
+    const barWidth = `${Math.max(0, health)}%`;
+    if (changed('hpBar', barWidth)) el.healthBar.style.width = barWidth;
     el.healthBar.classList.toggle('low', health < 30);
 
-    el.ammo.textContent = `${ammo} / ${reserve}`;
-    el.ammoLabel.innerHTML = reloading
+    const ammoText = `${ammo} / ${reserve}`;
+    if (changed('ammo', ammoText)) el.ammo.textContent = ammoText;
+    const ammoLabel = reloading
       ? `Ammo (${Math.floor(reloadFrac * 100)}%)`
       : `Ammo <kbd>PRESS R</kbd>`;
+    if (changed('ammoLabel', ammoLabel)) el.ammoLabel.innerHTML = ammoLabel;
     el.ammoChip.classList.toggle('empty', ammo === 0 && !reloading);
 
-    el.speed.textContent = speed.toFixed(1);
+    const speedText = speed.toFixed(1);
+    if (changed('speed', speedText)) el.speed.textContent = speedText;
     el.speedChip.classList.toggle('active', bhopChain > 1);
     el.bhop.classList.toggle('active', bhopChain > 1);
     el.bhop.classList.toggle('locked', bhopLocked);
-    el.bhop.textContent = bhopChain > 1
+    const bhopText = bhopChain > 1
       ? (bhopLocked ? `bhop ×${bhopChain} · locked` : `bhop ×${bhopChain}`)
       : '';
+    if (changed('bhop', bhopText)) el.bhop.textContent = bhopText;
 
-    el.score.innerHTML = scoreText;
+    if (changed('score', scoreText)) el.score.innerHTML = scoreText;
 
     if (leaderboard) {
       const sig = leaderboard.map((r) => `${r.name}${r.kills}`).join('|');

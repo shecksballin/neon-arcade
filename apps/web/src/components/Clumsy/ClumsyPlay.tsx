@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GamePauseMenu } from '../common/GamePauseMenu';
+import { FullscreenButton } from '../common/fullscreen';
+import { PerfHud } from '../common/PerfHud';
 import { reportGameSession } from '../../lib/sessionXp';
 import { usePracticeXp } from '../../hooks/usePracticeXp';
 import { useGuardedExit } from '../common/exitGuard';
@@ -211,6 +213,18 @@ export default function ClumsyPlay({ onExit, playerName }: ClumsyPlayProps) {
         onLoad={() => frameRef.current?.focus()}
         allow="pointer-lock; fullscreen; gamepad; autoplay; accelerometer; gyroscope"
       />
+      {/* Fullscreen from the parent frame, bottom-right like every game —
+          offset left of the iframe's own SOUND pill (#muteBtn at right:32px).
+          The game also forwards its 'f' presses out via postMessage (see
+          common/fullscreen.tsx), so key and button match. Desktop-only by
+          construction (FullscreenButton returns null on coarse pointers), so
+          it never collides with the touch Menu pill in this corner. */}
+      <FullscreenButton positionClassName="absolute bottom-8 right-40 z-30" />
+
+      {/* FPS/ping, slotted just LEFT of the iframe's 256px-wide top-right
+          leaderboard card (#hudTopRight at top:32 right:32). */}
+      <PerfHud positionClassName="absolute top-8 right-[19rem] z-30" />
+
       {/* Pug-style pause menu — THE exit path for this round (the game inside
           the iframe posts results only, never an exit message, so this
           overlay is the only way out mid-round; press Esc first if the

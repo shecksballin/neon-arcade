@@ -9,6 +9,8 @@ import { useMatchProgression } from '../../hooks/useGameSocket';
 import { PostGameProgression } from '../common/PostGameProgression';
 import { usePracticeXp } from '../../hooks/usePracticeXp';
 import { GamePauseMenu } from '../common/GamePauseMenu';
+import { FullscreenButton } from '../common/fullscreen';
+import { PerfHud } from '../common/PerfHud';
 // "Are you sure? leaving forfeits" — every mid-match exit (pause-menu Quit,
 // App-level nav) funnels through this guard: confirm → forfeit → results →
 // progression → only then the deferred navigation runs.
@@ -812,6 +814,16 @@ const PingPongGame = ({ socket, mode, playerData, gameData, onExit, settings, wa
           Hold Tab — Scores
         </div>
       )}
+
+      {/* FPS/ping — the top-right corner itself belongs to the opponent
+          block in the HUD strip above, so this sits just under it. */}
+      <PerfHud positionClassName="absolute top-24 right-4 sm:right-8 z-30" />
+
+      {/* Fullscreen — bottom-right like every game. Desktop-only by
+          construction (null on coarse pointers), so it never collides with
+          the touch Menu pill in this corner; same document toggle as the
+          global 'f' keybind and the pause menu's ghost action. */}
+      <FullscreenButton positionClassName="absolute bottom-8 right-8 z-[60]" />
 
       {/* Game Stage */}
       <div className="relative w-full h-full flex items-center justify-center bg-radial-gradient">

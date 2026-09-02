@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { getLevelInfo } from '@neon/types';
 import GameBackButton from '../common/GameBackButton';
 import { FullscreenButton } from '../common/fullscreen';
+import { PerfHud } from '../common/PerfHud';
 import { reportGameSession } from '../../lib/sessionXp';
 import { usePracticeXp } from '../../hooks/usePracticeXp';
 import { useGuardedExit } from '../common/exitGuard';
@@ -254,10 +255,16 @@ export default function PugShooterPlay({ config, onExit, profile }: PugShooterPl
         className="block w-full h-full border-0"
         allow="pointer-lock; fullscreen; gamepad; autoplay; accelerometer; gyroscope"
       />
-      {/* Fullscreen from the parent frame: the global 'f' bind can't fire
-          while the iframe holds focus, so the button is the affordance
-          here. Exit lives in the game's own Menu → Quit to lobby. */}
-      <FullscreenButton positionClassName="absolute top-24 left-6 z-30" />
+      {/* Fullscreen from the parent frame, bottom-right like every game —
+          offset left of the iframe's own Menu pill (#hud-bottom-right at
+          right:32px). The game also forwards its 'f' presses out via
+          postMessage (see common/fullscreen.tsx), so key and button match.
+          Exit lives in the game's own Menu → Quit to lobby. */}
+      <FullscreenButton positionClassName="absolute bottom-8 right-36 z-30" />
+
+      {/* FPS/ping, slotted just LEFT of the iframe's 256px-wide top-right
+          leaderboard card (#hud-top-right at top:32 right:32). */}
+      <PerfHud positionClassName="absolute top-8 right-[19rem] z-30" />
 
       {/* Escape hatch for a frame that never reaches its first round (see
           bootedOnce). Guarded like every other exit, so if a round somehow

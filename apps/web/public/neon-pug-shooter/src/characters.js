@@ -155,7 +155,10 @@ export function createCharacter({ tint = '#ffffff', gunTint = '#ffffff', teamGlo
       // shaded.png is the pug atlas. The outfit is near-black, so a multiplied tint can't
       // carry team colour — a low emissive does, without washing the texture out.
       stylize(child, { tint, map: skin, emissive: teamGlow, emissiveIntensity: teamGlow ? 0.13 : 1 });
-      child.frustumCulled = false;     // skinned bounds go stale when animating
+      // Skinned bounds go stale when animating; rather than turning culling off, give the
+      // geometry a static sphere generous enough for any pose. Geometry space is Mixamo
+      // centimetres (~180 tall before the model scale), so this covers the body with room.
+      child.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 90, 0), 140);
     }
   });
 
@@ -241,7 +244,9 @@ export function createCharacter({ tint = '#ffffff', gunTint = '#ffffff', teamGlo
 
   function aimGun(pitch) {
     if (!hand) return;
-    root.updateMatrixWorld(true);
+    // only the hand's ancestor chain needs to be current for getWorldQuaternion below —
+    // refreshing the whole rig here was most of this function's cost
+    hand.updateWorldMatrix(true, false);
 
     const yaw = root.rotation.y;
     const cp = Math.cos(pitch);
@@ -333,6 +338,15 @@ export function createCharacter({ tint = '#ffffff', gunTint = '#ffffff', teamGlo
     dispose() {
       mixer.stopAllAction();
       root.parent?.remove(root);
+      // Free the GPU side too. Materials are per-clone (stylize builds fresh ones);
+      // geometries are shared with the source assets, so a surviving clone just
+      // re-uploads them on its next draw — no harm, and dead bots stop holding VRAM.
+      root.traverse((child) => {
+        if (!child.isMesh && !child.isSkinnedMesh) return;
+        child.geometry?.dispose();
+        const mats = Array.isArray(child.material) ? child.material : [child.material];
+        for (const m of mats) m?.dispose();
+      });
     },
   };
 

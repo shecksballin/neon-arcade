@@ -16,6 +16,7 @@ import { usePracticeXp } from '../../hooks/usePracticeXp';
 // menu, both results screens, the App nav bar) funnels through this guard.
 import { useGuardedExit } from '../common/exitGuard';
 import { toggleAppFullscreen } from '../common/fullscreen';
+import { PerfHud } from '../common/PerfHud';
 import { useGunSound } from './useGunSound';
 import { useGameAudio } from './useGameAudio';
 import { ResultsScreen } from '../NeonBucks/ResultsScreen';
@@ -402,15 +403,10 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
     };
   }, []);
 
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      containerRef.current?.requestFullscreen();
-      setIsFullscreen(true);
-    } else {
-      document.exitFullscreen();
-      setIsFullscreen(false);
-    }
-  };
+  // Document-level on purpose (was containerRef.requestFullscreen): the
+  // global 'f' keybind toggles the DOCUMENT, and the button must be the same
+  // action as the key. isFullscreen tracks via the fullscreenchange listener.
+  const toggleFullscreen = () => toggleAppFullscreen();
 
   const [cashoutHoldProgress, setCashoutHoldProgress] = useState(0);
   const [isCashingOut, setIsCashingOut] = useState(false);
@@ -2872,6 +2868,9 @@ const AsteroidsCore: React.FC<AsteroidsGameProps> = ({ onExit, profile, difficul
               valueLabel="K"
               max={5}
             />
+
+            {/* FPS/ping, slotted just LEFT of the w-64 leaderboard above. */}
+            <PerfHud positionClassName="absolute top-8 right-[19rem] z-[60]" />
 
             {/* Bottom Left: Mini Map & New HUD Status */}
             <motion.div 
