@@ -156,8 +156,13 @@ export function createCharacter({ tint = '#ffffff', gunTint = '#ffffff', teamGlo
       // carry team colour — a low emissive does, without washing the texture out.
       stylize(child, { tint, map: skin, emissive: teamGlow, emissiveIntensity: teamGlow ? 0.13 : 1 });
       // Skinned bounds go stale when animating; rather than turning culling off, give the
-      // geometry a static sphere generous enough for any pose. Geometry space is Mixamo
-      // centimetres (~180 tall before the model scale), so this covers the body with room.
+      // MESH a static sphere generous enough for any pose. It must be the mesh-level
+      // property: three r169's Frustum.intersectsObject prefers SkinnedMesh.boundingSphere
+      // and would otherwise auto-cache a tight first-pose sphere, popping edge-of-screen
+      // corpses/lunges out of view. Space is Mixamo centimetres (~180 tall pre-scale).
+      if (child.isSkinnedMesh) {
+        child.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 90, 0), 140);
+      }
       child.geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 90, 0), 140);
     }
   });

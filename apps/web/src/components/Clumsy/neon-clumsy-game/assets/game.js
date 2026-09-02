@@ -799,7 +799,9 @@ function updateDev(now) {
     ui.els.dev.style.display = "block";
     ui.els.dev.textContent =
       `${devFps} fps | calls ${renderer.info.render.calls} | tris ${(renderer.info.render.triangles / 1000).toFixed(0)}k` +
-      ` | tiles ${level.totalAlive()} | rag bodies ${rags.activeBodies} | pawns ${aliveCount}`;
+      // Same null guards as __NC.info(): frames render during LOADING now,
+      // before boot() has built the level / ragdoll system.
+      ` | tiles ${level ? level.totalAlive() : -1} | rag bodies ${rags ? rags.activeBodies : -1} | pawns ${aliveCount}`;
   }
 }
 

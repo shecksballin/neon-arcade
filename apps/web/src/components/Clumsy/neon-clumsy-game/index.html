@@ -144,7 +144,9 @@
      carried across the boundary instead. Any change here changes it there. */
   #hudTopRight { position: fixed; top: 32px; right: 32px; width: 256px; }
   #leaderboardCard { padding: 20px 22px; border-radius: 16px;
-                     background: rgba(0,0,0,.72); border: 1px solid rgba(0,255,209,.2); }
+                     /* Same fill as pug's .hud-card and the React MatchLeaderboard
+                        (the one-identical-card rule above). */
+                     background: rgba(5,13,28,.78); border: 1px solid rgba(0,255,209,.2); }
   #leaderboardHead { display: flex; align-items: center; gap: 11px; margin-bottom: 14px; }
   #leaderboardHead svg { width: 16px; height: 16px; flex: none; }
   #leaderboardTitle { flex: 1; font-family: var(--hud-sans); font-size: 11px; font-weight: 900;

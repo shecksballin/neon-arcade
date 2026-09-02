@@ -263,8 +263,10 @@ export default function PugShooterPlay({ config, onExit, profile }: PugShooterPl
       <FullscreenButton positionClassName="absolute bottom-8 right-36 z-30" />
 
       {/* FPS/ping, slotted just LEFT of the iframe's 256px-wide top-right
-          leaderboard card (#hud-top-right at top:32 right:32). */}
-      <PerfHud positionClassName="absolute top-8 right-[19rem] z-30" />
+          leaderboard card (#hud-top-right at top:32 right:32). top-28 drops
+          it below the centered MATCH zone-card's band (~30-100px tall) so a
+          narrow window can't slide the card into it. */}
+      <PerfHud positionClassName="absolute top-28 right-[19rem] z-30" />
 
       {/* Escape hatch for a frame that never reaches its first round (see
           bootedOnce). Guarded like every other exit, so if a round somehow

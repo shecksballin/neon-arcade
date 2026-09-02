@@ -222,8 +222,10 @@ export default function ClumsyPlay({ onExit, playerName }: ClumsyPlayProps) {
       <FullscreenButton positionClassName="absolute bottom-8 right-40 z-30" />
 
       {/* FPS/ping, slotted just LEFT of the iframe's 256px-wide top-right
-          leaderboard card (#hudTopRight at top:32 right:32). */}
-      <PerfHud positionClassName="absolute top-8 right-[19rem] z-30" />
+          leaderboard card (#hudTopRight at top:32 right:32). top-24 drops it
+          below the centered PLAYERS LEFT chip's band (~28-84px tall) so a
+          narrow window can't slide the chip into it. */}
+      <PerfHud positionClassName="absolute top-24 right-[19rem] z-30" />
 
       {/* Pug-style pause menu — THE exit path for this round (the game inside
           the iframe posts results only, never an exit message, so this

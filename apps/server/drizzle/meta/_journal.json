@@ -64,6 +64,13 @@
       "when": 1787716547237,
       "tag": "0008_user_region",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788348707513,
+      "tag": "0009_zippy_bushwacker",
+      "breakpoints": true
     }
   ]
 }

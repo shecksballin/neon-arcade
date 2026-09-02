@@ -59,6 +59,7 @@ import PrivateWagerInvite, {
 // bell, the sidebar's JOIN button and the in-app pop-ups all offer ACCEPT, and
 // all three funnel through `pendingJoin`, which this host consumes.
 import { useNotifications } from '../../notifications/NotificationsStore';
+import { EntryPotSlider, ENTRY_POT_MIN_USD } from '../common/EntryPotSlider';
 
 // ---------------------------------------------------------------------------
 // Wire shapes (mirror the server payload builders)
@@ -178,6 +179,8 @@ export default function PrivateWagerRoom({
   /** Set when the room never opened at all — see FATAL_OPEN_CODES. */
   const [openFailed, setOpenFailed] = useState<string | null>(null);
   const [showInvitePicker, setShowInvitePicker] = useState(false);
+  // The host's chosen entry pot, in whole USD ($5 steps — EntryPotSlider).
+  const [entryPotUsd, setEntryPotUsd] = useState(ENTRY_POT_MIN_USD);
   /** Usernames we have asked the server to invite (greys them in the picker). */
   const [invited, setInvited] = useState<string[]>([]);
 
@@ -549,6 +552,25 @@ export default function PrivateWagerRoom({
         {/* ── Controls ─────────────────────────────────────────────────── */}
         {room && !closedReason && (
           <div className="mt-10 flex flex-col items-center gap-4 w-full max-w-md">
+            {/* ── Entry pot (on-chain wagering) ──────────────────────────
+                Host picks the stake in $5 USD steps; the SOL equivalent is
+                what each seat will deposit once the lobby is wired to
+                POST /api/deposits (backend live — see
+                WAGERING_IMPLEMENTATION.md §4). Until that wiring lands the
+                selection is local to this room screen. */}
+            {iAmHost && (
+              <div className="w-full rounded-2xl border border-[#00FFD1]/20 bg-[#00FFD1]/5 p-4">
+                <EntryPotSlider
+                  valueUsd={entryPotUsd}
+                  onChange={(usd) => setEntryPotUsd(usd)}
+                  disabled={room.status === 'starting'}
+                />
+                <p className="mt-2 font-mono text-[9px] uppercase tracking-[0.25em] text-[#B1C5FF]/40 text-center">
+                  Deposits go live with on-chain wagering
+                </p>
+              </div>
+            )}
+
             <button
               type="button"
               onClick={toggleReady}

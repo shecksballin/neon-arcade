@@ -8,6 +8,10 @@ import profile from './routes/profile'
 import social from './routes/social'
 import stats from './routes/stats'
 import community from './routes/community'
+import depositRoutes from './routes/deposits'
+import giftRoutes from './routes/gifts'
+import internalRoutes from './routes/internal'
+import { startSweepJob } from './jobs/sweep'
 import { isGameRegion } from '@neon/types'
 import { attachSocketHandlers } from './socket'
 
@@ -84,6 +88,12 @@ app.route('/api/community', community)
 // Read-only over `match_results`; leaderboard rows carry usernames only.
 app.route('/api/stats', stats)
 
+// On-chain wagering (WAGERING_IMPLEMENTATION.md). Every group answers 503
+// until the four wagering secrets exist in Doppler (config.wageringEnabled).
+app.route('/api/deposits', depositRoutes)
+app.route('/api/gifts', giftRoutes)
+app.route('/api/internal', internalRoutes)
+
 // ---------------------------------------------------------------------------
 // Socket.IO on Bun — HTTP API and sockets share port 3002
 // ---------------------------------------------------------------------------
@@ -118,6 +128,9 @@ io.bind(engine)
 
 // Auth middleware, game handlers, /presence namespace, graceful shutdown.
 attachSocketHandlers(io)
+
+// Daily cold-wallet sweep (no-op until wagering is configured).
+startSweepJob()
 
 // handler() supplies Bun.serve pieces: the websocket callbacks, plus an
 // idleTimeout (~2× ping interval) — without it Bun's 10s HTTP default

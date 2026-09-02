@@ -71,7 +71,63 @@ const envSchema = z.object({
   // ledger stub in this pass — TODO(on-chain): verify real deposits before
   // crediting (never import @solana/web3.js here yet).
   FREEPLAY_ENTRY_FEE: z.coerce.number().default(0.05),
+
+  /**
+   * ═══════════ ON-CHAIN WAGERING (WAGERING_IMPLEMENTATION.md §2) ═══════════
+   * The four secrets are individually optional at the schema level so the
+   * server can still boot on a deployment that has not configured wagering
+   * yet (the repo-wide 503-until-set convention) — but they are validated as
+   * a GROUP below: all four present → wagering on; none present → wagering
+   * cleanly disabled; a PARTIAL set → boot crash, because half-configured
+   * money code must never run. The spec's "crash at boot" rule is applied to
+   * misconfiguration, not to absence, so pushing this code cannot take down
+   * auth/games on a deploy that hasn't minted a house wallet yet.
+   */
+  SOLANA_RPC_URL: z.string().url().optional(),
+  HOUSE_WALLET_ADDRESS: z.string().min(32).max(44).optional(),
+  // JSON array string, e.g. the contents of a solana-keygen id.json.
+  HOUSE_WALLET_PRIVATE_KEY: z.string().min(2).optional(),
+  COLD_WALLET_ADDRESS: z.string().min(32).max(44).optional(),
+
+  // Tunables — safe defaults per the spec; all overridable via Doppler.
+  MIN_BET_SOL: z.coerce.number().default(0.01),
+  MAX_BET_SOL: z.coerce.number().default(10),
+  MIN_GIFT_SOL: z.coerce.number().default(0.01),
+  MAX_GIFT_SOL: z.coerce.number().default(10),
+  // The money-laundering brake (§8) — never raise without the owner.
+  GIFT_DAILY_CAP_SOL: z.coerce.number().default(50),
+  HOUSE_MINIMUM_RESERVE_SOL: z.coerce.number().default(5),
+  PAYOUT_ALERT_THRESHOLD_SOL: z.coerce.number().default(20),
+
+  // Optional email target for critical alerts (services/alertService.ts).
+  // Provider key comes later (Resend); absent → stderr JSON only.
+  ALERT_EMAIL: z.string().email().optional(),
 })
 
 // Parse process.env once. Throws and halts boot if invalid.
 export const config = envSchema.parse(process.env)
+
+/**
+ * The all-or-nothing group check described above. HOUSE_WALLET_ADDRESS is
+ * spec'd at exactly 44 chars, but base58 pubkeys are legitimately 32–44 —
+ * the real validation is `new PublicKey(...)` in solana/payoutService.ts.
+ */
+const WAGERING_KEYS = [
+  'SOLANA_RPC_URL',
+  'HOUSE_WALLET_ADDRESS',
+  'HOUSE_WALLET_PRIVATE_KEY',
+  'COLD_WALLET_ADDRESS',
+] as const
+const present = WAGERING_KEYS.filter((k) => config[k])
+if (present.length > 0 && present.length < WAGERING_KEYS.length) {
+  const missing = WAGERING_KEYS.filter((k) => !config[k])
+  throw new Error(
+    `[env] Wagering is PARTIALLY configured — refusing to boot. ` +
+      `Set the missing Doppler vars (${missing.join(', ')}) or unset ` +
+      `the present ones (${present.join(', ')}) to disable wagering entirely.`
+  )
+}
+
+/** True when every on-chain wagering secret is configured. Money routes and
+ *  the payout service refuse to operate (503) when this is false. */
+export const wageringEnabled = present.length === WAGERING_KEYS.length

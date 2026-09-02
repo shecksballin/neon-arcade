@@ -1750,17 +1750,14 @@ const ArgarGame: React.FC<ArgarGameProps> = ({ difficulty: difficultyProp = 3, i
       <div className="absolute bottom-8 right-8 flex gap-3 pointer-events-auto z-[70]">
         {/* Menu Button as requested: "put the menu button right next to the 3 [buttons]" */}
         <button
-          onClick={() => {
-            if (isFullscreen) return;
-            window.dispatchEvent(new CustomEvent('open-neon-arcade-menu'));
-          }}
-          disabled={isFullscreen}
-          className={`p-4 bg-white/5 border border-white/10 rounded-2xl text-[#00FFD1] transition-all shadow-2xl flex items-center justify-center select-none ${
-            isFullscreen 
-              ? "opacity-30 cursor-not-allowed pointer-events-none" 
-              : "hover:bg-[#00FFD1]/10 hover:border-[#00FFD1]/50 cursor-pointer"
-          }`}
-          title={isFullscreen ? "Menu disabled in Fullscreen" : "Open Navigation Menu"}
+          // No fullscreen disable any more: fullscreen is DOCUMENT-level now
+          // (toggleAppFullscreen), so the App-owned sidebar drawer renders
+          // inside the fullscreened document just fine. The old guard only
+          // existed because element-fullscreen hid everything outside the
+          // game container.
+          onClick={() => window.dispatchEvent(new CustomEvent('open-neon-arcade-menu'))}
+          className="p-4 bg-white/5 border border-white/10 rounded-2xl text-[#00FFD1] transition-all shadow-2xl flex items-center justify-center select-none hover:bg-[#00FFD1]/10 hover:border-[#00FFD1]/50 cursor-pointer"
+          title="Open Navigation Menu"
         >
           <Menu className="w-6 h-6" />
         </button>

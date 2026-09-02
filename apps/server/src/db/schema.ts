@@ -291,6 +291,14 @@ export const matches = pgTable('matches', {
   minPlayers: integer('min_players').default(2),
   maxPlayers: integer('max_players').default(2),
 
+  // ── ON-CHAIN SETTLEMENT (WAGERING_IMPLEMENTATION.md §6.2) ──
+  // Stamped when a settlement finalises: the winning payout's transaction
+  // signature and the moment status flipped to 'settled'. Null for
+  // freeplay/unsettled rows. Slayer stamps settledAt only (its many
+  // payout signatures live in the payouts rows).
+  settleTxSig: text('settle_tx_sig'),
+  settledAt: timestamp('settled_at', { withTimezone: true }),
+
   createdAt: timestamp('created_at', { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -337,6 +345,14 @@ export const matchPlayers = pgTable(
     // Wallet of the killer, when a player was eliminated by another
     eliminatedBy: text('eliminated_by'),
 
+    // When the elimination landed — settleSlayer orders final ranks by
+    // this (survivor rank 1, then latest-eliminated upward). Null while
+    // alive / for freeplay respawns.
+    eliminatedAt: timestamp('eliminated_at', { withTimezone: true }),
+
+    // 1-based final rank, stamped at settlement (§6.3). Null until then.
+    placement: integer('placement'),
+
     // Lobby-preset auto-cash-out threshold in SOL (null = manual only)
     autoCashOutSol: numeric('auto_cash_out_sol', { precision: 18, scale: 9 }),
 
@@ -355,6 +371,14 @@ export const matchPlayers = pgTable(
     uniqueIndex('one_active_session_per_wallet')
       .on(table.wallet)
       .where(sql`status = 'active'`),
+    // One LIVE seat per wallet per match (WAGERING_IMPLEMENTATION.md §7.4).
+    // PARTIAL on purpose — the spec asks for a plain UNIQUE (match_id,
+    // wallet), but freeplay's permanent match rows accumulate one
+    // historical row per session (rejoin after cash-out), which a full
+    // unique would forbid. Live statuses only preserves both invariants.
+    uniqueIndex('one_live_seat_per_match')
+      .on(table.matchId, table.wallet)
+      .where(sql`status IN ('deposited', 'active')`),
     // Hot path: "all active players in match X" (kill/settle queries)
     index('match_players_match_status_idx').on(table.matchId, table.status),
   ]
@@ -367,11 +391,14 @@ export type MatchPlayer = typeof matchPlayers.$inferSelect
 // ─────────────────────────────────────────────────
 export const payouts = pgTable('payouts', {
   id: uuid('id').defaultRandom().primaryKey(),
-  matchId: uuid('match_id').notNull(),
+  // Nullable since on-chain wagering: house sweeps and gift payouts leave
+  // the house wallet without belonging to any match.
+  matchId: uuid('match_id'),
   wallet: text('wallet').notNull(),
   amountSol: numeric('amount_sol', { precision: 18, scale: 9 }).notNull(),
 
-  // 'win' | 'cashout' | 'refund' | 'house'
+  // 'win' | 'cashout' | 'refund' | 'house' | 'slayer_kill' | 'gift'
+  // | 'house_sweep'
   type: text('type').notNull(),
 
   // On-chain transaction signature. UNIQUE so a signature can never be
@@ -552,6 +579,91 @@ export const nonces = pgTable('nonces', {
 })
 
 export type Nonce = typeof nonces.$inferSelect
+
+// ─────────────────────────────────────────────────
+// DEPOSITS — one row per VERIFIED on-chain transfer
+// into the house wallet (WAGERING_IMPLEMENTATION.md §4).
+// ─────────────────────────────────────────────────
+/**
+ * The UNIQUE txSig is the replay backstop (§7.4): a deposit is credited in
+ * the same transaction that inserts this row, so replaying a signature hits
+ * the constraint (SQLSTATE 23505 → HTTP 409) and credits nothing. Gift
+ * inbound legs reuse the exact same backstop with matchId = null — one
+ * table, one constraint, every verified transfer accounted for once.
+ */
+export const deposits = pgTable(
+  'deposits',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+
+    // Null for gift legs (§8) — a gift deposit belongs to no match.
+    matchId: uuid('match_id'),
+
+    // The verified SENDER (from the JWT + verifyDeposit's fee-payer check).
+    wallet: text('wallet').notNull(),
+
+    amountSol: numeric('amount_sol', { precision: 18, scale: 9 }).notNull(),
+
+    // The on-chain signature this row proves. UNIQUE = the replay brake.
+    txSig: text('tx_sig').notNull().unique(),
+
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // "this wallet's deposits, newest first" — audit + support queries.
+    index('deposits_wallet_created_idx').on(table.wallet, desc(table.createdAt)),
+  ]
+)
+
+export type Deposit = typeof deposits.$inferSelect
+
+// ─────────────────────────────────────────────────
+// GIFTS — two-leg SOL transfers routed through the
+// house wallet (WAGERING_IMPLEMENTATION.md §8).
+// ─────────────────────────────────────────────────
+export const gifts = pgTable(
+  'gifts',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+
+    // Internal keys — never serialized to another user; the recipient's
+    // notification carries usernames resolved at read time.
+    fromWallet: text('from_wallet').notNull(),
+    toWallet: text('to_wallet').notNull(),
+
+    // What the sender deposited (fee comes out of this).
+    amountSol: numeric('amount_sol', { precision: 18, scale: 9 }).notNull(),
+
+    // House fee retained; amountSol − feeSol went (or will go) out.
+    feeSol: numeric('fee_sol', { precision: 18, scale: 9 }).notNull(),
+
+    // Inbound (sender → house) leg's signature, for the audit trail; the
+    // deposits row holds the UNIQUE copy.
+    depositTxSig: text('deposit_tx_sig').notNull(),
+
+    // Outbound (house → recipient) leg. Null while status='failed_payout'.
+    payoutTxSig: text('payout_tx_sig'),
+
+    // 'completed' | 'failed_payout' — failed_payout means the sender's SOL
+    // sits in the house wallet awaiting a HUMAN (orphaned queue §8);
+    // never auto-retried.
+    status: text('status').notNull().default('completed'),
+
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // The §8 daily cap: Σ amountSol for one sender since midnight.
+    index('gifts_from_created_idx').on(table.fromWallet, desc(table.createdAt)),
+    // Recipient's gift history.
+    index('gifts_to_created_idx').on(table.toWallet, desc(table.createdAt)),
+  ]
+)
+
+export type Gift = typeof gifts.$inferSelect
 
 /**
  * ═════════════════════════════════════════════════

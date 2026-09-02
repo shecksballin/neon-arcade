@@ -41,6 +41,7 @@ import { registerPrivateMatch } from './games/privateMatch'
 import { registerQueueVotes } from './queue'
 import { registerFreeplay, shutdownFreeplay } from './freeplay'
 import { registerLatency } from './latency'
+import { matchRoom, setWagerRealtime } from '../services/depositService'
 
 // ---------------------------------------------------------------------------
 // attachSocketHandlers
@@ -70,6 +71,14 @@ export function attachSocketHandlers(io: Server) {
         console.error('[socket] friends-online refresh failed:', err)
       )
     },
+  })
+
+  // HTTP → match-room bridge for the wagering deposit flow: the deposit
+  // confirm route announces lobby:playerDeposited without touching io
+  // (same one-way pattern as setSocialRealtime above). Game modules join
+  // sockets to matchRoom(matchId) when a wager lobby forms.
+  setWagerRealtime((matchId, event, payload) => {
+    io.to(matchRoom(matchId)).emit(event, payload)
   })
 
   io.on('connection', (socket) => {

@@ -50,9 +50,12 @@ export function MatchLeaderboard({
       <div
         className="rounded-2xl px-[22px] py-5"
         style={{
-          background: 'rgba(0,0,0,0.4)',
+          // Matches the in-iframe boards (pug .hud-card / Clumsy
+          // #leaderboardCard): solid dark navy, NO backdrop blur — an
+          // always-on blur over a live canvas re-blurs every frame, the
+          // exact cost the perf pass removed from the iframe games.
+          background: 'rgba(5,13,28,0.78)',
           border: '1px solid rgba(0,255,209,0.2)',
-          backdropFilter: 'blur(10px)',
         }}
       >
         <div className="mb-3.5 flex items-center gap-[11px]">

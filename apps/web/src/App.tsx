@@ -987,16 +987,24 @@ export default function App() {
         />
       )}
 
-      {/* Fullscreen — bottom-RIGHT, out of the nav bar: every game screen
-          keeps its fullscreen button in the bottom-right corner, and this is
-          that button for the menu screens plus Chess/Connect gameplay. Same
-          visibility rule as the nav (games and account setup hide it); same
-          shared toggle as every game, and the global 'f' keybind still
-          works. (VolleyLobby's own copy was removed when this moved here —
-          both screens would have shown a button in the same corner.) */}
+      {/* Fullscreen — during Chess/Connect GAMEPLAY it sits bottom-RIGHT
+          like every other game's button. Menu screens keep it bottom-LEFT:
+          the bottom-right corner there belongs to the library's settings
+          cog (ArcadeView, z-50) and the notification toast stack (z-150),
+          both of which would cover it. Same visibility rule as the nav
+          (games and account setup hide it); same shared toggle as every
+          game, and the global 'f' keybind still works. (VolleyLobby's own
+          bottom-right copy was removed in the same pass — lobbies use this
+          one button like every other menu screen.) */}
       {view !== "account_setup" &&
         (!gameInSession || view === "neonconnect" || view === "chess") && (
-          <FullscreenButton positionClassName="fixed bottom-6 right-6 z-40" />
+          <FullscreenButton
+            positionClassName={
+              gameInSession
+                ? "fixed bottom-6 right-6 z-40"
+                : "fixed bottom-6 left-6 z-40"
+            }
+          />
         )}
 
       {/* Floating Top Nav */}
