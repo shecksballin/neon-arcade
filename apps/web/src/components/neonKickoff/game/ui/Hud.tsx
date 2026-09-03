@@ -85,11 +85,14 @@ export function Hud() {
       <motion.div
         initial={{ opacity: 0, x: -20 }}
         animate={{ opacity: 1, x: 0 }}
-        className="absolute top-6 left-6 backdrop-blur-md bg-black/40 border border-[#00FFD1]/20 px-6 py-4 rounded-2xl"
+        /* Mobile-first compact (play-test: the tally, the round pill and the
+           perf pill all collided in the top band on phones) — small padding
+           and type by default, desktop sizes from sm. */
+        className="absolute top-4 left-4 sm:top-6 sm:left-6 backdrop-blur-md bg-black/40 border border-[#00FFD1]/20 px-4 py-2.5 sm:px-6 sm:py-4 rounded-2xl"
       >
-        <div className="flex items-center gap-8">
+        <div className="flex items-center gap-4 sm:gap-8">
           <div className="flex flex-col items-center">
-            <span className="text-4xl md:text-6xl font-black text-white italic drop-shadow-[0_0_30px_rgba(255,255,255,0.4)] leading-none">
+            <span className="text-2xl sm:text-4xl md:text-6xl font-black text-white italic drop-shadow-[0_0_30px_rgba(255,255,255,0.4)] leading-none">
               {goals(shootout, 'player')}
             </span>
             <span className="mt-1.5 text-[10px] font-mono uppercase tracking-widest text-[#00FFD1]">You</span>
@@ -99,7 +102,7 @@ export function Hud() {
           </div>
           <span className="text-2xl text-[#00FFD1] font-black italic opacity-40">/</span>
           <div className="flex flex-col items-center">
-            <span className="text-4xl md:text-6xl font-black text-white italic drop-shadow-[0_0_30px_rgba(255,255,255,0.4)] leading-none">
+            <span className="text-2xl sm:text-4xl md:text-6xl font-black text-white italic drop-shadow-[0_0_30px_rgba(255,255,255,0.4)] leading-none">
               {goals(shootout, 'ai')}
             </span>
             <span className="mt-1.5 max-w-24 truncate text-[10px] font-mono uppercase tracking-widest text-[#FF0080]">
@@ -112,17 +115,19 @@ export function Hud() {
         </div>
       </motion.div>
 
-      {/* ---- top center: round + role */}
+      {/* ---- top center: round + role. On phones it drops BELOW the score
+          tally's band (play-test: centered at top-6 it rendered across the
+          tally card) and slims down; sm+ restores the centered top slot. */}
       <motion.div
         initial={{ opacity: 0, y: -16 }}
         animate={{ opacity: 1, y: 0 }}
-        className="absolute top-6 left-1/2 -translate-x-1/2 text-center"
+        className="absolute top-28 sm:top-6 left-1/2 -translate-x-1/2 text-center"
       >
-        <div className="backdrop-blur-xl bg-black/60 border border-white/10 px-8 py-3.5 rounded-3xl shadow-2xl">
-          <p className={`text-[10px] font-mono uppercase tracking-[0.35em] ${suddenDeath ? 'text-[#FF0080]' : 'text-white/40'}`}>
+        <div className="backdrop-blur-xl bg-black/60 border border-white/10 px-5 py-2 sm:px-8 sm:py-3.5 rounded-3xl shadow-2xl">
+          <p className={`text-[9px] sm:text-[10px] font-mono uppercase tracking-[0.35em] ${suddenDeath ? 'text-[#FF0080]' : 'text-white/40'}`}>
             {suddenDeath ? 'Sudden Death' : `Round ${round} of 5`}
           </p>
-          <p className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
+          <p className="text-lg sm:text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
             {striking ? (
               <>You <span className="text-[#00FFD1]">strike</span></>
             ) : (

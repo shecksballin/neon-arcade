@@ -8,6 +8,7 @@ import { ResultsScreen } from '../NeonBucks/ResultsScreen';
 import { PostGameProgression } from '../common/PostGameProgression';
 import { usePracticeXp } from '../../hooks/usePracticeXp';
 import { MoveHistoryPanel } from './MoveHistoryPanel';
+import { useMediaQuery } from 'react-responsive';
 import { DifficultySelector } from './DifficultySelector';
 import { useNeonBucks } from '../../NeonBucksStore';
 import './chess.css';
@@ -133,6 +134,10 @@ export default function ComputerGame({
   onRoundStateChange,
   onProgressionDone,
 }: any) {
+  // Mobile play-test: the fixed-width sidebar beside the board is what
+  // shoved the board off-screen on phones (inline styles know no
+  // breakpoints). Below lg the board stands alone; history/undo live on.
+  const isPhone = useMediaQuery({ query: '(max-width: 1023px)' });
   const [isThinking,   setIsThinking]  = useState(false);
   const computerColor = playerColor === 'white' ? 'black' : 'white';
   const { win } = useNeonBucks();
@@ -399,24 +404,27 @@ export default function ComputerGame({
         </div>
       </div>
 
-      <div style={styles.sidebar as any}>
-        <div style={styles.difficultyCard as any}>
-          <DifficultySelector
-            value={difficulty}
-            onChange={(skill: number) => onDifficultyChange?.(skill)}
-            title="Engine Difficulty"
-            compact
-            disabled={isThinking}
-          />
+      {!isPhone && (
+        <div style={styles.sidebar as any}>
+          <div style={styles.difficultyCard as any}>
+            <DifficultySelector
+              value={difficulty}
+              onChange={(skill: number) => onDifficultyChange?.(skill)}
+              title="Engine Difficulty"
+              compact
+              disabled={isThinking}
+            />
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <MoveHistoryPanel
+              history={history}
+              onUndo={handleUndo}
+              onNewGame={handleRematch}
+            />
+          </div>
         </div>
-        <div style={{ flex: 1, minHeight: 0 }}>
-          <MoveHistoryPanel
-            history={history}
-            onUndo={handleUndo}
-            onNewGame={handleRematch}
-          />
-        </div>
-      </div>
+  
+      )}
     </div>
   );
 }

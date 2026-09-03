@@ -548,8 +548,12 @@ export default function ChessGame({ onExit, profile, onGameStatusChange }: Chess
           // of width, so on a phone the board was pushed off-screen. Board
           // first (order-1), menu below it.
           <div className="flex flex-col lg:flex-row items-center justify-start lg:justify-center py-6 lg:py-10 min-h-full gap-6 lg:gap-8 max-w-[1200px] mx-auto px-3 lg:px-0 lg:translate-y-[20px]">
-            {/* The 5 buttons menu on the left */}
-            <div className="order-2 lg:order-1 w-full max-w-[340px] lg:w-[280px] h-auto lg:h-[600px] flex-shrink-0">
+            {/* The 5 buttons menu on the left. HIDDEN below lg (mobile
+                play-test): stacked under the board it doubled the page and
+                its exit row collided with the pause pill — on phones the
+                pause menu is the exit, and mode switching lives in the
+                lobby. */}
+            <div className="hidden lg:block order-2 lg:order-1 w-full max-w-[340px] lg:w-[280px] h-auto lg:h-[600px] flex-shrink-0">
                {/* Mode-switch cards are guarded too: picking a different mode
                    mid-match confirms, forfeits, plays the results, and only
                    then switches. */}

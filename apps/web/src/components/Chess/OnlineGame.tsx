@@ -4,6 +4,7 @@ import ChessBoard from './ChessBoard';
 import { useChessGame } from './useChessGame';
 import { GameOverOverlay } from './GameOverOverlay';
 import { MoveHistoryPanel } from './MoveHistoryPanel';
+import { useMediaQuery } from 'react-responsive';
 import './chess.css';
 
 const PIECE_GLYPHS: Record<string, string> = {
@@ -129,6 +130,10 @@ export default function OnlineGame({
   // finished game is not treated as a resignation.
   onRoundStateChange
 }: any) {
+  // Mobile play-test: the fixed-width sidebar beside the board is what
+  // shoved the board off-screen on phones (inline styles know no
+  // breakpoints). Below lg the board stands alone; history/undo live on.
+  const isPhone = useMediaQuery({ query: '(max-width: 1023px)' });
   const opponentColor = playerColor === 'white' ? 'black' : 'white';
 
   const lastAppliedMove = useRef<string | null>(null);
@@ -335,12 +340,15 @@ export default function OnlineGame({
         </div>
       </div>
 
-      <div style={styles.sidebar as any}>
-        <MoveHistoryPanel 
-          history={history} 
-          onUndo={undefined} // Usually online games don't let you directly undo without server
-        />
-      </div>
+      {!isPhone && (
+        <div style={styles.sidebar as any}>
+          <MoveHistoryPanel 
+            history={history} 
+            onUndo={undefined} // Usually online games don't let you directly undo without server
+          />
+        </div>
+  
+      )}
     </div>
   );
 }

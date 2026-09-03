@@ -4,6 +4,7 @@ import ChessBoard from './ChessBoard';
 import { useChessGame } from './useChessGame';
 import { GameOverOverlay } from './GameOverOverlay';
 import { MoveHistoryPanel } from './MoveHistoryPanel';
+import { useMediaQuery } from 'react-responsive';
 import './chess.css';
 
 const PIECE_GLYPHS: Record<string, string> = {
@@ -116,6 +117,10 @@ export default function LocalGame({
   // "leaving loses" confirm stops asking on a finished game.
   onRoundStateChange
 }: any) {
+  // Mobile play-test: the fixed-width sidebar beside the board is what
+  // shoved the board off-screen on phones (inline styles know no
+  // breakpoints). Below lg the board stands alone; history/undo live on.
+  const isPhone = useMediaQuery({ query: '(max-width: 1023px)' });
   const {
     position,
     legalMoveIndices,
@@ -248,13 +253,16 @@ export default function LocalGame({
         </div>
       </div>
 
-      <div style={styles.sidebar as any}>
-        <MoveHistoryPanel 
-          history={history} 
-          onUndo={() => undoMove()} 
-          onNewGame={handleRematch}
-        />
-      </div>
+      {!isPhone && (
+        <div style={styles.sidebar as any}>
+          <MoveHistoryPanel 
+            history={history} 
+            onUndo={() => undoMove()} 
+            onNewGame={handleRematch}
+          />
+        </div>
+  
+      )}
     </div>
   );
 }

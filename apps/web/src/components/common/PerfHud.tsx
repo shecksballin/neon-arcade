@@ -107,7 +107,10 @@ export function PerfHud({
 
   return (
     <div className={`${positionClassName} pointer-events-none select-none`}>
-      <div className="flex items-center gap-2 rounded-full border border-[#00FFD1]/25 bg-black/60 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.2em] backdrop-blur-md">
+      {/* Mobile-first COMPACT: on phones the full-size pill collided with
+          every game's top band (mobile play-test) — there it renders at
+          8px type with tight padding; sm+ restores the desktop size. */}
+      <div className="flex items-center gap-1.5 rounded-full border border-[#00FFD1]/25 bg-black/60 px-2 py-1 font-mono text-[8px] uppercase tracking-[0.15em] sm:gap-2 sm:px-3 sm:py-1.5 sm:text-[10px] sm:tracking-[0.2em]">
         <span className={fpsColor(fps)}>{fps === null ? '--' : fps} fps</span>
         <span className="text-white/25">·</span>
         <span className={pingColor(ping)}>{ping === null ? '--' : ping} ms</span>

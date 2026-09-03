@@ -1008,7 +1008,7 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
             animate={{ y: 0, opacity: 1 }}
             className="space-y-2"
           >
-            <h1 className="text-6xl md:text-8xl font-black text-[#FFFFFD] drop-shadow-[0_0_20px_rgba(0,255,209,0.6)] uppercase tracking-tighter italic">
+            <h1 className="text-4xl sm:text-6xl md:text-8xl font-black text-[#FFFFFD] drop-shadow-[0_0_20px_rgba(0,255,209,0.6)] uppercase tracking-tighter italic whitespace-nowrap">
               NEON CONNECT
             </h1>
           </motion.div>
@@ -1178,7 +1178,10 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
             board was simply cut off. Board first (order-1), menu after it. */}
         <div className="flex flex-col lg:flex-row justify-start lg:justify-center items-center py-6 lg:py-10 min-h-full gap-6 lg:gap-8 max-w-[1200px] mx-auto px-3 lg:px-0">
           {/* Game Selection */}
-          <div className="order-2 lg:order-1 w-full max-w-[340px] lg:w-[280px] h-auto lg:h-[652px] flex-shrink-0 mt-0 lg:mt-[40px]">
+          {/* HIDDEN below lg (mobile play-test): stacked under the board
+              these cards doubled the page mid-game; mode switching lives
+              in the lobby on phones, exits in the pause menu. */}
+          <div className="hidden lg:block order-2 lg:order-1 w-full max-w-[340px] lg:w-[280px] h-auto lg:h-[652px] flex-shrink-0 mt-0 lg:mt-[40px]">
              {/* Every affordance here is guarded: mid-match it confirms,
                  forfeits, plays results + progression, and only THEN runs
                  the navigation/mode switch. With no live round the
@@ -1356,7 +1359,7 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
             order 0 and sorted to the far LEFT on desktop and to the TOP on
             mobile. order-3 places it to the RIGHT of the board on desktop
             and after the menu in the mobile stack. */}
-        <div style={{ width: 300, height: 652, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 12 }} className="order-3 mt-[40px]">
+        <div style={{ width: 300, height: 652, flexShrink: 0 }} className="hidden lg:flex flex-col gap-3 order-3 mt-[40px]">
           {mode === 'local' && (
             <div style={{ background: '#041010', border: '1px solid rgba(0,255,209,0.2)', borderRadius: 8, padding: '12px 10px', flexShrink: 0 }}>
               <DifficultySelector

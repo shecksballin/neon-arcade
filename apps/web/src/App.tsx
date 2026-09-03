@@ -997,7 +997,8 @@ export default function App() {
           bottom-right copy was removed in the same pass — lobbies use this
           one button like every other menu screen.) */}
       {view !== "account_setup" &&
-        (!gameInSession || view === "neonconnect" || view === "chess") && (
+        (!gameInSession ||
+          (!IS_COARSE && (view === "neonconnect" || view === "chess"))) && (
           <FullscreenButton
             positionClassName={
               gameInSession
@@ -1014,7 +1015,8 @@ export default function App() {
             and the TOTP secret on unmount. Same gate the floating hamburger
             and ActiveUsers strip already use. */}
         {view !== "account_setup" &&
-          (!gameInSession || view === "neonconnect" || view === "chess") && (
+          (!gameInSession ||
+          (!IS_COARSE && (view === "neonconnect" || view === "chess"))) && (
           <motion.div
             initial={{ y: -100, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
@@ -1506,6 +1508,17 @@ const HEAVY_FX =
   !window.matchMedia("(prefers-reduced-motion: reduce)").matches &&
   !window.matchMedia("(pointer: coarse) and (hover: none)").matches &&
   (navigator.hardwareConcurrency ?? 8) > 4;
+
+/**
+ * Phone/tablet (touch-only) detection, read once like HEAVY_FX. Used to
+ * withdraw the chess/connect nav-during-gameplay exemption on phones: the
+ * mobile play-test showed the floating nav pill rendering ON the boards —
+ * there is no width for both, and the pause menu already covers exits.
+ */
+const IS_COARSE =
+  typeof window !== "undefined" &&
+  !!window.matchMedia &&
+  window.matchMedia("(pointer: coarse) and (hover: none)").matches;
 
 /**
  * True once the visitor has actually moved a pointer.

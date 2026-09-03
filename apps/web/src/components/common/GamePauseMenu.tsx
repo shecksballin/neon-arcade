@@ -105,7 +105,12 @@ export function GamePauseMenu({
     <>
       {isCoarse && !open && (
         <div
-          className={inline ? 'z-[60]' : 'absolute bottom-8 right-8 z-[60]'}
+          /* FIXED, not absolute: chess/connect mount this inside scrollable
+             panes taller than the viewport, where an absolute pill landed
+             mid-content — floating over the board and the side menu's exit
+             row (mobile play-test). Fixed pins it to the viewport corner;
+             identical rendering in the full-screen game containers. */
+          className={inline ? 'z-[60]' : 'fixed bottom-6 right-6 z-[60]'}
           style={{ pointerEvents: 'auto' }}
         >
           <button
