@@ -1,7 +1,6 @@
 import React, { useRef, useState } from "react";
 import { LobbyLevelStrip } from '../common/LobbyLevelStrip';
 import { Globe, Cpu, Users, Swords } from 'lucide-react';
-import GameBackButton from '../common/GameBackButton';
 import { LibraryBlob } from "../glass/LibraryBlob";
 import { ParticleCard, GlobalSpotlight } from "../glass/MagicGameTile";
 import { DifficultySelector } from "./DifficultySelector";
@@ -48,7 +47,6 @@ const GameLobby = ({
     // lobby ABOVE the visible area with no way to scroll to it — the mode
     // cards were simply unreachable on a phone.
     <div className="min-h-[100dvh] max-h-[100dvh] bg-[#081616] flex flex-col items-center justify-start md:justify-center px-4 py-24 md:p-6 relative overflow-y-auto overflow-x-hidden">
-      <GameBackButton onClick={onExit} title="Back to arcade" positionClassName="absolute top-6 left-6 z-50" />
       <LibraryBlob />
       <GlobalSpotlight gridRef={containerRef} />
 

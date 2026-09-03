@@ -106,10 +106,11 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
   }, [showOptions]);
 
   return (
-    // h-full + overflow-y-auto (not min-h-screen + hidden like the other lobbies):
-    // the expandable Options panel can push content past the fold, and my-auto on the
-    // content keeps it centered while degrading gracefully into a scrollable page.
-    <div className="h-full min-h-0 bg-[#081616] flex flex-col items-center p-6 relative overflow-y-auto overflow-x-hidden">
+    // NON-SCROLLABLE by design: every control below is sized so the whole
+    // lobby fits one viewport (the old overflow-y-auto existed for an
+    // inline Options panel that is a fixed popup now). The other-games tile
+    // row is the pressure valve — it hides on short viewports (bottom).
+    <div className="h-full min-h-0 bg-[#081616] flex flex-col items-center p-4 relative overflow-hidden">
       <LibraryBlob />
       <GlobalSpotlight gridRef={containerRef} />
 
@@ -122,13 +123,12 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
         ></div>
       </div>
 
-      <div ref={containerRef} className="relative z-10 text-center space-y-8 max-w-2xl w-full my-auto py-8">
-        <div className="space-y-2">
-          {/* One size step below the sibling lobbies (8xl → 7xl): sixteen
-              characters at 8xl overflow the max-w-2xl column and wrapped to
-              two rows. nowrap + the smaller cap keeps the title on one row
-              at every breakpoint instead of relying on luck. */}
-          <h1 className="text-5xl md:text-7xl font-black text-[#FFFFFD] drop-shadow-[0_0_20px_rgba(0,255,209,0.6)] uppercase tracking-tighter italic whitespace-nowrap">
+      <div ref={containerRef} className="relative z-10 text-center space-y-4 max-w-2xl w-full my-auto py-4">
+        <div className="space-y-1">
+          {/* Smaller than the sibling lobbies on purpose: this page must
+              hold mode + cards + difficulty + NEXT without scrolling, so
+              the title pays first. nowrap keeps it on one row. */}
+          <h1 className="text-4xl md:text-5xl font-black text-[#FFFFFD] drop-shadow-[0_0_20px_rgba(0,255,209,0.6)] uppercase tracking-tighter italic whitespace-nowrap">
             NEON PUG SHOOTER
           </h1>
           <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
@@ -139,11 +139,11 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
         {/* Level progression — compact strip under the title. */}
         <LobbyLevelStrip />
 
-        <div className="space-y-6">
+        <div className="space-y-3">
           {/* Mode only — the MAP is deliberately absent from this screen:
               it is step two of the flow, the full-screen selection page the
               NEXT button (bottom) navigates to. */}
-          <div className="flex flex-col items-center gap-3">
+          <div className="flex flex-col items-center gap-2">
             <p className="text-[10px] font-mono tracking-[0.3em] uppercase text-[#B1C5FF]/50">
               Select Mode
             </p>
@@ -172,20 +172,20 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
           {/* HOW-TO-PLAY cards — SELECTORS now, not launchers: the choice is
               held in `action` and executed by the map page's CONFIRM. The
               selected card keeps the neon ring; unselected ones dim. */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full text-left">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 w-full text-left">
             <ParticleCard
               onClick={() => setAction("online")}
               aria-pressed={action === "online"}
-              className={`magic-bento-card magic-bento-card--border-glow px-8 py-6 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl hover:scale-[1.02] active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer ${
+              className={`magic-bento-card magic-bento-card--border-glow px-6 py-4 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl hover:scale-[1.02] active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-2 group relative overflow-hidden cursor-pointer ${
                 action === "online"
                   ? "ring-2 ring-[#00FFD1] ring-offset-2 ring-offset-[#081616] shadow-[0_0_50px_rgba(0,255,209,0.3)]"
                   : "opacity-60 hover:opacity-90"
               }`}
             >
               <div className="absolute top-0 left-0 w-full h-1 bg-white/20"></div>
-              <Globe className="w-8 h-8 group-hover:rotate-12 transition-transform" />
+              <Globe className="w-6 h-6 group-hover:rotate-12 transition-transform" />
               <div className="text-center">
-                <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">Wager Match</span>
+                <span className="block font-black text-base uppercase tracking-tighter italic leading-none">Wager Match</span>
                 <span className="block text-[8px] opacity-60 font-bold tracking-widest mt-1">
                   GLOBAL WAGER ARENA
                 </span>
@@ -196,15 +196,15 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
             <ParticleCard
               onClick={() => setAction("private")}
               aria-pressed={action === "private"}
-              className={`magic-bento-card magic-bento-card--border-glow px-8 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer ${
+              className={`magic-bento-card magic-bento-card--border-glow px-6 py-4 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-2 group relative overflow-hidden cursor-pointer ${
                 action === "private"
                   ? "ring-2 ring-[#00FFD1] ring-offset-2 ring-offset-[#081616] border-[#00FFD1]"
                   : "opacity-60 hover:opacity-90"
               }`}
             >
-              <Swords className="w-8 h-8 text-zinc-400 group-hover:rotate-12 transition-transform group-hover:text-[#00FFD1]" />
+              <Swords className="w-6 h-6 text-zinc-400 group-hover:rotate-12 transition-transform group-hover:text-[#00FFD1]" />
               <div className="text-center">
-                <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">
+                <span className="block font-black text-base uppercase tracking-tighter italic leading-none">
                   Private Wager
                 </span>
                 <span className="block text-[8px] text-white/40 font-bold tracking-widest mt-1">
@@ -215,15 +215,15 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
             <ParticleCard
               onClick={() => setAction("practice")}
               aria-pressed={action === "practice"}
-              className={`magic-bento-card magic-bento-card--border-glow px-8 py-6 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-4 group relative overflow-hidden cursor-pointer ${
+              className={`magic-bento-card magic-bento-card--border-glow px-6 py-4 border border-[#00FFD1]/40 text-white rounded-2xl transition-all duration-500 hover:scale-[1.02] active:scale-[0.98] flex flex-col items-center justify-center gap-2 group relative overflow-hidden cursor-pointer ${
                 action === "practice"
                   ? "ring-2 ring-[#00FFD1] ring-offset-2 ring-offset-[#081616] border-[#00FFD1]"
                   : "opacity-60 hover:opacity-90"
               }`}
             >
-              <Cpu className="w-8 h-8 text-zinc-400 group-hover:rotate-12 transition-transform" />
+              <Cpu className="w-6 h-6 text-zinc-400 group-hover:rotate-12 transition-transform" />
               <div className="text-center">
-                <span className="block font-black text-xl uppercase tracking-tighter italic leading-none">
+                <span className="block font-black text-base uppercase tracking-tighter italic leading-none">
                   Practice
                 </span>
                 <span className="block text-[8px] text-white/40 font-bold tracking-widest mt-1">
@@ -246,7 +246,7 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
         </p>
 
         {/* Bot difficulty — applies to every mode; bots fill each side */}
-        <div className="w-full max-w-xl mx-auto px-6 py-5 rounded-2xl border border-[#00FFD1]/25 bg-[#041010]/80">
+        <div className="w-full max-w-xl mx-auto px-5 py-3 rounded-2xl border border-[#00FFD1]/25 bg-[#041010]/80">
           <DifficultySelector
             tiers={DIFFICULTY_TIERS.map((t, i) => ({ id: t.id, label: t.label, value: i }))}
             value={difficultyIndex}
@@ -256,27 +256,34 @@ const PugShooterLobby = ({ onFindGame, onPlayComputer, error }: PugShooterLobbyP
           />
         </div>
 
-        {/* Game options — the iframe reads these at boot, and the in-game pause-screen
-            Options edits the same localStorage entry, so the two stay in sync. */}
-        <button
-          onClick={() => setShowOptions(true)}
-          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full border text-[10px] font-bold uppercase tracking-widest transition-all cursor-pointer backdrop-blur-md border-[#00FFD1]/40 text-[#B1C5FF]/70 hover:text-[#B1C5FF] hover:border-[#00FFD1]/70"
-        >
-          <Settings className="w-4 h-4" />
-          Game Options
-        </button>
+        {/* Options + NEXT share one row (vertical space is the budget on a
+            no-scroll page). Options opens the fixed popup — the iframe reads
+            those values at boot and the in-game pause screen edits the same
+            localStorage entry, so the two stay in sync. NEXT advances to the
+            full-screen map page, whose CONFIRM launches the selected action. */}
+        <div className="w-full max-w-xl mx-auto flex items-center gap-3">
+          <button
+            onClick={() => setShowOptions(true)}
+            title="Game Options"
+            className="shrink-0 inline-flex items-center gap-2 px-4 py-3.5 rounded-2xl border text-[10px] font-bold uppercase tracking-widest transition-all cursor-pointer backdrop-blur-md border-[#00FFD1]/40 text-[#B1C5FF]/70 hover:text-[#B1C5FF] hover:border-[#00FFD1]/70"
+          >
+            <Settings className="w-4 h-4" />
+            Options
+          </button>
+          <button
+            onClick={() => setShowMapSelect(true)}
+            className="flex-1 flex items-center justify-center gap-3 px-8 py-3 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl font-black text-base uppercase tracking-tighter italic shadow-[0_0_40px_rgba(0,255,209,0.35)] hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
+          >
+            Next — Select Map
+            <ChevronRight className="w-5 h-5" />
+          </button>
+        </div>
 
-        {/* NEXT — done with this screen: advance to the full-screen map
-            selection page, whose CONFIRM launches the selected action. */}
-        <button
-          onClick={() => setShowMapSelect(true)}
-          className="w-full max-w-xl mx-auto flex items-center justify-center gap-3 px-10 py-4 bg-gradient-to-br from-[#00FFD1] to-[#00bda0] text-[#081616] rounded-2xl font-black text-lg uppercase tracking-tighter italic shadow-[0_0_40px_rgba(0,255,209,0.35)] hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
-        >
-          Next — Select Map
-          <ChevronRight className="w-5 h-5" />
-        </button>
-
-        <LobbyModeTiles />
+        {/* The other-games strip is the first thing sacrificed on short
+            viewports — the lobby's own controls must never scroll. */}
+        <div className="hidden [@media(min-height:860px)]:block">
+          <LobbyModeTiles className="mt-0" />
+        </div>
       </div>
 
       {/* Centered options popup */}

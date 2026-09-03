@@ -1,7 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import GolfLobby from './GolfLobby';
 import NeonGolfClash from './NeonGolfClash';
-import GameBackButton from '../common/GameBackButton';
 import { SearchingForMatch } from '../common/SearchingForMatch';
 import { OnlineMatchBanner } from '../common/OnlineMatchBanner';
 import {
@@ -109,7 +108,6 @@ const GolfGame = ({ onExit, onGameStatusChange }: GolfGameProps) => {
 
   return (
     <div className="w-full h-full relative">
-      <GameBackButton onClick={onExit} title="Back to arcade" positionClassName="absolute top-6 left-6 z-50" />
       <GolfLobby
         onFindGame={() => findMatch('classic')}
         onPlayComputer={() => setPractice(true)}

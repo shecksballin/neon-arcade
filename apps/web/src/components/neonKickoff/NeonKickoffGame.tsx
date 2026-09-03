@@ -321,11 +321,6 @@ export default function NeonKickoffGame({
       <div className="min-h-[100dvh] bg-[#081616] flex flex-col items-center justify-center p-6 relative overflow-hidden">
         <LibraryBlob />
         <GlobalSpotlight gridRef={containerRef} />
-        <GameBackButton
-          onClick={onExit}
-          title="Back to arcade"
-          positionClassName="absolute top-6 left-6 z-50"
-        />
 
         {/* Ambient glow, same recipe as the sibling lobbies. */}
         <div className="absolute inset-0 opacity-20 pointer-events-none">

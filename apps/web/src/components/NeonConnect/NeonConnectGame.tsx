@@ -18,7 +18,6 @@ import { ChevronLeft,
   Undo2,
   Swords,
   Plus } from 'lucide-react';
-import GameBackButton from '../common/GameBackButton';
 // The real arcade menu column (rank card, drawer deep-links, live friends) —
 // replaces the old static ConnectNavSidebar mock-up.
 import { GameNavSidebar } from '../common/GameNavSidebar';
@@ -981,7 +980,6 @@ const NeonConnectGame: React.FC<NeonConnectGameProps> = ({
     // lobby ABOVE the visible area with no way to scroll to it — the mode
     // cards were simply unreachable on a phone.
     <div className="min-h-[100dvh] max-h-[100dvh] bg-[#081616] flex flex-col items-center justify-start md:justify-center px-4 py-24 md:p-6 relative overflow-y-auto overflow-x-hidden">
-        <GameBackButton onClick={onExit} title="Back to arcade" positionClassName="absolute top-6 left-6 z-50" />
         {mode === "practice_wager" && (
           <WagerMenu 
             gameTitle="Neon Connect"

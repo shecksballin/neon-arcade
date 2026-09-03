@@ -1,7 +1,6 @@
 import React, { Suspense, useCallback, useRef, useState } from 'react';
 import PugShooterLobby, { PugShooterMatchConfig } from './PugShooterLobby';
 import { Loader2 } from 'lucide-react';
-import GameBackButton from '../common/GameBackButton';
 import { SearchingForMatch } from '../common/SearchingForMatch';
 import { OnlineMatchBanner } from '../common/OnlineMatchBanner';
 import {
@@ -172,7 +171,6 @@ const PugShooterGame = ({ onExit, profile, onGameStatusChange }: PugShooterGameP
 
   return (
     <div className="w-full h-full relative">
-      <GameBackButton onClick={onExit} title="Back to arcade" positionClassName="absolute top-6 left-6 z-50" />
       <PugShooterLobby
         onFindGame={findOnline}
         onPlayComputer={setPracticeConfig}

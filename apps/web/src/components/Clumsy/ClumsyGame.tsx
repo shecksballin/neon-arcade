@@ -1,7 +1,6 @@
 import React, { Suspense, useCallback, useState } from 'react';
 import ClumsyLobby from './ClumsyLobby';
 import { Loader2 } from 'lucide-react';
-import GameBackButton from '../common/GameBackButton';
 import { SearchingForMatch } from '../common/SearchingForMatch';
 import { OnlineMatchBanner } from '../common/OnlineMatchBanner';
 import {
@@ -118,7 +117,6 @@ const ClumsyGame = ({ onExit, profile, onGameStatusChange }: ClumsyGameProps) =>
 
   return (
     <div className="w-full h-full relative">
-      <GameBackButton onClick={onExit} title="Back to arcade" positionClassName="absolute top-6 left-6 z-50" />
       <ClumsyLobby
         onFindGame={() => findMatch('classic')}
         onPlayComputer={() => setPractice(true)}
